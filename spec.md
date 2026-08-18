@@ -68,7 +68,7 @@ Goal: smooth, map-style zoom/pan at any level, GPU-bound, on images up to browse
 - **Pending-tile scheduling:** during a pan/zoom the viewport requests only the tiles for the new visible range; tiles for out-of-view regions are skipped (not generated). Generation is debounced/prioritised so interaction stays smooth; a low-res placeholder (or empty background) is shown for tiles still being produced.
 - **Progressive refinement on zoom-in:** when the user zooms in beyond the currently available level, the coarser **half-size level tiles are displayed scaled up as immediate placeholders** (kept visible underneath). As the finer-level tiles are generated on demand, they are drawn **on top of / in place of the coarser tiles the moment each one finishes** — in whatever order they complete, so the view progressively sharpens with new tiles appearing over the larger ones rather than waiting for the whole level. Already-cached finer tiles render instantly; only genuinely new ones pop in gradually.
 - **Viewport renderer:** for each frame, computes the visible tile range from current zoom + pan, renders visible tiles to the display canvas (or composited elements). Only ~a handful of tiles are composited per frame.
-- **Zoom:** mouse wheel, anchored at the cursor (zoom factor preserved at cursor point). Clamped between fit-view and 1:1 original pixels.
+- **Zoom:** mouse wheel, anchored at the cursor (zoom factor preserved at cursor point). Zoom-in is clamped at 1:1 original pixels; zoom-out is unbounded (tiles render at their coarsest level and stop enlarging).
 - **Pan:** Ctrl+drag.
 - All box coordinates are stored in **world/fractional** space (0–1 of full image) so they are resolution-independent across zoom levels.
 

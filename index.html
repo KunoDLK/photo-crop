@@ -428,7 +428,7 @@ function bestTile(L, tx, ty) {
   for (let k = L; k >= 0; k--) {
     const s = L - k;
     const c = cacheGet(tileKey(k, tx >> s, ty >> s));
-    if (c) return c;
+    if (c) return { canvas: c, level: k };
   }
   return null;
 }
@@ -442,7 +442,7 @@ async function generateTile(L, tx, ty) {
   const tctx = c.getContext("2d");
   tctx.imageSmoothingEnabled = true;
   tctx.imageSmoothingQuality = "high";
-  tctx.drawImage(state.img, sx, sy, sw, sh, 0, 0, TILE, TILE);
+  tctx.drawImage(state.img, sx, sy, sw, sh, 0, 0, sw / p, sh / p);
   cacheSet(tileKey(L, tx, ty), c);
 }
 function scheduleGenerate() {
@@ -485,14 +485,22 @@ function render() {
 
   for (let tx = tx0; tx <= tx1; tx++) {
     for (let ty = ty0; ty <= ty1; ty++) {
-      const dx = state.vx + tx * tileW * sc;
-      const dy = state.vy + ty * tileW * sc;
-      const dw = tileW * sc, dh = tileW * sc;
-      const best = bestTile(L, tx, ty);
-      if (best) {
-        ctx.drawImage(best, dx, dy, dw, dh);
+      const key = tileKey(L, tx, ty);
+      const exact = cacheGet(key);
+      if (exact) {
+        ctx.drawImage(exact,
+          state.vx + tx * tileW * sc, state.vy + ty * tileW * sc, tileW * sc, tileW * sc);
       } else {
-        pending.add(tileKey(L, tx, ty));
+        const best = bestTile(L, tx, ty);
+        if (best) {
+          const k = best.level;
+          const s = L - k;
+          const cxt = tx >> s, cyt = ty >> s;
+          const cw = TILE * Math.pow(2, k);
+          ctx.drawImage(best.canvas,
+            state.vx + cxt * cw * sc, state.vy + cyt * cw * sc, cw * sc, cw * sc);
+        }
+        pending.add(key);
       }
     }
   }
@@ -749,7 +757,7 @@ cv.addEventListener("wheel", (e) => {
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const f = Math.exp(-e.deltaY * 0.0012);
-  const ns = clamp(state.scale * f, state.fitScale, 1);
+  const ns = clamp(state.scale * f, 0.0001, 1);
   const wx = (mx - state.vx) / state.scale;
   const wy = (my - state.vy) / state.scale;
   state.vx = mx - wx * ns;
