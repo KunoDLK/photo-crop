@@ -1,0 +1,1108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Crop — scan photo cropper</title>
+<style>
+:root {
+  --bg: #f2f2f2;
+  --panel: #ffffff;
+  --panel-2: #fafafa;
+  --text: #1f1f1f;
+  --muted: #6b6b6b;
+  --border: #d4d4d4;
+  --accent: #1ca7e8;
+  --sel: #1ca7e8;
+  --other: #e03030;
+  --shadow: rgba(0,0,0,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1b1f;
+    --panel: #232329;
+    --panel-2: #2a2a31;
+    --text: #e8e8ea;
+    --muted: #9a9aa2;
+    --border: #3a3a42;
+    --accent: #4fb8ee;
+    --sel: #4fb8ee;
+    --other: #ff6b6b;
+    --shadow: rgba(0,0,0,0.45);
+  }
+}
+* { box-sizing: border-box; }
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.toolbar button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.toolbar button:hover { background: var(--border); }
+.toolbar button:disabled { opacity: 0.45; cursor: default; }
+.spacer { flex: 1; }
+.zoom-lbl { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.main {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.left {
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+  background: #808080;
+}
+#view {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: crosshair;
+}
+#drop-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #fff;
+  font-size: 17px;
+  text-align: center;
+  pointer-events: none;
+  padding: 24px;
+  background: rgba(0,0,0,0.35);
+}
+#drop-msg .sub { font-size: 13px; opacity: 0.85; }
+
+.right {
+  flex: 0 0 360px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  min-height: 0;
+}
+.right .rhead {
+  padding: 10px 12px 6px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+#list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 8px;
+  cursor: pointer;
+}
+.item.sel { border-color: var(--sel); box-shadow: 0 0 0 1px var(--sel); }
+.item.excluded { opacity: 0.55; }
+.item-top { display: flex; gap: 8px; }
+.item canvas {
+  width: 132px;
+  height: 132px;
+  flex: 0 0 132px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid var(--border);
+}
+.item-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.item-info input[type=text] {
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+}
+.rot-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.rot-actions { display: flex; gap: 4px; }
+.rot-actions button {
+  padding: 2px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.rot-actions button:hover { background: var(--border); }
+.item-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.item-foot label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.item-foot button {
+  padding: 3px 9px;
+  font-size: 12px;
+  border: 1px solid #d64545;
+  border-radius: 5px;
+  background: transparent;
+  color: #e05555;
+  cursor: pointer;
+}
+.item-foot button:hover { background: #d64545; color: #fff; }
+.empty-hint { color: var(--muted); font-size: 13px; text-align: center; padding: 20px 10px; }
+
+.settings {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.set-row { display: flex; align-items: center; gap: 8px; }
+.set-row label { color: var(--muted); font-size: 12px; width: 90px; flex: 0 0 90px; }
+.set-row select, .set-row input[type=range] { flex: 1 1 auto; }
+.set-row select {
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+}
+.set-row .qval { width: 34px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.export-row { display: flex; justify-content: flex-end; }
+#export {
+  padding: 9px 22px;
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  border-radius: 7px;
+  background: var(--sel);
+  color: #fff;
+  cursor: pointer;
+}
+#export:hover { filter: brightness(1.1); }
+#export:disabled { opacity: 0.5; cursor: default; filter: none; }
+
+#status {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button id="btn-open">Open image…</button>
+  <button id="btn-detect" disabled>Auto-detect</button>
+  <button id="btn-clear" disabled>Clear boxes</button>
+  <input type="file" id="file" accept="image/png,image/jpeg,image/tiff,image/bmp,image/webp" hidden>
+  <div class="spacer"></div>
+  <span class="zoom-lbl" id="zoom-lbl">—</span>
+</div>
+
+<div class="main">
+  <div class="left" id="left">
+    <canvas id="view"></canvas>
+    <div id="drop-msg">
+      <div>Drop a scan here</div>
+      <div class="sub">or use “Open image…” · wheel zooms · Ctrl+drag pans<br>drag empty canvas to draw a box</div>
+    </div>
+  </div>
+  <div class="right">
+    <div class="rhead">Crops</div>
+    <div id="list"></div>
+    <div class="settings">
+      <div class="set-row">
+        <label>Format</label>
+        <select id="fmt">
+          <option value="png">PNG</option>
+          <option value="jpeg">JPEG</option>
+        </select>
+        <span class="qval" id="qval">90</span>
+      </div>
+      <div class="set-row">
+        <label>Quality</label>
+        <input type="range" id="quality" min="1" max="100" value="90">
+        <span></span>
+      </div>
+      <div class="export-row">
+        <button id="export" disabled>Export</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="status">Drop a scan to begin.</div>
+
+<script>
+(() => {
+"use strict";
+
+const TILE = 256;
+const HANDLE = 10;
+const ROT_OFF = 34;
+const MIN_SZ = 16;
+const CACHE_MAX = 256;
+const DETECT_MAX = 1600;
+const THRESH = 235;
+const MERGE_GAP_FRAC = 0.035;
+const MIN_SIDE_FRAC = 0.02;
+const MIN_AREA_FRAC = 0.0002;
+const MARGIN_FRAC = 0.012;
+
+const els = {
+  view: document.getElementById("view"),
+  left: document.getElementById("left"),
+  drop: document.getElementById("drop-msg"),
+  open: document.getElementById("btn-open"),
+  file: document.getElementById("file"),
+  detect: document.getElementById("btn-detect"),
+  clear: document.getElementById("btn-clear"),
+  list: document.getElementById("list"),
+  zoom: document.getElementById("zoom-lbl"),
+  fmt: document.getElementById("fmt"),
+  quality: document.getElementById("quality"),
+  qval: document.getElementById("qval"),
+  export: document.getElementById("export"),
+  status: document.getElementById("status"),
+};
+
+const cv = els.view;
+const ctx = cv.getContext("2d");
+let dpr = window.devicePixelRatio || 1;
+
+const state = {
+  img: null,
+  iw: 0,
+  ih: 0,
+  blob: null,
+  scale: 1,
+  vx: 0,
+  vy: 0,
+  fitScale: 1,
+  maxLevel: 0,
+  boxes: [],
+  sel: null,
+  mode: null,
+  drag: null,
+  nameCounter: 1,
+};
+const cache = new Map();
+const pending = new Set();
+let genRunning = false;
+let needRender = false;
+let thumbDirty = new Set();
+let items = [];
+
+function status(msg) { els.status.textContent = msg; }
+function requestRender() {
+  if (needRender) return;
+  needRender = true;
+  requestAnimationFrame(render);
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function rad(a) { return a * Math.PI / 180; }
+
+function setToolbar(hasImg) {
+  els.detect.disabled = !hasImg;
+  els.clear.disabled = !hasImg;
+  els.export.disabled = !hasImg;
+}
+
+// --------------------------------------------------------------- files
+els.open.addEventListener("click", () => els.file.click());
+els.file.addEventListener("change", () => {
+  if (els.file.files[0]) loadFile(els.file.files[0]);
+  els.file.value = "";
+});
+["dragover", "drop"].forEach((t) => {
+  window.addEventListener(t, (e) => { e.preventDefault(); });
+});
+window.addEventListener("drop", (e) => {
+  const f = e.dataTransfer.files[0];
+  if (f) loadFile(f);
+});
+
+async function loadFile(file) {
+  status("Decoding…");
+  els.drop.style.display = "none";
+  const bitmap = await createImageBitmap(file);
+  if (state.img) state.img.close();
+  state.img = bitmap;
+  state.blob = file;
+  state.iw = bitmap.width;
+  state.ih = bitmap.height;
+  state.boxes = [];
+  state.sel = null;
+  state.nameCounter = 1;
+  state.maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(state.iw, state.ih) / TILE)));
+  cache.clear();
+  pending.clear();
+  fitView();
+  setToolbar(true);
+  refreshList();
+  requestRender();
+  status(`Loaded ${file.name}  (${state.iw}×${state.ih}) — draw boxes or auto-detect`);
+}
+
+function fitView() {
+  const vpw = cv.clientWidth || els.left.clientWidth;
+  const vph = cv.clientHeight || els.left.clientHeight;
+  state.fitScale = Math.min(vpw / state.iw, vph / state.ih) * 0.98;
+  state.scale = state.fitScale;
+  state.vx = (vpw - state.iw * state.scale) / 2;
+  state.vy = (vph - state.ih * state.scale) / 2;
+}
+
+function resizeCanvas() {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(w * dpr);
+  cv.height = Math.round(h * dpr);
+}
+new ResizeObserver(() => {
+  if (!state.img) return;
+  resizeCanvas();
+  fitView();
+  requestRender();
+}).observe(els.left);
+resizeCanvas();
+
+// ---------------------------------------------------------------- tiles
+function levelForScale() {
+  return clamp(Math.round(-Math.log2(state.scale)), 0, state.maxLevel);
+}
+function tileKey(L, tx, ty) { return L + ":" + tx + ":" + ty; }
+function cacheGet(k) {
+  if (!cache.has(k)) return null;
+  const v = cache.get(k);
+  cache.delete(k);
+  cache.set(k, v);
+  return v.canvas;
+}
+function cacheSet(k, canvas) {
+  cache.delete(k);
+  cache.set(k, { canvas });
+  while (cache.size > CACHE_MAX) {
+    cache.delete(cache.keys().next().value);
+  }
+}
+function bestTile(L, tx, ty) {
+  for (let k = L; k >= 0; k--) {
+    const s = L - k;
+    const c = cacheGet(tileKey(k, tx >> s, ty >> s));
+    if (c) return c;
+  }
+  return null;
+}
+async function generateTile(L, tx, ty) {
+  const p = Math.pow(2, L);
+  const sx = tx * TILE * p;
+  const sy = ty * TILE * p;
+  const sw = Math.min(TILE * p, state.iw - sx);
+  const sh = Math.min(TILE * p, state.ih - sy);
+  const c = new OffscreenCanvas(TILE, TILE);
+  const tctx = c.getContext("2d");
+  tctx.imageSmoothingEnabled = true;
+  tctx.imageSmoothingQuality = "high";
+  tctx.drawImage(state.img, sx, sy, sw, sh, 0, 0, TILE, TILE);
+  cacheSet(tileKey(L, tx, ty), c);
+}
+function scheduleGenerate() {
+  if (genRunning) return;
+  genRunning = true;
+  (async () => {
+    while (pending.size) {
+      const k = pending.values().next().value;
+      pending.delete(k);
+      await new Promise((r) => setTimeout(r, 0));
+      const [L, tx, ty] = k.split(":").map(Number);
+      try { await generateTile(L, tx, ty); } catch (e) { status("Tile error: " + e.message); }
+      requestRender();
+    }
+    genRunning = false;
+  })();
+}
+
+// -------------------------------------------------------------- render
+function render() {
+  needRender = false;
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  if (!vpw || !vph) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#808080";
+  ctx.fillRect(0, 0, vpw, vph);
+  if (!state.img) return;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  const L = levelForScale();
+  const tileW = TILE * Math.pow(2, L);
+  const sc = state.scale;
+  const x0 = (0 - state.vx) / sc, y0 = (0 - state.vy) / sc;
+  const x1 = (vpw - state.vx) / sc, y1 = (vph - state.vy) / sc;
+  const tx0 = Math.max(0, Math.floor(x0 / tileW));
+  const ty0 = Math.max(0, Math.floor(y0 / tileW));
+  const tx1 = Math.min(Math.ceil(state.iw / tileW) - 1, Math.floor(x1 / tileW));
+  const ty1 = Math.min(Math.ceil(state.ih / tileW) - 1, Math.floor(y1 / tileW));
+
+  for (let tx = tx0; tx <= tx1; tx++) {
+    for (let ty = ty0; ty <= ty1; ty++) {
+      const dx = state.vx + tx * tileW * sc;
+      const dy = state.vy + ty * tileW * sc;
+      const dw = tileW * sc, dh = tileW * sc;
+      const best = bestTile(L, tx, ty);
+      if (best) {
+        ctx.drawImage(best, dx, dy, dw, dh);
+      } else {
+        pending.add(tileKey(L, tx, ty));
+      }
+    }
+  }
+  scheduleGenerate();
+  drawBoxes();
+  els.zoom.textContent = (state.scale * 100).toFixed(0) + "%";
+  if (state.sel !== null && state.boxes[state.sel]) {
+    const b = state.boxes[state.sel];
+    status(`Selected ${state.sel + 1}/${state.boxes.length}  ${Math.round(b.x1 - b.x0)}×${Math.round(b.y1 - b.y0)}px  rot ${b.rot}°`);
+  }
+}
+
+function devToWorld(mx, my) {
+  return [(mx - state.vx) / state.scale, (my - state.vy) / state.scale];
+}
+function worldToDev(wx, wy) {
+  return [state.vx + wx * state.scale, state.vy + wy * state.scale];
+}
+
+function drawBoxes() {
+  for (let i = 0; i < state.boxes.length; i++) {
+    const b = state.boxes[i];
+    const [dx0, dy0] = worldToDev(b.x0, b.y0);
+    const [dx1, dy1] = worldToDev(b.x1, b.y1);
+    const sel = i === state.sel;
+    ctx.strokeStyle = sel ? getComputedStyle(document.documentElement).getPropertyValue("--sel").trim() : "#e03030";
+    ctx.lineWidth = sel ? 2.5 : 1.5;
+    ctx.fillStyle = sel ? "rgba(28,167,232,0.10)" : "rgba(224,48,48,0.05)";
+    ctx.fillRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
+    ctx.strokeRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
+    const name = (b.name && b.name.trim()) || ("photo-" + (i + 1));
+    ctx.font = "600 12px system-ui, sans-serif";
+    ctx.fillStyle = sel ? "#1ca7e8" : "#e03030";
+    const lbl = `${i + 1}: ${name}`;
+    ctx.textBaseline = "bottom";
+    ctx.fillText(lbl, dx0 + 4, dy0 - 3);
+    if (sel) {
+      const [cx, cy] = worldToDev((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+      const w = dx1 - dx0, h = dy1 - dy0;
+      const a = rad(b.rot);
+      const len = h / 2 + ROT_OFF;
+      const hx = cx + len * Math.sin(a);
+      const hy = cy - len * Math.cos(a);
+      ctx.strokeStyle = "#1ca7e8";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - h / 2);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+      drawHandle(hx, hy, "#1ca7e8");
+      const spots = corners();
+      spots.forEach((p) => drawHandle(p[0], p[1], "#1ca7e8"));
+    }
+  }
+}
+function drawHandle(x, y, col) {
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.rect(x - HANDLE / 2, y - HANDLE / 2, HANDLE, HANDLE);
+  ctx.fill();
+  ctx.stroke();
+}
+function corners() {
+  const b = state.boxes[state.sel];
+  const [dx0, dy0] = worldToDev(b.x0, b.y0);
+  const [dx1, dy1] = worldToDev(b.x1, b.y1);
+  return [[dx0, dy0], [dx1, dy0], [dx1, dy1], [dx0, dy1],
+          [(dx0 + dx1) / 2, dy0], [(dx0 + dx1) / 2, dy1],
+          [dx0, (dy0 + dy1) / 2], [dx1, (dy0 + dy1) / 2]];
+}
+
+// ---------------------------------------------------------- interaction
+function handleSpots() {
+  const b = state.boxes[state.sel];
+  const [cx, cy] = worldToDev((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+  const w = (b.x1 - b.x0) * state.scale, h = (b.y1 - b.y0) * state.scale;
+  const a = rad(b.rot);
+  const spots = [
+    [cx - w / 2, cy - h / 2], [cx + w / 2, cy - h / 2], [cx + w / 2, cy + h / 2], [cx - w / 2, cy + h / 2],
+    [cx, cy - h / 2], [cx, cy + h / 2], [cx - w / 2, cy], [cx + w / 2, cy],
+  ];
+  const len = h / 2 + ROT_OFF;
+  spots.push([cx + len * Math.sin(a), cy - len * Math.cos(a)]);
+  return spots;
+}
+function hitTest(mx, my) {
+  if (state.sel !== null && state.boxes[state.sel]) {
+    const spots = handleSpots();
+    for (let i = spots.length - 1; i >= 0; i--) {
+      if (Math.abs(mx - spots[i][0]) <= HANDLE / 2 && Math.abs(my - spots[i][1]) <= HANDLE / 2) {
+        return i === 8 ? { kind: "rotate" } : { kind: "resize", idx: i };
+      }
+    }
+  }
+  const [wx, wy] = devToWorld(mx, my);
+  for (let i = state.boxes.length - 1; i >= 0; i--) {
+    const b = state.boxes[i];
+    if (wx >= b.x0 && wx <= b.x1 && wy >= b.y0 && wy <= b.y1) {
+      return { kind: "box", i };
+    }
+  }
+  return null;
+}
+
+cv.addEventListener("pointerdown", (e) => {
+  if (!state.img) return;
+  try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const [wx, wy] = devToWorld(mx, my);
+  if (e.ctrlKey || e.button === 1) {
+    state.mode = "pan";
+    state.drag = { x: e.clientX, y: e.clientY, vx: state.vx, vy: state.vy };
+    return;
+  }
+  const hit = hitTest(mx, my);
+  if (hit && hit.kind === "rotate") {
+    state.mode = "rotate";
+    state.drag = { i: state.sel, rot: state.boxes[state.sel].rot };
+  } else if (hit && hit.kind === "resize") {
+    state.mode = "resize";
+    const b = state.boxes[state.sel];
+    state.drag = { i: state.sel, idx: hit.idx, b: { ...b } };
+  } else if (hit && hit.kind === "box") {
+    state.sel = hit.i;
+    state.mode = "move";
+    const b = state.boxes[hit.i];
+    state.drag = { i: hit.i, x: wx, y: wy, b: { ...b } };
+    refreshList();
+    requestRender();
+  } else {
+    state.sel = null;
+    state.mode = "draw";
+    state.boxes.push({ x0: wx, y0: wy, x1: wx, y1: wy, rot: 0, name: "", include: true });
+    state.sel = state.boxes.length - 1;
+    state.drag = { sx: wx, sy: wy };
+    refreshList();
+    requestRender();
+  }
+});
+
+cv.addEventListener("pointermove", (e) => {
+  if (!state.mode) return;
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const [wx, wy] = devToWorld(mx, my);
+  if (state.mode === "pan") {
+    state.vx = state.drag.vx + (e.clientX - state.drag.x);
+    state.vy = state.drag.vy + (e.clientY - state.drag.y);
+    requestRender();
+    return;
+  }
+  if (state.mode === "draw") {
+    const d = state.drag;
+    const b = state.boxes[state.sel];
+    if (!b) return;
+    b.x0 = clamp(Math.min(d.sx, wx), 0, state.iw);
+    b.y0 = clamp(Math.min(d.sy, wy), 0, state.ih);
+    b.x1 = clamp(Math.max(d.sx, wx), 0, state.iw);
+    b.y1 = clamp(Math.max(d.sy, wy), 0, state.ih);
+    requestRender();
+    return;
+  }
+  const b = state.boxes[state.drag.i];
+  if (!b) return;
+  if (state.mode === "move") {
+    const d = state.drag;
+    const dx = wx - d.x, dy = wy - d.y;
+    let x0 = d.b.x0 + dx, y0 = d.b.y0 + dy, x1 = d.b.x1 + dx, y1 = d.b.y1 + dy;
+    if (x0 < 0) { x1 -= x0; x0 = 0; }
+    if (y0 < 0) { y1 -= y0; y0 = 0; }
+    if (x1 > state.iw) { x0 -= x1 - state.iw; x1 = state.iw; }
+    if (y1 > state.ih) { y0 -= y1 - state.ih; y1 = state.ih; }
+    b.x0 = x0; b.y0 = y0; b.x1 = x1; b.y1 = y1;
+    requestRender();
+  } else if (state.mode === "resize") {
+    const d = state.drag, idx = d.idx;
+    let x0 = d.b.x0, y0 = d.b.y0, x1 = d.b.x1, y1 = d.b.y1;
+    if (idx === 0 || idx === 3 || idx === 6) x0 = clamp(Math.min(wx, x1 - MIN_SZ), 0, x1 - MIN_SZ);
+    if (idx === 1 || idx === 2 || idx === 7) x1 = clamp(Math.max(wx, x0 + MIN_SZ), x0 + MIN_SZ, state.iw);
+    if (idx === 0 || idx === 1 || idx === 4) y0 = clamp(Math.min(wy, y1 - MIN_SZ), 0, y1 - MIN_SZ);
+    if (idx === 2 || idx === 3 || idx === 5) y1 = clamp(Math.max(wy, y0 + MIN_SZ), y0 + MIN_SZ, state.ih);
+    b.x0 = x0; b.y0 = y0; b.x1 = x1; b.y1 = y1;
+    requestRender();
+  } else if (state.mode === "rotate") {
+    const cb = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    let rot = Math.atan2(wx - cb, -(wy - cy)) * 180 / Math.PI;
+    rot = ((rot % 360) + 360) % 360;
+    b.rot = Math.round(rot);
+    requestRender();
+  }
+  thumbDirty.add(state.drag.i);
+  requestThumbs();
+});
+
+cv.addEventListener("pointerup", (e) => {
+  if (!state.mode) return;
+  if (state.mode === "draw") {
+    const b = state.boxes[state.sel];
+    if (b && (b.x1 - b.x0 < MIN_SZ || b.y1 - b.y0 < MIN_SZ)) {
+      state.boxes.splice(state.sel, 1);
+      state.sel = state.boxes.length ? Math.min(state.sel, state.boxes.length - 1) : null;
+    }
+    refreshList();
+  }
+  state.mode = null;
+  state.drag = null;
+  requestRender();
+});
+
+cv.addEventListener("wheel", (e) => {
+  if (!state.img) return;
+  e.preventDefault();
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const f = Math.exp(-e.deltaY * 0.0012);
+  const ns = clamp(state.scale * f, state.fitScale, 1);
+  const wx = (mx - state.vx) / state.scale;
+  const wy = (my - state.vy) / state.scale;
+  state.vx = mx - wx * ns;
+  state.vy = my - wy * ns;
+  state.scale = ns;
+  requestRender();
+}, { passive: false });
+
+cv.addEventListener("contextmenu", (e) => e.preventDefault());
+
+window.addEventListener("keydown", (e) => {
+  if (!state.img) return;
+  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA")) return;
+  if (e.key === "Delete" || e.key === "Backspace") {
+    deleteSelected();
+  } else if (e.key === "Escape") {
+    state.sel = null;
+    refreshList();
+    requestRender();
+  }
+});
+
+function deleteSelected() {
+  if (state.sel === null) return;
+  state.boxes.splice(state.sel, 1);
+  state.sel = state.boxes.length ? Math.min(state.sel, state.boxes.length - 1) : null;
+  refreshList();
+  requestRender();
+}
+
+// ----------------------------------------------------------- auto-detect
+els.detect.addEventListener("click", autoDetect);
+els.clear.addEventListener("click", () => {
+  state.boxes = [];
+  state.sel = null;
+  refreshList();
+  requestRender();
+  status("Cleared all boxes.");
+});
+
+async function autoDetect() {
+  if (!state.img) return;
+  status("Detecting photos…");
+  const max = Math.max(state.iw, state.ih);
+  const scale = DETECT_MAX / max;
+  const dw = Math.max(1, Math.round(state.iw * scale));
+  const dh = Math.max(1, Math.round(state.ih * scale));
+  const overview = await createImageBitmap(state.img, { resizeWidth: dw, resizeHeight: dh });
+  const oc = new OffscreenCanvas(dw, dh);
+  const octx = oc.getContext("2d");
+  octx.drawImage(overview, 0, 0);
+  overview.close();
+  const data = octx.getImageData(0, 0, dw, dh).data;
+
+  const mask = new Uint8Array(dw * dh);
+  for (let i = 0, j = 0; i < mask.length; i++, j += 4) {
+    const lum = data[j] * 0.299 + data[j + 1] * 0.587 + data[j + 2] * 0.114;
+    mask[i] = lum < THRESH ? 1 : 0;
+  }
+  erode(mask, dw, dh);
+  dilate(mask, dw, dh);
+
+  const labels = new Int32Array(dw * dh).fill(-1);
+  const comps = [];
+  let stack = [];
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] && labels[i] < 0) {
+      const id = comps.length;
+      let minX = dw, minY = dh, maxX = -1, maxY = -1, area = 0;
+      stack = [i];
+      labels[i] = id;
+      while (stack.length) {
+        const p = stack.pop();
+        area++;
+        const x = p % dw, y = (p / dw) | 0;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        const n = y > 0 ? p - dw : -1;
+        const s = y < dh - 1 ? p + dw : -1;
+        const w = x > 0 ? p - 1 : -1;
+        const e = x < dw - 1 ? p + 1 : -1;
+        for (const q of [n, s, w, e]) {
+          if (q >= 0 && mask[q] && labels[q] < 0) { labels[q] = id; stack.push(q); }
+        }
+      }
+      comps.push({ minX, minY, maxX, maxY, area });
+    }
+  }
+
+  const total = dw * dh;
+  const minArea = Math.max(30, MIN_AREA_FRAC * total);
+  const minSide = MIN_SIDE_FRAC * Math.min(dw, dh);
+  let sel = comps.filter((c) => c.area >= minArea && Math.min(c.maxX - c.minX, c.maxY - c.minY) >= minSide);
+
+  const gap = MERGE_GAP_FRAC * Math.min(dw, dh);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    outer:
+    for (let i = 0; i < sel.length; i++) {
+      for (let j = i + 1; j < sel.length; j++) {
+        const a = sel[i], b = sel[j];
+        if (a.minX - gap <= b.maxX && b.minX - gap <= a.maxX &&
+            a.minY - gap <= b.maxY && b.minY - gap <= a.maxY) {
+          a.minX = Math.min(a.minX, b.minX);
+          a.minY = Math.min(a.minY, b.minY);
+          a.maxX = Math.max(a.maxX, b.maxX);
+          a.maxY = Math.max(a.maxY, b.maxY);
+          sel.splice(j, 1);
+          changed = true;
+          break outer;
+        }
+      }
+    }
+  }
+
+  const fx = state.iw / dw, fy = state.ih / dh;
+  state.boxes = [];
+  for (const c of sel) {
+    const bw = (c.maxX - c.minX + 1) * fx;
+    const bh = (c.maxY - c.minY + 1) * fy;
+    const mx = MARGIN_FRAC * bw, my = MARGIN_FRAC * bh;
+    state.boxes.push({
+      x0: clamp(Math.round(c.minX * fx - mx), 0, state.iw),
+      y0: clamp(Math.round(c.minY * fy - my), 0, state.ih),
+      x1: clamp(Math.round((c.maxX + 1) * fx + mx), 0, state.iw),
+      y1: clamp(Math.round((c.maxY + 1) * fy + my), 0, state.ih),
+      rot: 0, name: "", include: true,
+    });
+  }
+  state.sel = state.boxes.length ? 0 : null;
+  refreshList();
+  requestRender();
+  status(`Detected ${state.boxes.length} photo(s). Adjust the boxes or draw your own.`);
+}
+
+function erode(mask, w, h) {
+  const out = new Uint8Array(mask);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (mask[i] && !(mask[i - 1] && mask[i + 1] && mask[i - w] && mask[i + w])) out[i] = 0;
+    }
+  }
+  mask.set(out);
+}
+function dilate(mask, w, h) {
+  const out = new Uint8Array(mask);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (!mask[i] && (mask[i - 1] || mask[i + 1] || mask[i - w] || mask[i + w])) out[i] = 1;
+    }
+  }
+  mask.set(out);
+}
+
+// ---------------------------------------------------------------- list
+function refreshList() {
+  els.list.textContent = "";
+  items = [];
+  if (!state.boxes.length) {
+    const d = document.createElement("div");
+    d.className = "empty-hint";
+    d.textContent = "No crops yet. Draw a box on the scan or use Auto-detect.";
+    els.list.appendChild(d);
+    return;
+  }
+  state.boxes.forEach((b, i) => {
+    const item = document.createElement("div");
+    item.className = "item" + (i === state.sel ? " sel" : "") + (b.include ? "" : " excluded");
+
+    const top = document.createElement("div");
+    top.className = "item-top";
+    const thumb = document.createElement("canvas");
+    thumb.width = 132;
+    thumb.height = 132;
+    const info = document.createElement("div");
+    info.className = "item-info";
+
+    const name = document.createElement("input");
+    name.type = "text";
+    name.value = b.name;
+    name.placeholder = "photo-" + (i + 1);
+    name.title = "Output filename";
+    name.addEventListener("input", () => {
+      b.name = name.value;
+      requestRender();
+    });
+    name.addEventListener("click", (e) => e.stopPropagation());
+
+    const rotRow = document.createElement("div");
+    rotRow.className = "rot-row";
+    const rotLbl = document.createElement("span");
+    rotLbl.textContent = `Rotation: ${b.rot}°`;
+    const rotActs = document.createElement("span");
+    rotActs.className = "rot-actions";
+    const mk = (txt, fn) => {
+      const btn = document.createElement("button");
+      btn.textContent = txt;
+      btn.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
+      return btn;
+    };
+    rotActs.appendChild(mk("↺ 90°", () => { b.rot = (b.rot - 90 + 360) % 360; updateThumb(i); rotLbl.textContent = `Rotation: ${b.rot}°`; requestRender(); }));
+    rotActs.appendChild(mk("180°", () => { b.rot = (b.rot + 180) % 360; updateThumb(i); rotLbl.textContent = `Rotation: ${b.rot}°`; requestRender(); }));
+    rotActs.appendChild(mk("↻ 90°", () => { b.rot = (b.rot + 90) % 360; updateThumb(i); rotLbl.textContent = `Rotation: ${b.rot}°`; requestRender(); }));
+    rotRow.appendChild(rotLbl);
+    rotRow.appendChild(rotActs);
+
+    const foot = document.createElement("div");
+    foot.className = "item-foot";
+    const inclLbl = document.createElement("label");
+    const incl = document.createElement("input");
+    incl.type = "checkbox";
+    incl.checked = b.include;
+    incl.addEventListener("change", () => {
+      b.include = incl.checked;
+      item.classList.toggle("excluded", !b.include);
+    });
+    incl.addEventListener("click", (e) => e.stopPropagation());
+    inclLbl.appendChild(incl);
+    inclLbl.appendChild(document.createTextNode(" Include"));
+    const del = document.createElement("button");
+    del.textContent = "Delete";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.boxes.splice(i, 1);
+      state.sel = state.boxes.length ? Math.min(state.sel ?? 0, state.boxes.length - 1) : null;
+      refreshList();
+      requestRender();
+    });
+    foot.appendChild(inclLbl);
+    foot.appendChild(del);
+
+    info.appendChild(name);
+    info.appendChild(rotRow);
+    info.appendChild(foot);
+    top.appendChild(thumb);
+    top.appendChild(info);
+
+    item.addEventListener("click", () => {
+      state.sel = i;
+      refreshList();
+      requestRender();
+    });
+
+    item.appendChild(top);
+    els.list.appendChild(item);
+    items.push({ item, thumb, rotLbl, b, i });
+  });
+  items.forEach((it) => thumbDirty.add(it.i));
+  requestThumbs();
+}
+
+function requestThumbs() {
+  if (thumbDirty.size) requestAnimationFrame(paintThumbs);
+}
+let paintingThumbs = false;
+function paintThumbs() {
+  if (paintingThumbs) return;
+  paintingThumbs = true;
+  const todo = [...thumbDirty];
+  thumbDirty.clear();
+  todo.forEach((i) => updateThumb(i));
+  paintingThumbs = false;
+}
+function updateThumb(i) {
+  const it = items[i];
+  if (!it) return;
+  const b = state.boxes[i];
+  if (!b) return;
+  const w = b.x1 - b.x0, h = b.y1 - b.y0;
+  const tctx = it.thumb.getContext("2d");
+  const TW = it.thumb.width, TH = it.thumb.height;
+  tctx.clearRect(0, 0, TW, TH);
+  if (!w || !h) return;
+  const a = rad(b.rot);
+  const cw = Math.abs(w * Math.cos(a)) + Math.abs(h * Math.sin(a));
+  const ch = Math.abs(w * Math.sin(a)) + Math.abs(h * Math.cos(a));
+  const s = Math.min(TW / cw, TH / ch) * 0.92;
+  tctx.fillStyle = "#ffffff";
+  tctx.fillRect(0, 0, TW, TH);
+  tctx.save();
+  tctx.translate(TW / 2, TH / 2);
+  tctx.scale(s, s);
+  tctx.rotate(a);
+  tctx.imageSmoothingEnabled = true;
+  tctx.imageSmoothingQuality = "high";
+  tctx.drawImage(state.img, b.x0, b.y0, w, h, -w / 2, -h / 2, w, h);
+  tctx.restore();
+}
+
+// ---------------------------------------------------------------- export
+els.quality.addEventListener("input", () => {
+  els.qval.textContent = els.quality.value;
+});
+
+function sanitizeName(s) {
+  return (s || "").replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim().slice(0, 120);
+}
+function uniqueName(used, base, ext) {
+  let n = 1;
+  let name = (base || "photo") + ext;
+  while (used.has(name)) {
+    n++;
+    name = `${base || "photo"}-${n}${ext}`;
+  }
+  used.add(name);
+  return name;
+}
+
+els.export.addEventListener("click", exportAll);
+
+async function cropToBlob(b, fmt, quality) {
+  const w = b.x1 - b.x0, h = b.y1 - b.y0;
+  const a = rad(b.rot);
+  const W = Math.max(1, Math.round(Math.abs(w * Math.cos(a)) + Math.abs(h * Math.sin(a))));
+  const H = Math.max(1, Math.round(Math.abs(w * Math.sin(a)) + Math.abs(h * Math.cos(a))));
+  const c = new OffscreenCanvas(W, H);
+  const cctx = c.getContext("2d");
+  cctx.fillStyle = "#ffffff";
+  cctx.fillRect(0, 0, W, H);
+  cctx.imageSmoothingEnabled = true;
+  cctx.imageSmoothingQuality = "high";
+  cctx.translate(W / 2, H / 2);
+  cctx.rotate(a);
+  cctx.drawImage(state.img, b.x0, b.y0, w, h, -w / 2, -h / 2, w, h);
+  if (fmt === "jpeg") {
+    return await c.convertToBlob({ type: "image/jpeg", quality });
+  }
+  return await c.convertToBlob({ type: "image/png" });
+}
+
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function exportAll() {
+  const inc = state.boxes.map((b, i) => ({ b, i })).filter((x) => x.b.include);
+  if (!inc.length) {
+    status("Nothing to export — no boxes are marked as included.");
+    return;
+  }
+  const fmt = els.fmt.value;
+  const quality = parseInt(els.quality.value, 10) / 100;
+  const ext = fmt === "jpeg" ? ".jpg" : ".png";
+
+  let dir = null;
+  if (window.showDirectoryPicker) {
+    try { dir = await window.showDirectoryPicker(); }
+    catch (e) { status("Export cancelled."); return; }
+  }
+
+  const used = new Set();
+  let done = 0;
+  els.export.disabled = true;
+  status(`Exporting 0/${inc.length}…`);
+  try {
+    for (const { b, i } of inc) {
+      const base = sanitizeName(b.name);
+      const name = uniqueName(used, base, ext);
+      const blob = await cropToBlob(b, fmt, quality);
+      if (dir) {
+        const fh = await dir.getFileHandle(name, { create: true });
+        const wr = await fh.createWritable();
+        await wr.write(blob);
+        await wr.close();
+      } else {
+        downloadBlob(blob, name);
+      }
+      done++;
+      status(`Exporting ${done}/${inc.length}…`);
+    }
+      status(dir ? `Exported ${done} file(s) to the chosen folder.` : `Exported ${done} file(s) as downloads.`);
+  } catch (e) {
+    status("Export failed: " + e.message);
+  } finally {
+    els.export.disabled = false;
+  }
+}
+
+})();
+</script>
+</body>
+</html>
