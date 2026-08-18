@@ -26,7 +26,9 @@ viewing/editing (canvas capped at 16384px per side); export falls back to standa
 1. **Open** — drag & drop a scan onto the window, or click *Open image…*.
 2. **Zoom / pan** — mouse wheel zooms (anchored at the cursor); Ctrl+drag pans.
 3. **Boxes** — drag empty canvas to draw a box; click to select; drag inside to move; drag
-   the 8 handles to resize; drag the rotation handle (or use the list buttons) to rotate;
+   the 8 handles to resize; drag the rotation handle (or use the list buttons) to rotate the
+   rectangle over the source image; the crop's short/long dimensions stay unchanged while
+   the image underneath is re-oriented to the rectangle before export;
    `Del`/`Backspace` deletes the selected box. *Auto-detect* proposes boxes for photos on a
    white scanner bed.
 4. **Name & preview** — each box appears in the right-hand list with a live thumbnail and a

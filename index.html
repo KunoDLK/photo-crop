@@ -501,7 +501,7 @@ function render() {
   els.zoom.textContent = (state.scale * 100).toFixed(0) + "%";
   if (state.sel !== null && state.boxes[state.sel]) {
     const b = state.boxes[state.sel];
-    status(`Selected ${state.sel + 1}/${state.boxes.length}  ${Math.round(b.x1 - b.x0)}×${Math.round(b.y1 - b.y0)}px  rot ${b.rot}°`);
+    status(`Selected ${state.sel + 1}/${state.boxes.length}  ${Math.round(b.w)}×${Math.round(b.h)}px  rot ${b.rot}°`);
   }
 }
 
@@ -512,39 +512,67 @@ function worldToDev(wx, wy) {
   return [state.vx + wx * state.scale, state.vy + wy * state.scale];
 }
 
+function boxLocalToWorld(b, lx, ly) {
+  const a = rad(b.rot);
+  return [b.cx + lx * Math.cos(a) - ly * Math.sin(a), b.cy + lx * Math.sin(a) + ly * Math.cos(a)];
+}
+function boxWorldToLocal(b, wx, wy) {
+  const a = rad(b.rot);
+  const rx = wx - b.cx, ry = wy - b.cy;
+  return [rx * Math.cos(a) + ry * Math.sin(a), -rx * Math.sin(a) + ry * Math.cos(a)];
+}
+function boxClampCenter(b) {
+  const a = rad(b.rot);
+  const hw = b.w / 2, hh = b.h / 2;
+  const cos = Math.cos(a), sin = Math.sin(a);
+  let minOx = 1e9, maxOx = -1e9, minOy = 1e9, maxOy = -1e9;
+  for (const [lx, ly] of [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]) {
+    const ox = lx * cos - ly * sin;
+    const oy = lx * sin + ly * cos;
+    minOx = Math.min(minOx, ox); maxOx = Math.max(maxOx, ox);
+    minOy = Math.min(minOy, oy); maxOy = Math.max(maxOy, oy);
+  }
+  b.cx = clamp(b.cx, -minOx, state.iw - maxOx);
+  b.cy = clamp(b.cy, -minOy, state.ih - maxOy);
+}
+
 function drawBoxes() {
   for (let i = 0; i < state.boxes.length; i++) {
     const b = state.boxes[i];
-    const [dx0, dy0] = worldToDev(b.x0, b.y0);
-    const [dx1, dy1] = worldToDev(b.x1, b.y1);
     const sel = i === state.sel;
+    const [dx, dy] = worldToDev(b.cx, b.cy);
+    const w = b.w * state.scale, h = b.h * state.scale;
+    const a = rad(b.rot);
+    ctx.save();
+    ctx.translate(dx, dy);
+    ctx.rotate(a);
     ctx.strokeStyle = sel ? getComputedStyle(document.documentElement).getPropertyValue("--sel").trim() : "#e03030";
     ctx.lineWidth = sel ? 2.5 : 1.5;
     ctx.fillStyle = sel ? "rgba(28,167,232,0.10)" : "rgba(224,48,48,0.05)";
-    ctx.fillRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
-    ctx.strokeRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
+    ctx.fillRect(-w / 2, -h / 2, w, h);
+    ctx.strokeRect(-w / 2, -h / 2, w, h);
+    ctx.restore();
+    const [lwx, lwy] = boxLocalToWorld(b, 0, -b.h / 2);
+    const [ldx, ldy] = worldToDev(lwx, lwy);
     const name = (b.name && b.name.trim()) || ("photo-" + (i + 1));
     ctx.font = "600 12px system-ui, sans-serif";
     ctx.fillStyle = sel ? "#1ca7e8" : "#e03030";
-    const lbl = `${i + 1}: ${name}`;
     ctx.textBaseline = "bottom";
-    ctx.fillText(lbl, dx0 + 4, dy0 - 3);
+    ctx.fillText(`${i + 1}: ${name}`, ldx + 4, ldy - 3);
     if (sel) {
-      const [cx, cy] = worldToDev((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
-      const w = dx1 - dx0, h = dy1 - dy0;
-      const a = rad(b.rot);
       const len = h / 2 + ROT_OFF;
-      const hx = cx + len * Math.sin(a);
-      const hy = cy - len * Math.cos(a);
+      const hx = dx + len * Math.sin(a);
+      const hy = dy - len * Math.cos(a);
+      const tx = dx + (h / 2) * Math.sin(a);
+      const ty = dy - (h / 2) * Math.cos(a);
       ctx.strokeStyle = "#1ca7e8";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(cx, cy - h / 2);
+      ctx.moveTo(tx, ty);
       ctx.lineTo(hx, hy);
       ctx.stroke();
       drawHandle(hx, hy, "#1ca7e8");
-      const spots = corners();
-      spots.forEach((p) => drawHandle(p[0], p[1], "#1ca7e8"));
+      boxSpotsDev().forEach((p) => drawHandle(p[0], p[1], "#1ca7e8"));
     }
   }
 }
@@ -557,27 +585,26 @@ function drawHandle(x, y, col) {
   ctx.fill();
   ctx.stroke();
 }
-function corners() {
+function boxSpotsDev() {
   const b = state.boxes[state.sel];
-  const [dx0, dy0] = worldToDev(b.x0, b.y0);
-  const [dx1, dy1] = worldToDev(b.x1, b.y1);
-  return [[dx0, dy0], [dx1, dy0], [dx1, dy1], [dx0, dy1],
-          [(dx0 + dx1) / 2, dy0], [(dx0 + dx1) / 2, dy1],
-          [dx0, (dy0 + dy1) / 2], [dx1, (dy0 + dy1) / 2]];
+  const [dx, dy] = worldToDev(b.cx, b.cy);
+  const w = b.w * state.scale, h = b.h * state.scale;
+  const a = rad(b.rot);
+  const cos = Math.cos(a), sin = Math.sin(a);
+  return [
+    [-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2],
+    [0, -h / 2], [0, h / 2], [-w / 2, 0], [w / 2, 0],
+  ].map((p) => [dx + p[0] * cos - p[1] * sin, dy + p[0] * sin + p[1] * cos]);
 }
 
 // ---------------------------------------------------------- interaction
 function handleSpots() {
+  const spots = boxSpotsDev();
   const b = state.boxes[state.sel];
-  const [cx, cy] = worldToDev((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
-  const w = (b.x1 - b.x0) * state.scale, h = (b.y1 - b.y0) * state.scale;
+  const [dx, dy] = worldToDev(b.cx, b.cy);
+  const h = b.h * state.scale;
   const a = rad(b.rot);
-  const spots = [
-    [cx - w / 2, cy - h / 2], [cx + w / 2, cy - h / 2], [cx + w / 2, cy + h / 2], [cx - w / 2, cy + h / 2],
-    [cx, cy - h / 2], [cx, cy + h / 2], [cx - w / 2, cy], [cx + w / 2, cy],
-  ];
-  const len = h / 2 + ROT_OFF;
-  spots.push([cx + len * Math.sin(a), cy - len * Math.cos(a)]);
+  spots.push([dx + (h / 2 + ROT_OFF) * Math.sin(a), dy - (h / 2 + ROT_OFF) * Math.cos(a)]);
   return spots;
 }
 function hitTest(mx, my) {
@@ -592,7 +619,8 @@ function hitTest(mx, my) {
   const [wx, wy] = devToWorld(mx, my);
   for (let i = state.boxes.length - 1; i >= 0; i--) {
     const b = state.boxes[i];
-    if (wx >= b.x0 && wx <= b.x1 && wy >= b.y0 && wy <= b.y1) {
+    const [lx, ly] = boxWorldToLocal(b, wx, wy);
+    if (Math.abs(lx) <= b.w / 2 && Math.abs(ly) <= b.h / 2) {
       return { kind: "box", i };
     }
   }
@@ -628,7 +656,7 @@ cv.addEventListener("pointerdown", (e) => {
   } else {
     state.sel = null;
     state.mode = "draw";
-    state.boxes.push({ x0: wx, y0: wy, x1: wx, y1: wy, rot: 0, name: "", include: true });
+    state.boxes.push({ cx: wx, cy: wy, w: 0, h: 0, rot: 0, name: "", include: true });
     state.sel = state.boxes.length - 1;
     state.drag = { sx: wx, sy: wy };
     refreshList();
@@ -651,10 +679,10 @@ cv.addEventListener("pointermove", (e) => {
     const d = state.drag;
     const b = state.boxes[state.sel];
     if (!b) return;
-    b.x0 = clamp(Math.min(d.sx, wx), 0, state.iw);
-    b.y0 = clamp(Math.min(d.sy, wy), 0, state.ih);
-    b.x1 = clamp(Math.max(d.sx, wx), 0, state.iw);
-    b.y1 = clamp(Math.max(d.sy, wy), 0, state.ih);
+    b.cx = clamp((d.sx + wx) / 2, 0, state.iw);
+    b.cy = clamp((d.sy + wy) / 2, 0, state.ih);
+    b.w = Math.abs(wx - d.sx);
+    b.h = Math.abs(wy - d.sy);
     requestRender();
     return;
   }
@@ -662,28 +690,38 @@ cv.addEventListener("pointermove", (e) => {
   if (!b) return;
   if (state.mode === "move") {
     const d = state.drag;
-    const dx = wx - d.x, dy = wy - d.y;
-    let x0 = d.b.x0 + dx, y0 = d.b.y0 + dy, x1 = d.b.x1 + dx, y1 = d.b.y1 + dy;
-    if (x0 < 0) { x1 -= x0; x0 = 0; }
-    if (y0 < 0) { y1 -= y0; y0 = 0; }
-    if (x1 > state.iw) { x0 -= x1 - state.iw; x1 = state.iw; }
-    if (y1 > state.ih) { y0 -= y1 - state.ih; y1 = state.ih; }
-    b.x0 = x0; b.y0 = y0; b.x1 = x1; b.y1 = y1;
+    b.cx = d.b.cx + (wx - d.x);
+    b.cy = d.b.cy + (wy - d.y);
+    boxClampCenter(b);
     requestRender();
   } else if (state.mode === "resize") {
     const d = state.drag, idx = d.idx;
-    let x0 = d.b.x0, y0 = d.b.y0, x1 = d.b.x1, y1 = d.b.y1;
-    if (idx === 0 || idx === 3 || idx === 6) x0 = clamp(Math.min(wx, x1 - MIN_SZ), 0, x1 - MIN_SZ);
-    if (idx === 1 || idx === 2 || idx === 7) x1 = clamp(Math.max(wx, x0 + MIN_SZ), x0 + MIN_SZ, state.iw);
-    if (idx === 0 || idx === 1 || idx === 4) y0 = clamp(Math.min(wy, y1 - MIN_SZ), 0, y1 - MIN_SZ);
-    if (idx === 2 || idx === 3 || idx === 5) y1 = clamp(Math.max(wy, y0 + MIN_SZ), y0 + MIN_SZ, state.ih);
-    b.x0 = x0; b.y0 = y0; b.x1 = x1; b.y1 = y1;
+    const a = rad(d.b.rot);
+    const cos = Math.cos(a), sin = Math.sin(a);
+    const rx = wx - d.b.cx, ry = wy - d.b.cy;
+    const lx = rx * cos + ry * sin;
+    const ly = -rx * sin + ry * cos;
+    let x0l = -d.b.w / 2, x1l = d.b.w / 2, y0l = -d.b.h / 2, y1l = d.b.h / 2;
+    if (idx === 0 || idx === 3 || idx === 6) x0l = Math.min(lx, x1l - MIN_SZ);
+    if (idx === 1 || idx === 2 || idx === 7) x1l = Math.max(lx, x0l + MIN_SZ);
+    if (idx === 0 || idx === 1 || idx === 4) y0l = Math.min(ly, y1l - MIN_SZ);
+    if (idx === 2 || idx === 3 || idx === 5) y1l = Math.max(ly, y0l + MIN_SZ);
+    const newW = x1l - x0l, newH = y1l - y0l;
+    const SX = [1, -1, -1, 1, 0, 0, 1, -1];
+    const SY = [1, 1, -1, -1, 1, -1, 0, 0];
+    const sx = SX[idx], sy = SY[idx];
+    b.rot = d.b.rot;
+    b.w = newW;
+    b.h = newH;
+    b.cx = d.b.cx + sx * ((d.b.w - newW) / 2) * cos - sy * ((d.b.h - newH) / 2) * sin;
+    b.cy = d.b.cy + sx * ((d.b.w - newW) / 2) * sin + sy * ((d.b.h - newH) / 2) * cos;
+    boxClampCenter(b);
     requestRender();
   } else if (state.mode === "rotate") {
-    const cb = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-    let rot = Math.atan2(wx - cb, -(wy - cy)) * 180 / Math.PI;
+    let rot = Math.atan2(wx - b.cx, -(wy - b.cy)) * 180 / Math.PI;
     rot = ((rot % 360) + 360) % 360;
     b.rot = Math.round(rot);
+    boxClampCenter(b);
     requestRender();
   }
   thumbDirty.add(state.drag.i);
@@ -694,7 +732,7 @@ cv.addEventListener("pointerup", (e) => {
   if (!state.mode) return;
   if (state.mode === "draw") {
     const b = state.boxes[state.sel];
-    if (b && (b.x1 - b.x0 < MIN_SZ || b.y1 - b.y0 < MIN_SZ)) {
+    if (b && (b.w < MIN_SZ || b.h < MIN_SZ)) {
       state.boxes.splice(state.sel, 1);
       state.sel = state.boxes.length ? Math.min(state.sel, state.boxes.length - 1) : null;
     }
@@ -836,13 +874,11 @@ async function autoDetect() {
     const bw = (c.maxX - c.minX + 1) * fx;
     const bh = (c.maxY - c.minY + 1) * fy;
     const mx = MARGIN_FRAC * bw, my = MARGIN_FRAC * bh;
-    state.boxes.push({
-      x0: clamp(Math.round(c.minX * fx - mx), 0, state.iw),
-      y0: clamp(Math.round(c.minY * fy - my), 0, state.ih),
-      x1: clamp(Math.round((c.maxX + 1) * fx + mx), 0, state.iw),
-      y1: clamp(Math.round((c.maxY + 1) * fy + my), 0, state.ih),
-      rot: 0, name: "", include: true,
-    });
+    const x0 = clamp(Math.round(c.minX * fx - mx), 0, state.iw);
+    const y0 = clamp(Math.round(c.minY * fy - my), 0, state.ih);
+    const x1 = clamp(Math.round((c.maxX + 1) * fx + mx), 0, state.iw);
+    const y1 = clamp(Math.round((c.maxY + 1) * fy + my), 0, state.ih);
+    state.boxes.push({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0, rot: 0, name: "", include: true });
   }
   state.sel = state.boxes.length ? 0 : null;
   refreshList();
@@ -980,30 +1016,46 @@ function paintThumbs() {
   todo.forEach((i) => updateThumb(i));
   paintingThumbs = false;
 }
+function boxSourceBounds(b) {
+  const points = [
+    boxLocalToWorld(b, -b.w / 2, -b.h / 2),
+    boxLocalToWorld(b, b.w / 2, -b.h / 2),
+    boxLocalToWorld(b, b.w / 2, b.h / 2),
+    boxLocalToWorld(b, -b.w / 2, b.h / 2),
+  ];
+  const sx = clamp(Math.floor(Math.min(...points.map((p) => p[0]))), 0, state.iw);
+  const sy = clamp(Math.floor(Math.min(...points.map((p) => p[1]))), 0, state.ih);
+  const ex = clamp(Math.ceil(Math.max(...points.map((p) => p[0]))), 0, state.iw);
+  const ey = clamp(Math.ceil(Math.max(...points.map((p) => p[1]))), 0, state.ih);
+  return [sx, sy, Math.max(1, ex - sx), Math.max(1, ey - sy)];
+}
+
+function drawBoxCrop(target, b, centerX, centerY, scaleX, scaleY) {
+  const [sx, sy, sw, sh] = boxSourceBounds(b);
+  target.save();
+  target.translate(centerX, centerY);
+  target.scale(scaleX, scaleY);
+  target.rotate(-rad(b.rot));
+  target.translate(-b.cx, -b.cy);
+  target.drawImage(state.img, sx, sy, sw, sh, sx, sy, sw, sh);
+  target.restore();
+}
+
 function updateThumb(i) {
   const it = items[i];
   if (!it) return;
   const b = state.boxes[i];
   if (!b) return;
-  const w = b.x1 - b.x0, h = b.y1 - b.y0;
   const tctx = it.thumb.getContext("2d");
   const TW = it.thumb.width, TH = it.thumb.height;
   tctx.clearRect(0, 0, TW, TH);
-  if (!w || !h) return;
-  const a = rad(b.rot);
-  const cw = Math.abs(w * Math.cos(a)) + Math.abs(h * Math.sin(a));
-  const ch = Math.abs(w * Math.sin(a)) + Math.abs(h * Math.cos(a));
-  const s = Math.min(TW / cw, TH / ch) * 0.92;
+  if (!b.w || !b.h) return;
+  const s = Math.min(TW / b.w, TH / b.h) * 0.92;
   tctx.fillStyle = "#ffffff";
   tctx.fillRect(0, 0, TW, TH);
-  tctx.save();
-  tctx.translate(TW / 2, TH / 2);
-  tctx.scale(s, s);
-  tctx.rotate(a);
   tctx.imageSmoothingEnabled = true;
   tctx.imageSmoothingQuality = "high";
-  tctx.drawImage(state.img, b.x0, b.y0, w, h, -w / 2, -h / 2, w, h);
-  tctx.restore();
+  drawBoxCrop(tctx, b, TW / 2, TH / 2, s, s);
 }
 
 // ---------------------------------------------------------------- export
@@ -1028,19 +1080,14 @@ function uniqueName(used, base, ext) {
 els.export.addEventListener("click", exportAll);
 
 async function cropToBlob(b, fmt, quality) {
-  const w = b.x1 - b.x0, h = b.y1 - b.y0;
-  const a = rad(b.rot);
-  const W = Math.max(1, Math.round(Math.abs(w * Math.cos(a)) + Math.abs(h * Math.sin(a))));
-  const H = Math.max(1, Math.round(Math.abs(w * Math.sin(a)) + Math.abs(h * Math.cos(a))));
-  const c = new OffscreenCanvas(W, H);
+  const w = Math.max(1, Math.round(b.w)), h = Math.max(1, Math.round(b.h));
+  const c = new OffscreenCanvas(w, h);
   const cctx = c.getContext("2d");
   cctx.fillStyle = "#ffffff";
-  cctx.fillRect(0, 0, W, H);
+  cctx.fillRect(0, 0, w, h);
   cctx.imageSmoothingEnabled = true;
   cctx.imageSmoothingQuality = "high";
-  cctx.translate(W / 2, H / 2);
-  cctx.rotate(a);
-  cctx.drawImage(state.img, b.x0, b.y0, w, h, -w / 2, -h / 2, w, h);
+  drawBoxCrop(cctx, b, w / 2, h / 2, w / b.w, h / b.h);
   if (fmt === "jpeg") {
     return await c.convertToBlob({ type: "image/jpeg", quality });
   }

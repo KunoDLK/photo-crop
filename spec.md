@@ -78,7 +78,7 @@ Goal: smooth, map-style zoom/pan at any level, GPU-bound, on images up to browse
 - **Select:** click a box (also selectable from the right list).
 - **Move:** drag inside the selected box.
 - **Resize:** drag the 8 handles (4 corners + 4 edge midpoints).
-- **Rotate:** free-angle. A rotation handle on the selected box (grab and drag around the box centre) plus optional nudge buttons (±90°, fine ±1°). Rotation value shown in list.
+- **Rotate:** free-angle. The rotation changes the orientation of the rectangle on the source image; it does not rotate an axis-aligned crop on a white canvas. A rotation handle on the selected box (grab and drag around the box centre) plus optional nudge buttons (±90°, fine ±1°). Rotation value shown in list.
 - **Delete:** `Del`/`Backspace` key or per-item button.
 - **Minimum size guard** so boxes don't collapse to zero.
 - Boxes drawn as vector overlays on the viewport (crisp at any zoom); the selected box gets handles + rotation handle.
@@ -99,7 +99,7 @@ Pure-JS port of the old `scan_crop.py` detection, run on a ~2000px overview (`ge
 
 - On **Export**:
   1. Re-decode the original Blob into a full-resolution `ImageBitmap` (transient; `close()` after).
-  2. For each included box: draw the crop region at native resolution into an `OffscreenCanvas` at 1:1, apply free rotation (with background fill for non-90° corners), call `convertToBlob` → `image/png` (lossless) or `image/jpeg` with chosen quality.
+  2. For each included box: keep the output dimensions equal to the box's local width and height, inverse-rotate the source image around the box centre, and clip the result to that fixed rectangle. The box's short side remains the output's short side and its long side remains the output's long side at every angle. Call `convertToBlob` → `image/png` (lossless) or `image/jpeg` with chosen quality.
   3. Save all files to the user-chosen folder.
 - **Save dialog:** `showDirectoryPicker()` (File System Access API) to pick a real destination folder and write files directly to disk. Requires a secure context (served over `localhost` or opened via `file://`); on browsers without the API (Firefox/Safari) fall back to standard download prompt(s).
 - Output names come from the per-box name fields; empty names default to `photo-N`; invalid filename characters sanitized; duplicates auto-suffixed.
