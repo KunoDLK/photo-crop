@@ -338,6 +338,10 @@ function requestRender() {
 }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function rad(a) { return a * Math.PI / 180; }
+function fmtDeg(v) {
+  const r = Math.round(v * 100) / 100;
+  return Number.isInteger(r) ? r.toFixed(0) : r.toFixed(2);
+}
 
 function setToolbar(hasImg) {
   els.detect.disabled = !hasImg;
@@ -424,14 +428,6 @@ function cacheSet(k, canvas) {
     cache.delete(cache.keys().next().value);
   }
 }
-function bestTile(L, tx, ty) {
-  for (let k = L; k >= 0; k--) {
-    const s = L - k;
-    const c = cacheGet(tileKey(k, tx >> s, ty >> s));
-    if (c) return { canvas: c, level: k };
-  }
-  return null;
-}
 async function generateTile(L, tx, ty) {
   const p = Math.pow(2, L);
   const sx = tx * TILE * p;
@@ -483,33 +479,49 @@ function render() {
   const tx1 = Math.min(Math.ceil(state.iw / tileW) - 1, Math.floor(x1 / tileW));
   const ty1 = Math.min(Math.ceil(state.ih / tileW) - 1, Math.floor(y1 / tileW));
 
-  for (let tx = tx0; tx <= tx1; tx++) {
-    for (let ty = ty0; ty <= ty1; ty++) {
+  const groups = new Map();
+  const infos = [];
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
       const key = tileKey(L, tx, ty);
       const exact = cacheGet(key);
-      if (exact) {
-        ctx.drawImage(exact,
-          state.vx + tx * tileW * sc, state.vy + ty * tileW * sc, tileW * sc, tileW * sc);
-      } else {
-        const best = bestTile(L, tx, ty);
-        if (best) {
-          const k = best.level;
+      const g = L > 0 ? tileKey(L - 1, tx >> 1, ty >> 1) : key;
+      let grp = groups.get(g);
+      if (!grp) { grp = { total: 0, done: 0, fallback: null, searched: false }; groups.set(g, grp); }
+      grp.total++;
+      if (exact) grp.done++;
+      if (!grp.searched) {
+        grp.searched = true;
+        for (let k = L - 1; k >= 0; k--) {
           const s = L - k;
-          const cxt = tx >> s, cyt = ty >> s;
-          const cw = TILE * Math.pow(2, k);
-          ctx.drawImage(best.canvas,
-            state.vx + cxt * cw * sc, state.vy + cyt * cw * sc, cw * sc, cw * sc);
+          const c = cacheGet(tileKey(k, tx >> s, ty >> s));
+          if (c) { grp.fallback = { canvas: c, level: k }; break; }
         }
-        pending.add(key);
       }
+      infos.push({ tx, ty, key, exact, g });
     }
+  }
+  for (const it of infos) {
+    const grp = groups.get(it.g);
+    if (it.exact && grp.done === grp.total) {
+      ctx.drawImage(it.exact,
+        state.vx + it.tx * tileW * sc, state.vy + it.ty * tileW * sc, tileW * sc, tileW * sc);
+    } else if (grp.fallback) {
+      const k = grp.fallback.level;
+      const s = L - k;
+      const cxt = it.tx >> s, cyt = it.ty >> s;
+      const cw = TILE * Math.pow(2, k);
+      ctx.drawImage(grp.fallback.canvas,
+        state.vx + cxt * cw * sc, state.vy + cyt * cw * sc, cw * sc, cw * sc);
+    }
+    if (!it.exact) pending.add(it.key);
   }
   scheduleGenerate();
   drawBoxes();
   els.zoom.textContent = (state.scale * 100).toFixed(0) + "%";
   if (state.sel !== null && state.boxes[state.sel]) {
     const b = state.boxes[state.sel];
-    status(`Selected ${state.sel + 1}/${state.boxes.length}  ${Math.round(b.w)}×${Math.round(b.h)}px  rot ${b.rot}°`);
+    status(`Selected ${state.sel + 1}/${state.boxes.length}  ${Math.round(b.w)}×${Math.round(b.h)}px  rot ${fmtDeg(b.rot)}°`);
   }
 }
 
@@ -728,7 +740,7 @@ cv.addEventListener("pointermove", (e) => {
   } else if (state.mode === "rotate") {
     let rot = Math.atan2(wx - b.cx, -(wy - b.cy)) * 180 / Math.PI;
     rot = ((rot % 360) + 360) % 360;
-    b.rot = Math.round(rot);
+    b.rot = Math.round(rot * 100) / 100;
     boxClampCenter(b);
     requestRender();
   }
@@ -952,7 +964,8 @@ function refreshList() {
     const rotRow = document.createElement("div");
     rotRow.className = "rot-row";
     const rotLbl = document.createElement("span");
-    rotLbl.textContent = `Rotation: ${b.rot}°`;
+    const updRot = () => { rotLbl.textContent = `Rotation: ${fmtDeg(b.rot)}°`; };
+    updRot();
     const rotActs = document.createElement("span");
     rotActs.className = "rot-actions";
     const mk = (txt, fn) => {
@@ -961,9 +974,11 @@ function refreshList() {
       btn.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
       return btn;
     };
-    rotActs.appendChild(mk("↺ 90°", () => { b.rot = (b.rot - 90 + 360) % 360; updateThumb(i); rotLbl.textContent = `Rotation: ${b.rot}°`; requestRender(); }));
-    rotActs.appendChild(mk("180°", () => { b.rot = (b.rot + 180) % 360; updateThumb(i); rotLbl.textContent = `Rotation: ${b.rot}°`; requestRender(); }));
-    rotActs.appendChild(mk("↻ 90°", () => { b.rot = (b.rot + 90) % 360; updateThumb(i); rotLbl.textContent = `Rotation: ${b.rot}°`; requestRender(); }));
+    rotActs.appendChild(mk("−0.1°", () => { b.rot = (b.rot - 0.1 + 360) % 360; updateThumb(i); updRot(); requestRender(); }));
+    rotActs.appendChild(mk("+0.1°", () => { b.rot = (b.rot + 0.1) % 360; updateThumb(i); updRot(); requestRender(); }));
+    rotActs.appendChild(mk("↺ 90°", () => { b.rot = (b.rot - 90 + 360) % 360; updateThumb(i); updRot(); requestRender(); }));
+    rotActs.appendChild(mk("180°", () => { b.rot = (b.rot + 180) % 360; updateThumb(i); updRot(); requestRender(); }));
+    rotActs.appendChild(mk("↻ 90°", () => { b.rot = (b.rot + 90) % 360; updateThumb(i); updRot(); requestRender(); }));
     rotRow.appendChild(rotLbl);
     rotRow.appendChild(rotActs);
 
