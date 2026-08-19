@@ -560,10 +560,15 @@ function addSource(im) {
     { type: "addSource", id: im.id, bitmap: im.bitmap, iw: im.iw, ih: im.ih }, [im.bitmap]);
   im.bitmap = null; // ownership moved to the worker
 }
+// Tell the worker to free an image's source bitmap (unload after processing).
+function unloadSource(id) {
+  if (!workerSupported || !tileWorker) return;
+  readySources.delete(id);
+  tileWorker.postMessage({ type: "dropSource", id });
+}
 
-// Re-decode a source that was evicted from the worker (memory cap) using the
-// cached blob. Only the focused image (nearest cursor/centre) is re-decoded,
-// throttled, to avoid an evict->re-decode->evict churn loop at 100% CPU.
+// Re-decode a source (from the cached blob) so the worker can generate its
+// tiles. Used by the sequential processor for the single active image.
 const redecoding = new Set();
 const redecodedAt = new Map(); // id -> timestamp (ms)
 async function ensureSource(im) {
@@ -571,7 +576,7 @@ async function ensureSource(im) {
   if (im.status !== "loaded") return;
   const now = performance.now();
   const last = redecodedAt.get(im.id) || 0;
-  if (now - last < 2000) return; // throttle re-decode attempts
+  if (now - last < 500) return; // small throttle; only one image at a time anyway
   redecodedAt.set(im.id, now);
   redecoding.add(im.id);
   try {
@@ -757,6 +762,8 @@ async function loadDirectory() {
   }
   if (!matched.length && !extra.length) {
     status("No images found in this folder.");
+    stateHasImages = false;
+    procActive = null;
     buildLayout([]);
     requestRender();
     return;
@@ -774,6 +781,8 @@ async function loadDirectory() {
     });
   }
   buildLayout(list);
+  stateHasImages = images.length > 0;
+  procActive = null;
   fitView();
   requestRender();
   status(`Found ${images.length} image(s) in ${new Set(images.map(i=>i.group)).size} group(s). Loading…`);
@@ -863,6 +872,120 @@ function requestTilesForBase(im) {
   pumpQueue();
 }
 
+// ------------------------------------------------------- sequential tiles
+// Process images ONE AT A TIME: load the next image's source, enqueue all its
+// outstanding visible tiles, wait until they're generated, then unload the
+// source and move on. All in-view images eventually get all their tiles, while
+// the worker only ever holds one source at a time (no memory blowup, no
+// evict/re-decode churn). During pan/zoom the coarse base stays on screen.
+let procActive = null;       // image id currently loaded + being tiled
+let procWaitReady = false;   // active image's source is being decoded
+
+// Does this image have any outstanding high tiles at its current level?
+function imageNeedsTiles(im) {
+  if (im.status !== "loaded") return false;
+  const sc = view.scale;
+  const [dx, dy] = sceneToDev(im.drawX, im.drawY);
+  const dw = im.drawW * sc, dh = im.drawH * sc;
+  const L = levelForImage(im);
+  const r = tileRange(im, L, sc, dx, dy, dw, dh);
+  for (let ty = r.ty0; ty <= r.ty1; ty++)
+    for (let tx = r.tx0; tx <= r.tx1; tx++)
+      if (!cacheHasHigh(tileKey(im.id, L, tx, ty))) return true;
+  return false;
+}
+// Is every visible tile of this image at its current level present (high)?
+function imageCovered(im) { return !imageNeedsTiles(im); }
+
+// Advance the sequential processor: either keep processing the active image's
+// outstanding tiles, or unload it and start the next image that needs tiles.
+function stepProcessor() {
+  if (!workerSupported || !workerReady) return;
+  if (!stateHasImages) return;
+
+  // 1) If an image is active, make sure its source is loaded and tiles enqueued.
+  if (procActive !== null) {
+    const im = imgById.get(procActive);
+    if (im && im.status === "loaded") {
+      if (!readySources.has(im.id)) {
+        // source not in worker yet - decode it (one at a time)
+        if (!procWaitReady && !redecoding.has(im.id)) { procWaitReady = true; ensureSource(im).then(() => { procWaitReady = false; stepProcessor(); }); }
+        return;
+      }
+      // source ready: enqueue all of this image's outstanding tiles
+      enqueueImageTiles(im);
+      pumpQueue();
+      if (imageCovered(im)) {
+        // done with this image - unload it and move to the next
+        unloadSource(im.id);
+        procActive = null;
+        pumpQueue();
+      }
+      return;
+    } else {
+      // active image gone/failed
+      procActive = null;
+    }
+  }
+
+  // 2) Pick the next image that needs tiles (in priority order).
+  const next = findNextImage();
+  if (next) {
+    procActive = next.id;
+    procWaitReady = false;
+    if (!readySources.has(next.id)) {
+      procWaitReady = true;
+      ensureSource(next).then(() => { procWaitReady = false; stepProcessor(); });
+      return;
+    }
+    enqueueImageTiles(next);
+    pumpQueue();
+  }
+}
+let stateHasImages = false;
+
+// Ordered list (by priority) of images needing tiles - recomputed each step.
+function findNextImage() {
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  const ox = cursorX >= 0 ? cursorX : vpw / 2;
+  const oy = cursorY >= 0 ? cursorY : vph / 2;
+  const candidates = [];
+  for (const im of images) {
+    if (!imageNeedsTiles(im)) continue;
+    const [cx, cy] = sceneToDev(im.cellX + im.cell / 2, im.labelY + im.cell / 2);
+    const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
+    candidates.push({ im, d2 });
+  }
+  candidates.sort((a, b) => a.d2 - b.d2);
+  return candidates.length ? candidates[0].im : null;
+}
+
+// Enqueue all outstanding high tiles for one image (its current level),
+// nearest-first from cursor/centre, in a stable (image-grouped) order.
+function enqueueImageTiles(im) {
+  if (!readySources.has(im.id)) return;
+  const sc = view.scale;
+  const [dx, dy] = sceneToDev(im.drawX, im.drawY);
+  const dw = im.drawW * sc, dh = im.drawH * sc;
+  const L = levelForImage(im);
+  const r = tileRange(im, L, sc, dx, dy, dw, dh);
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  const ox = cursorX >= 0 ? cursorX : vpw / 2;
+  const oy = cursorY >= 0 ? cursorY : vph / 2;
+  const twscT = TILE * Math.pow(2, L) * im.fitFactor * sc;
+  const pend = [];
+  for (let ty = r.ty0; ty <= r.ty1; ty++)
+    for (let tx = r.tx0; tx <= r.tx1; tx++) {
+      if (cacheHasHigh(tileKey(im.id, L, tx, ty))) continue;
+      const cx = dx + (tx + 0.5) * twscT;
+      const cy = dy + (ty + 0.5) * twscT;
+      const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
+      pend.push({ tx, ty, d2 });
+    }
+  pend.sort((a, b) => a.d2 - b.d2);
+  for (const t of pend) requestTile(im.id, L, t.tx, t.ty, "high");
+}
+
 // ------------------------------------------------------------- render
 function render() {
   needRender = false;
@@ -870,8 +993,8 @@ function render() {
   const tView = profStart("view.collect");
   const vpw = cv.clientWidth, vph = cv.clientHeight;
   if (!vpw || !vph) return;
-  // Drop stale pending requests each frame; render() re-enqueues exactly what is
-  // currently visible (nearest-first). In-flight jobs are left to finish.
+  // Drop stale pending requests each frame; the sequential processor re-enqueues
+  // exactly the active image's outstanding tiles. In-flight jobs are left to finish.
   queued.length = 0;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#808080";
@@ -884,33 +1007,29 @@ function render() {
   const sx0 = (0 - view.vx) / sc, sy0 = (0 - view.vy) / sc;
   const sx1 = (vpw - view.vx) / sc, sy1 = (vph - view.vy) / sc;
 
-  // collect visible images; images don't overlap (grid + gaps) so draw order is
-  // visually irrelevant -> process the one nearest the cursor/centre first so
-  // its tiles are enqueued (and thus generated) before the others.
+  // collect visible images
   const ox = cursorX >= 0 ? cursorX : vpw / 2;
   const oy = cursorY >= 0 ? cursorY : vph / 2;
   const visible = [];
   for (const im of images) {
     const cx0 = im.cellX, cy0 = im.labelY, cx1 = im.cellX + im.cell, cy1 = im.cellY + im.cell;
     if (cx1 < sx0 || cx0 > sx1 || cy1 < sy0 || cy0 > sy1) continue;
-    const [ccx, ccy] = sceneToDev(im.cellX + im.cell / 2, im.labelY + im.cell / 2);
-    im._d2 = (ccx - ox) * (ccx - ox) + (ccy - oy) * (ccy - oy);
     visible.push(im);
   }
-  visible.sort((a, b) => a._d2 - b._d2);
   profEnd(tView);
 
-  // All visible images render dynamically with the full tile loop. The
-  // nearest-first sort above just controls enqueue order so the area the user
-  // cares about sharpens first - and keeps the queue grouped by image (all of
-  // one image's tiles before the next) so the worker doesn't switch sources.
-  // Any visible image whose source was evicted gets re-decoded (throttled).
+  // Draw all visible images from cache (base underlay + any generated finer
+  // tiles). Drawing never enqueues requests; the sequential processor does that
+  // for one image at a time, so the UI stays smooth and low-res while working.
   const tDraw = profStart("draw.images");
   for (const im of visible) {
-    if (im.status === "loaded" && !readySources.has(im.id)) ensureSource(im);
     drawImageEntry(im, sc);
   }
   profEnd(tDraw);
+
+  // Drive the one-at-a-time tile processor (unless the user is actively
+  // panning/zooming - keep the current lower quality during interaction).
+  if (!interacting) stepProcessor();
 
   const tQueue = profStart("queue.pump");
   pumpQueue();
@@ -1005,23 +1124,9 @@ function drawImageEntry(im, sc) {
       }
   }
 
-  // request target level tiles ordered nearest-first from the cursor (or
-  // viewport centre) so the area the user cares about sharpens first.
-  const vpw = cv.clientWidth, vph = cv.clientHeight;
-  const ox = cursorX >= 0 ? cursorX : vpw / 2;
-  const oy = cursorY >= 0 ? cursorY : vph / 2;
-  const twscT = TILE * Math.pow(2, L) * im.fitFactor * sc;
-  const pend = [];
-  for (let ty = rTarget.ty0; ty <= rTarget.ty1; ty++)
-    for (let tx = rTarget.tx0; tx <= rTarget.tx1; tx++) {
-      if (cacheHasHigh(tileKey(im.id, L, tx, ty))) continue;
-      const cx = dx + (tx + 0.5) * twscT;
-      const cy = dy + (ty + 0.5) * twscT;
-      const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
-      pend.push({ tx, ty, d2 });
-    }
-  pend.sort((a, b) => a.d2 - b.d2);
-  for (const t of pend) requestTile(im.id, L, t.tx, t.ty, "high");
+  // Tile requests are NOT made here: the sequential processor enqueues the
+  // active image's outstanding tiles one image at a time. Drawing only reads
+  // whatever is already in the cache (base underlay + generated finer tiles).
 
   if (tileDebug) {
     const rr = tileRange(im, L, sc, dx, dy, dw, dh);
