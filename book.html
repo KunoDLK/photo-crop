@@ -582,6 +582,9 @@ function render() {
   needRender = false;
   const vpw = cv.clientWidth, vph = cv.clientHeight;
   if (!vpw || !vph) return;
+  // Drop stale pending requests each frame; render() re-enqueues exactly what is
+  // currently visible (nearest-first). In-flight jobs are left to finish.
+  queued.length = 0;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#808080";
   ctx.fillRect(0, 0, vpw, vph);
