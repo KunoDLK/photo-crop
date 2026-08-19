@@ -289,7 +289,7 @@ const TILE = 256;
 const HANDLE = 10;
 const ROT_OFF = 34;
 const MIN_SZ = 16;
-const CACHE_MAX = 256;
+const CACHE_MAX = 768;
 const DETECT_MAX = 1600;
 const THRESH = 235;
 const MERGE_GAP_FRAC = 0.035;
@@ -504,8 +504,24 @@ new ResizeObserver(() => {
 resizeCanvas();
 
 // ---------------------------------------------------------------- tiles
+// While interacting we pick a coarser level for a smooth UI; once the view is
+// stationary we refine to full sharpness (DPR-aware, biased finer) so the
+// image is always >= physical screen resolution once tiles finish loading.
+let interacting = false;
+let settleTimer = null;
+const SETTLE_MS = 180;
+function markInteracting() {
+  interacting = true;
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => {
+    settleTimer = null;
+    interacting = false;
+    requestRender();
+  }, SETTLE_MS);
+}
 function levelForScale() {
-  return clamp(Math.round(-Math.log2(state.scale)), 0, state.maxLevel);
+  if (interacting) return clamp(Math.round(-Math.log2(state.scale)), 0, state.maxLevel);
+  return clamp(Math.floor(-Math.log2(state.scale * dpr)), 0, state.maxLevel);
 }
 function tileKey(L, tx, ty) { return L + ":" + tx + ":" + ty; }
 
@@ -1043,11 +1059,78 @@ function hitTest(mx, my) {
   return null;
 }
 
+// ------------------------------------------------- pinch-to-zoom (touch)
+const activePointers = new Map(); // pointerId -> {x, y} in canvas coords
+let pinch = null;                 // { startDist, startScale, ... }
+
+function pointerPair() {
+  const it = activePointers.values();
+  return [it.next().value, it.next().value];
+}
+function beginPinch() {
+  const [a, b] = pointerPair();
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  pinch = {
+    startDist: dist,
+    startScale: state.scale,
+    startVx: state.vx,
+    startVy: state.vy,
+    // world point under the initial pinch midpoint (anchor)
+    midX: (a.x + b.x) / 2,
+    midY: (a.y + b.y) / 2,
+  };
+}
+function updatePinch() {
+  const [a, b] = pointerPair();
+  if (!a || !b) return;
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+  const ns = clamp(pinch.startScale * (dist / pinch.startDist), 0.0001, 32);
+  // world point that was under the pinch midpoint at gesture start
+  const wx = (pinch.midX - pinch.startVx) / pinch.startScale;
+  const wy = (pinch.midY - pinch.startVy) / pinch.startScale;
+  // keep that world point under the *current* midpoint (allows two-finger pan)
+  state.scale = ns;
+  state.vx = midX - wx * ns;
+  state.vy = midY - wy * ns;
+  markInteracting();
+  requestRender();
+}
+function endPinch(pointerId) {
+  activePointers.delete(pointerId);
+  pinch = null;
+  state.mode = null;
+  state.drag = null;
+  // if one finger remains, seed a fresh pan anchored at its current position
+  if (activePointers.size === 1) {
+    const [only] = pointerPair();
+    const rect = cv.getBoundingClientRect();
+    state.mode = "pan";
+    state.drag = { x: only.x + rect.left, y: only.y + rect.top, vx: state.vx, vy: state.vy };
+  }
+}
+
 cv.addEventListener("pointerdown", (e) => {
   if (!state.img) return;
   try { cv.setPointerCapture(e.pointerId); } catch (err) {}
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+  // track touch pointers for pinch-to-zoom
+  if (e.pointerType === "touch") {
+    activePointers.set(e.pointerId, { x: mx, y: my });
+    if (activePointers.size === 2) {
+      beginPinch();
+      // cancel any single-touch drag that had started
+      state.mode = null;
+      state.drag = null;
+      return;
+    }
+    if (activePointers.size > 2) return;
+  }
+
   const [wx, wy] = devToWorld(mx, my);
   if (e.ctrlKey || e.button === 1 || !cropMode) {
     state.mode = "pan";
@@ -1081,6 +1164,15 @@ cv.addEventListener("pointerdown", (e) => {
 });
 
 cv.addEventListener("pointermove", (e) => {
+  const rect0 = cv.getBoundingClientRect();
+  // keep tracked touch position current + drive pinch
+  if (e.pointerType === "touch" && activePointers.has(e.pointerId)) {
+    activePointers.set(e.pointerId, { x: e.clientX - rect0.left, y: e.clientY - rect0.top });
+    if (pinch && activePointers.size >= 2) {
+      updatePinch();
+      return;
+    }
+  }
   if (!state.mode) return;
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
@@ -1088,6 +1180,7 @@ cv.addEventListener("pointermove", (e) => {
   if (state.mode === "pan") {
     state.vx = state.drag.vx + (e.clientX - state.drag.x);
     state.vy = state.drag.vy + (e.clientY - state.drag.y);
+    markInteracting();
     requestRender();
     return;
   }
@@ -1145,6 +1238,10 @@ cv.addEventListener("pointermove", (e) => {
 });
 
 cv.addEventListener("pointerup", (e) => {
+  if (e.pointerType === "touch" && activePointers.has(e.pointerId)) {
+    if (pinch) { endPinch(e.pointerId); return; }
+    activePointers.delete(e.pointerId);
+  }
   if (!state.mode) return;
   if (state.mode === "draw") {
     const b = state.boxes[state.sel];
@@ -1159,6 +1256,15 @@ cv.addEventListener("pointerup", (e) => {
   requestRender();
 });
 
+cv.addEventListener("pointercancel", (e) => {
+  if (activePointers.has(e.pointerId)) {
+    if (pinch) { endPinch(e.pointerId); return; }
+    activePointers.delete(e.pointerId);
+  }
+  state.mode = null;
+  state.drag = null;
+});
+
 cv.addEventListener("wheel", (e) => {
   if (!state.img) return;
   e.preventDefault();
@@ -1171,6 +1277,7 @@ cv.addEventListener("wheel", (e) => {
   state.vx = mx - wx * ns;
   state.vy = my - wy * ns;
   state.scale = ns;
+  markInteracting();
   requestRender();
 }, { passive: false });
 
