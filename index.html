@@ -750,10 +750,10 @@ function switchTargetLevel(L) {
 
 function queueInitialBase() {
   if (!state.img) return;
-  // Seed a fast low-quality first paint at the level that is actually shown
-  // first (the fit level), so the user immediately sees a blurry image which
-  // is then replaced by high-quality tiles.
-  const L = levelForScale();
+  // Preload the coarsest level: the whole image on a single tile. This tile is
+  // always kept in cache and drawn underneath everything, so there is always
+  // something to show (even on a cache miss when zooming out).
+  const L = state.maxLevel;
   initialBaseLevel = L;
   pinnedBaseLevel = L; // keep this level's tiles in cache for the whole session
   enqueueLevelNearestFirst(L, "low");
@@ -818,6 +818,17 @@ function render() {
     // target fully covers the viewport -> unload coarser underlays (keep base)
     for (const lv of [...activeLevels]) {
       if (lv !== L && !isPinnedLevel(lv)) activeLevels.delete(lv);
+    }
+  }
+
+  // Always draw the pinned whole-image base tile first, underneath everything,
+  // so there is always something to show (even on a cache miss when zooming out).
+  if (pinnedBaseLevel >= 0) {
+    const baseEntry = cache.get(tileKey(pinnedBaseLevel, 0, 0));
+    if (baseEntry) {
+      const btw = TILE * Math.pow(2, pinnedBaseLevel) * sc;
+      cacheGet(tileKey(pinnedBaseLevel, 0, 0)); // refresh LRU timestamp
+      ctx.drawImage(baseEntry.img, state.vx, state.vy, btw, btw);
     }
   }
 
