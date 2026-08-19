@@ -144,6 +144,31 @@ let settleTimer = null;
 // last known cursor position in canvas (device/CSS) coords; -1 = unknown/off
 let cursorX = -1, cursorY = -1;
 
+// ------------------------------------------------------------- profiler
+// Simple per-operation timing profiler. Each frame accumulates the time spent
+// in each named operation; every PROFILE_EVERY frames it logs an average +
+// max to the console so we can find the hot spots.
+const PROFILE_EVERY = 60;
+const profAcc = new Map(); // name -> { n, sum, max }
+let profFrames = 0;
+function profStart(name) { return { name, t: performance.now() }; }
+function profEnd(m) {
+  const dt = performance.now() - m.t;
+  let e = profAcc.get(m.name);
+  if (!e) { e = { n: 0, sum: 0, max: 0 }; profAcc.set(m.name, e); }
+  e.n++; e.sum += dt; if (dt > e.max) e.max = dt;
+}
+function profFrame() {
+  if (++profFrames < PROFILE_EVERY) return;
+  const parts = [];
+  for (const [name, e] of profAcc) {
+    parts.push(`${name}: avg=${(e.sum / e.n).toFixed(2)}ms max=${e.max.toFixed(2)}ms (${e.n})`);
+  }
+  profAcc.clear();
+  profFrames = 0;
+  console.log("[perf] " + (parts.length ? parts.join("  ") : "(no ops)"));
+}
+
 function status(msg) { els.status.textContent = msg; }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
@@ -297,6 +322,7 @@ function initWorker() {
       return;
     }
     if (m.type === "tile") {
+      const tTile = profStart("msg.tileReceived");
       const rk = m.id + ":" + m.L + ":" + m.tx + ":" + m.ty + ":" + m.quality;
       inflight.delete(rk);
       const k = tileKey(m.id, m.L, m.tx, m.ty);
@@ -308,6 +334,7 @@ function initWorker() {
       }
       pumpQueue();
       requestRender();
+      profEnd(tTile);
     }
   };
 }
@@ -520,10 +547,13 @@ async function loadSequential(idx) {
   im.progress = 0;
   requestRender();
   try {
+    const tLoad = profStart("load.image");
     const blob = await downloadWithProgress(im);
     im.status = "decoding";
     requestRender();
+    const tDecode = profStart("load.decode");
     const bitmap = await createImageBitmap(blob);
+    profEnd(tDecode);
     im.bitmap = bitmap;
     im.iw = bitmap.width;
     im.ih = bitmap.height;
@@ -533,6 +563,7 @@ async function loadSequential(idx) {
     // seed the coarse whole-image base tile immediately (low quality)
     requestTilesForBase(im);
     requestRender();
+    profEnd(tLoad);
   } catch (e) {
     im.status = "error";
     im.error = e.message;
@@ -581,6 +612,8 @@ function requestTilesForBase(im) {
 // ------------------------------------------------------------- render
 function render() {
   needRender = false;
+  const tFrame = profStart("frame.total");
+  const tView = profStart("view.collect");
   const vpw = cv.clientWidth, vph = cv.clientHeight;
   if (!vpw || !vph) return;
   // Drop stale pending requests each frame; render() re-enqueues exactly what is
@@ -611,10 +644,24 @@ function render() {
     visible.push(im);
   }
   visible.sort((a, b) => a._d2 - b._d2);
-  for (const im of visible) drawImageEntry(im, sc);
+  profEnd(tView);
 
+  // Only the focused image (under the cursor, else nearest the viewport centre)
+  // gets the full tile loop; all other visible images use a single static base
+  // tile so we don't generate huge amounts of detail for off-focus pages.
+  const focus = visible[0] || null;
+  const tDraw = profStart("draw.images");
+  for (const im of visible) {
+    drawImageEntry(im, sc, im === focus);
+  }
+  profEnd(tDraw);
+
+  const tQueue = profStart("queue.pump");
   pumpQueue();
+  profEnd(tQueue);
   els.zoom.textContent = (view.scale * 100).toFixed(0) + "%";
+  profEnd(tFrame);
+  profFrame();
 }
 
 function sceneToDev(x, y) { return [view.vx + x * view.scale, view.vy + y * view.scale]; }
@@ -631,7 +678,7 @@ function drawLabel(im) {
 
 function getCss(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || "#000"; }
 
-function drawImageEntry(im, sc) {
+function drawImageEntry(im, sc, focused) {
   drawLabel(im);
 
   if (im.status !== "loaded") {
@@ -646,6 +693,26 @@ function drawImageEntry(im, sc) {
   ctx.beginPath();
   ctx.rect(dx, dy, dw, dh);
   ctx.clip();
+
+  // draw pinned whole-image base first (underlay) so cache misses show a
+  // low-res image instead of grey
+  const base = cache.get(tileKey(im.id, im.maxLevel, 0, 0));
+  if (base) {
+    cacheGet(tileKey(im.id, im.maxLevel, 0, 0));
+    const btw = TILE * Math.pow(2, im.maxLevel) * im.fitFactor * sc;
+    ctx.drawImage(base.img, dx, dy, btw, btw);
+  }
+  // keep the base tile fresh for every visible image (priority low so it's
+  // generated first when missing)
+  requestTile(im.id, im.maxLevel, 0, 0, "low", true);
+  requestTile(im.id, im.maxLevel, 0, 0, "high");
+
+  // Non-focused images are drawn as a single static base tile only - no
+  // coarse->fine composite and no detail-tile requests, to save GPU/CPU/worker.
+  if (!focused) {
+    ctx.restore();
+    return;
+  }
 
   const L = levelForImage(im);
   // per-image transition tracking
@@ -666,14 +733,6 @@ function drawImageEntry(im, sc) {
   im._active.add(L);
   im._active.add(im.maxLevel); // always keep base
 
-  // draw pinned whole-image base first (underlay)
-  const base = cache.get(tileKey(im.id, im.maxLevel, 0, 0));
-  if (base) {
-    cacheGet(tileKey(im.id, im.maxLevel, 0, 0));
-    const btw = TILE * Math.pow(2, im.maxLevel) * im.fitFactor * sc;
-    ctx.drawImage(base.img, dx, dy, btw, btw);
-  }
-
   // coarse -> fine composite
   const drawLevels = [...im._active].sort((a, b) => b - a);
   for (const lv of drawLevels) {
@@ -687,12 +746,8 @@ function drawImageEntry(im, sc) {
       }
   }
 
-  // request tiles: the low-quality whole-image base first (priority) so there is
-  // always a low-res underlay to show on cache misses instead of grey; then the
-  // high base, then the target level ordered nearest-first from the cursor (or
+  // request target level tiles ordered nearest-first from the cursor (or
   // viewport centre) so the area the user cares about sharpens first.
-  requestTile(im.id, im.maxLevel, 0, 0, "low", true);
-  requestTile(im.id, im.maxLevel, 0, 0, "high");
   const vpw = cv.clientWidth, vph = cv.clientHeight;
   const ox = cursorX >= 0 ? cursorX : vpw / 2;
   const oy = cursorY >= 0 ? cursorY : vph / 2;
