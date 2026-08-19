@@ -69,6 +69,35 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   cursor: grab;
 }
 #view:active { cursor: grabbing; }
+.dbgpanel {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.dbgrow { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.dbgrow label { flex: 0 0 auto; }
+.dbgrow input[type=range] { flex: 1 1 auto; }
+.dbgval { width: 4em; text-align: right; font-variant-numeric: tabular-nums; }
+.stats {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px 10px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 5;
+}
 #status {
   flex: 0 0 auto;
   padding: 5px 12px;
@@ -89,12 +118,22 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   <button id="btn-reload">Reload</button>
   <button id="btn-fit">Fit</button>
   <button id="btn-tiledbg">Tile debug: off</button>
+  <button id="btn-dbg">Debug menu</button>
   <div class="spacer"></div>
   <span class="zoom-lbl" id="zoom-lbl">—</span>
 </div>
 
+<div class="dbgpanel" id="dbgpanel" hidden>
+  <div class="dbgrow">
+    <label for="dbg-srcmb">Max in-memory sources (MB)</label>
+    <input type="range" id="dbg-srcmb" min="16" max="8192" step="16" value="512">
+    <span class="dbgval" id="dbg-srcmb-val">512</span>
+  </div>
+</div>
+
 <div class="left" id="left">
   <canvas id="view"></canvas>
+  <div class="stats" id="stats" hidden></div>
 </div>
 
 <div id="status">Loading…</div>
@@ -127,6 +166,11 @@ const els = {
   reload: document.getElementById("btn-reload"),
   fit: document.getElementById("btn-fit"),
   tiledbg: document.getElementById("btn-tiledbg"),
+  dbg: document.getElementById("btn-dbg"),
+  dbgpanel: document.getElementById("dbgpanel"),
+  dbgsrcmb: document.getElementById("dbg-srcmb"),
+  dbgsrcmbval: document.getElementById("dbg-srcmb-val"),
+  stats: document.getElementById("stats"),
 };
 
 const cv = els.view;
@@ -164,8 +208,16 @@ function cacheLog(msg) { if (CACHE_DEBUG) console.log("[cache] " + msg); }
 const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
 const deviceMemoryGB = navigator.deviceMemory || (isMobile ? 4 : 16);
 // Budget for full-res source bitmaps held in the worker, proportional to RAM.
-// Approx 160MB per GB of RAM, clamped to a sane range.
-const SOURCE_BUDGET = clamp((deviceMemoryGB * 160) * 1024 * 1024, 320 * 1024 * 1024, 3 * 1024 * 1024 * 1024);
+// Approx 160MB per GB of RAM, clamped to a sane range. Debug menu can override.
+let sourceBudgetMB = Math.round((deviceMemoryGB * 160));
+sourceBudgetMB = clamp(sourceBudgetMB, 320, 3 * 1024);
+const SOURCE_BUDGET = sourceBudgetMB * 1024 * 1024;
+function setSourceBudgetMB(mb) {
+  sourceBudgetMB = clamp(Math.round(mb), 16, 16 * 1024);
+  const b = sourceBudgetMB * 1024 * 1024;
+  if (workerReady && tileWorker) tileWorker.postMessage({ type: "cfg", TILE, srcBudget: b });
+  cacheLog(`source budget -> ${sourceBudgetMB}MB`);
+}
 // High-RAM devices keep blobs in RAM; low-RAM (phones) use IndexedDB.
 const USE_RAM_CACHE = deviceMemoryGB >= 8 || !isMobile;
 
@@ -1035,6 +1087,7 @@ function render() {
   pumpQueue();
   profEnd(tQueue);
   els.zoom.textContent = (view.scale * 100).toFixed(0) + "%";
+  if (tileDebug) updateStats();
   profEnd(tFrame);
   profFrame();
 }
@@ -1311,11 +1364,61 @@ els.reload.addEventListener("click", () => { loadDirectory(); });
 els.tiledbg.addEventListener("click", () => {
   tileDebug = !tileDebug;
   els.tiledbg.textContent = "Tile debug: " + (tileDebug ? "on" : "off");
+  els.stats.hidden = !tileDebug;
   requestRender();
 });
+els.dbg.addEventListener("click", () => {
+  els.dbgpanel.hidden = !els.dbgpanel.hidden;
+});
+els.dbgsrcmb.addEventListener("input", () => {
+  const mb = parseInt(els.dbgsrcmb.value, 10);
+  els.dbgsrcmbval.textContent = mb;
+  setSourceBudgetMB(mb);
+});
+// initialise the debug slider to the current budget
+els.dbgsrcmb.value = sourceBudgetMB;
+els.dbgsrcmbval.textContent = sourceBudgetMB;
 window.addEventListener("keydown", (e) => {
   if (e.key === "f" || e.key === "F") { fitView(); requestRender(); }
 });
+
+// ------------------------------------------------------------- stats bar
+// Recompute tile statistics each frame and render them into the debug bottom bar.
+function updateStats() {
+  const sc = view.scale;
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  const sx0 = (0 - view.vx) / sc, sy0 = (0 - view.vy) / sc;
+  const sx1 = (vpw - view.vx) / sc, sy1 = (vph - view.vy) / sc;
+
+  let onScreen = 0;      // target-level tiles intersecting the viewport (all images)
+  let toProcess = 0;     // target-level tiles present on screen but not yet high
+  let loadedImages = 0, totalImages = images.length;
+  let cached = cache.size;
+  let inFlight = inflight.size, queuedN = queued.length;
+  let outstand = 0;      // images still needing tiles (from processor view)
+  let sourceBytes = 0;
+  for (const im of images) {
+    if (im.status === "loaded") loadedImages++;
+    if (im.status === "loaded" && imageNeedsTiles(im)) outstand++;
+    if (im.status !== "loaded") continue;
+    const cx0 = im.cellX, cy0 = im.labelY, cx1 = im.cellX + im.cell, cy1 = im.cellY + im.cell;
+    if (cx1 < sx0 || cx0 > sx1 || cy1 < sy0 || cy0 > sy1) continue;
+    const [dx, dy] = sceneToDev(im.drawX, im.drawY);
+    const dw = im.drawW * sc, dh = im.drawH * sc;
+    const L = levelForImage(im);
+    const r = tileRange(im, L, sc, dx, dy, dw, dh);
+    const n = Math.max(0, r.tx1 - r.tx0 + 1) * Math.max(0, r.ty1 - r.ty0 + 1);
+    onScreen += n;
+    for (let ty = r.ty0; ty <= r.ty1; ty++)
+      for (let tx = r.tx0; tx <= r.tx1; tx++)
+        if (!cacheHasHigh(tileKey(im.id, L, tx, ty))) toProcess++;
+  }
+  els.stats.textContent =
+    `img ${loadedImages}/${totalImages} (needTiles ${outstand})  ` +
+    `tiles onScreen ${onScreen}  toProcess ${toProcess}  cached ${cached}  ` +
+    `inflight ${inFlight}/${MAX_INFLIGHT}  queued ${queuedN}  ` +
+    `srcBudget ${sourceBudgetMB}MB  procActive ${procActive !== null ? procActive : "-"}`;
+}
 
 // ------------------------------------------------------------- go
 loadDirectory();
