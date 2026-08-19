@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book viewer</title>
+<style>
+:root {
+  --bg: #f2f2f2;
+  --text: #1f1f1f;
+  --muted: #6b6b6b;
+  --border: #d4d4d4;
+  --accent: #1ca7e8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1b1f;
+    --text: #e8e8ea;
+    --muted: #9a9aa2;
+    --border: #3a3a42;
+    --accent: #4fb8ee;
+  }
+}
+* { box-sizing: border-box; }
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+body { display: flex; flex-direction: column; overflow: hidden; }
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.toolbar button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.toolbar button:hover { background: var(--border); }
+.title { font-weight: 600; }
+.spacer { flex: 1; }
+.zoom-lbl { color: var(--muted); font-variant-numeric: tabular-nums; }
+.left {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  background: #808080;
+}
+#view {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+#view:active { cursor: grabbing; }
+#status {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <span class="title">Book viewer</span>
+  <button id="btn-reload">Reload</button>
+  <button id="btn-fit">Fit</button>
+  <button id="btn-tiledbg">Tile debug: off</button>
+  <div class="spacer"></div>
+  <span class="zoom-lbl" id="zoom-lbl">—</span>
+</div>
+
+<div class="left" id="left">
+  <canvas id="view"></canvas>
+</div>
+
+<div id="status">Loading…</div>
+
+<script>
+(() => {
+"use strict";
+
+// ------------------------------------------------------------- constants
+const TILE = 256;
+const CACHE_MAX = 1024;
+const MAX_INFLIGHT = 6;
+const SETTLE_MS = 180;
+const IMG_EXT = /\.(png|jpe?g|tiff?|bmp|webp|gif|avif)$/i;
+const NAME_RE = /^(\d+)_(\d+)-(.*)$/;
+
+// layout metrics (in scene / CSS px @ scale 1)
+const CELL = 1600;            // square cell side reserved per image
+const CELL_GAP = 120;         // gap between cells within a group
+const GROUP_GAP = 480;        // extra gap between groups
+const LABEL_H = 90;           // label region height above each cell
+const LABEL_FONT = 56;        // label font size
+
+const els = {
+  view: document.getElementById("view"),
+  left: document.getElementById("left"),
+  zoom: document.getElementById("zoom-lbl"),
+  status: document.getElementById("status"),
+  reload: document.getElementById("btn-reload"),
+  fit: document.getElementById("btn-fit"),
+  tiledbg: document.getElementById("btn-tiledbg"),
+};
+
+const cv = els.view;
+const ctx = cv.getContext("2d");
+let dpr = window.devicePixelRatio || 1;
+
+// ------------------------------------------------------------- view state
+const view = { scale: 1, vx: 0, vy: 0, fitScale: 1 };
+const scene = { w: 0, h: 0 };   // total scene bounds
+let images = [];                // all placed images
+let needRender = false;
+let tileDebug = false;
+let interacting = false;
+let settleTimer = null;
+
+function status(msg) { els.status.textContent = msg; }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function requestRender() {
+  if (needRender) return;
+  needRender = true;
+  requestAnimationFrame(render);
+}
+function markInteracting() {
+  interacting = true;
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => { settleTimer = null; interacting = false; requestRender(); }, SETTLE_MS);
+}
+
+// ------------------------------------------------------------- canvas size
+function resizeCanvas() {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(w * dpr);
+  cv.height = Math.round(h * dpr);
+}
+new ResizeObserver(() => { resizeCanvas(); requestRender(); }).observe(els.left);
+resizeCanvas();
+
+// ------------------------------------------------------------- tile worker
+const workerSupported = typeof Worker !== "undefined" &&
+  typeof OffscreenCanvas !== "undefined" &&
+  typeof createImageBitmap !== "undefined";
+
+const WORKER_SRC = `
+const sources = new Map(); // id -> {img, iw, ih}
+let TILE = 256;
+function downscaleHQ(src, sx, sy, sw, sh, dw, dh) {
+  let cur = new OffscreenCanvas(Math.max(1, Math.round(sw)), Math.max(1, Math.round(sh)));
+  let cg = cur.getContext("2d");
+  cg.imageSmoothingEnabled = true; cg.imageSmoothingQuality = "high";
+  cg.drawImage(src, sx, sy, sw, sh, 0, 0, cur.width, cur.height);
+  let cw = cur.width, ch = cur.height;
+  while (cw > dw * 2 || ch > dh * 2) {
+    const nw = Math.max(dw, Math.floor(cw / 2));
+    const nh = Math.max(dh, Math.floor(ch / 2));
+    const next = new OffscreenCanvas(nw, nh);
+    const ng = next.getContext("2d");
+    ng.imageSmoothingEnabled = true; ng.imageSmoothingQuality = "high";
+    ng.drawImage(cur, 0, 0, cw, ch, 0, 0, nw, nh);
+    cur = next; cw = nw; ch = nh;
+  }
+  const out = new OffscreenCanvas(dw, dh);
+  const og = out.getContext("2d");
+  og.imageSmoothingEnabled = true; og.imageSmoothingQuality = "high";
+  og.drawImage(cur, 0, 0, cw, ch, 0, 0, dw, dh);
+  return out;
+}
+self.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === "cfg") { TILE = m.TILE; return; }
+  if (m.type === "addSource") {
+    sources.set(m.id, { img: m.bitmap, iw: m.iw, ih: m.ih });
+    self.postMessage({ type: "sourceReady", id: m.id });
+    return;
+  }
+  if (m.type === "dropSource") {
+    const s = sources.get(m.id);
+    if (s && s.img && s.img.close) s.img.close();
+    sources.delete(m.id);
+    return;
+  }
+  if (m.type === "gen") {
+    const s = sources.get(m.id);
+    if (!s) return;
+    const { L, tx, ty, quality } = m;
+    const p = Math.pow(2, L);
+    const sx = tx * TILE * p, sy = ty * TILE * p;
+    const sw = Math.min(TILE * p, s.iw - sx);
+    const sh = Math.min(TILE * p, s.ih - sy);
+    if (sw <= 0 || sh <= 0) return;
+    const dw = Math.max(1, Math.round(sw / p));
+    const dh = Math.max(1, Math.round(sh / p));
+    const c = new OffscreenCanvas(TILE, TILE);
+    const g = c.getContext("2d");
+    if (quality === "low") {
+      g.imageSmoothingEnabled = false;
+      g.drawImage(s.img, sx, sy, sw, sh, 0, 0, dw, dh);
+    } else {
+      const out = downscaleHQ(s.img, sx, sy, sw, sh, dw, dh);
+      g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+      g.drawImage(out, 0, 0, dw, dh, 0, 0, dw, dh);
+    }
+    const bmp = c.transferToImageBitmap();
+    self.postMessage({ type: "tile", id: m.id, L, tx, ty, quality, bitmap: bmp }, [bmp]);
+  }
+};
+`;
+
+let tileWorker = null;
+let workerReady = false;
+const cache = new Map();          // key "id:L:tx:ty" -> {img,L,quality,lastUsed,id}
+let tileClock = 0;
+const inflight = new Set();        // "id:L:tx:ty:quality"
+const queued = [];                 // {id,L,tx,ty,quality,rk}
+const readySources = new Set();    // image ids whose worker source is ready
+
+function initWorker() {
+  if (!workerSupported) return;
+  const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: "text/javascript" }));
+  tileWorker = new Worker(url);
+  URL.revokeObjectURL(url);
+  tileWorker.postMessage({ type: "cfg", TILE });
+  workerReady = true;
+  tileWorker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === "sourceReady") {
+      readySources.add(m.id);
+      pumpQueue();
+      requestRender();
+      return;
+    }
+    if (m.type === "tile") {
+      const rk = m.id + ":" + m.L + ":" + m.tx + ":" + m.ty + ":" + m.quality;
+      inflight.delete(rk);
+      const k = tileKey(m.id, m.L, m.tx, m.ty);
+      const existing = cache.get(k);
+      if (!(existing && existing.quality === "high" && m.quality !== "high")) {
+        cacheSet(k, m.bitmap, m.id, m.L, m.quality);
+      } else if (m.bitmap.close) {
+        m.bitmap.close();
+      }
+      pumpQueue();
+      requestRender();
+    }
+  };
+}
+initWorker();
+
+function addSource(im) {
+  if (!workerSupported) { readySources.add(im.id); return; }
+  // clone the bitmap for the worker so the main thread keeps its own copy
+  createImageBitmap(im.bitmap).then((bmp) => {
+    tileWorker.postMessage(
+      { type: "addSource", id: im.id, bitmap: bmp, iw: im.iw, ih: im.ih }, [bmp]);
+  });
+}
+
+// ------------------------------------------------------------- tile cache
+function tileKey(id, L, tx, ty) { return id + ":" + L + ":" + tx + ":" + ty; }
+function isProtected(entry) {
+  const im = imgById.get(entry.id);
+  if (!im) return false;
+  return entry.L >= im.maxLevel; // pin each image's coarsest whole-image base
+}
+function cacheGet(k) {
+  const v = cache.get(k);
+  if (!v) return null;
+  v.lastUsed = ++tileClock;
+  return v;
+}
+function cacheSet(k, img, id, L, quality) {
+  const prev = cache.get(k);
+  if (prev && prev.img && prev.img.close && prev.img !== img) prev.img.close();
+  cache.set(k, { img, id, L, quality, lastUsed: ++tileClock });
+  while (cache.size > CACHE_MAX) {
+    let victimKey = null, victimTime = Infinity;
+    for (const [key, val] of cache.entries()) {
+      if (isProtected(val)) continue;
+      if (val.lastUsed < victimTime) { victimTime = val.lastUsed; victimKey = key; }
+    }
+    if (victimKey === null) break;
+    const ev = cache.get(victimKey);
+    if (ev && ev.img && ev.img.close) ev.img.close();
+    cache.delete(victimKey);
+  }
+}
+function cacheHasHigh(k) { const v = cache.get(k); return !!(v && v.quality === "high"); }
+
+// ------------------------------------------------------------- tile queue
+function pumpQueue() {
+  if (!workerSupported || !workerReady) return;
+  while (inflight.size < MAX_INFLIGHT && queued.length) {
+    const req = queued.shift();
+    if (inflight.has(req.rk)) continue;
+    if (!readySources.has(req.id)) continue; // source not ready yet; drop (re-requested by render)
+    inflight.add(req.rk);
+    tileWorker.postMessage({ type: "gen", id: req.id, L: req.L, tx: req.tx, ty: req.ty, quality: req.quality });
+  }
+}
+function requestTile(id, L, tx, ty, quality) {
+  if (!readySources.has(id)) return;
+  const rk = id + ":" + L + ":" + tx + ":" + ty + ":" + quality;
+  if (inflight.has(rk)) return;
+  if (queued.some((q) => q.rk === rk)) return;
+  queued.push({ id, L, tx, ty, quality, rk });
+}
+
+// ------------------------------------------------------------- images/layout
+const imgById = new Map();
+let nextId = 1;
+
+// level so a tile texel maps to <= 1 physical pixel once settled
+function levelForImage(im) {
+  const s = view.scale; // scene px -> css px (image drawn at fitFactor*scale)
+  const eff = s * im.fitFactor; // source px -> css px
+  if (interacting) return clamp(Math.round(-Math.log2(eff)), 0, im.maxLevel);
+  return clamp(Math.floor(-Math.log2(eff * dpr)), 0, im.maxLevel);
+}
+
+function parseName(fname) {
+  const base = fname.replace(/\/+$/, "");
+  const noext = base.replace(/\.[^.]+$/, "");
+  const m = NAME_RE.exec(noext);
+  if (!m) return null;
+  return { group: parseInt(m[1], 10), order: parseInt(m[2], 10), name: m[3] || noext };
+}
+
+// Build the layout: groups stacked top->bottom, each a square grid of square cells.
+function buildLayout(list) {
+  // list: [{href, meta:{group,order,name}}]
+  const groups = new Map();
+  for (const it of list) {
+    if (!groups.has(it.meta.group)) groups.set(it.meta.group, []);
+    groups.get(it.meta.group).push(it);
+  }
+  const gkeys = [...groups.keys()].sort((a, b) => a - b);
+  let y = 0;
+  let maxRight = 0;
+  images = [];
+  imgById.clear();
+  for (const gk of gkeys) {
+    const items = groups.get(gk).sort((a, b) => a.meta.order - b.meta.order);
+    const cols = Math.max(1, Math.ceil(Math.sqrt(items.length)));
+    const rows = Math.ceil(items.length / cols);
+    for (let i = 0; i < items.length; i++) {
+      const col = i % cols, row = (i / cols) | 0;
+      const ox = col * (CELL + CELL_GAP);
+      const oy = y + row * (CELL + LABEL_H + CELL_GAP);
+      const im = {
+        id: nextId++,
+        href: items[i].href,
+        name: items[i].meta.name,
+        group: gk, order: items[i].meta.order,
+        cellX: ox, cellY: oy + LABEL_H, cell: CELL, labelY: oy,
+        iw: 0, ih: 0, maxLevel: 0, fitFactor: 1,
+        drawX: ox, drawY: oy + LABEL_H, drawW: CELL, drawH: CELL,
+        bitmap: null, status: "pending", progress: 0,
+      };
+      images.push(im);
+      imgById.set(im.id, im);
+      maxRight = Math.max(maxRight, ox + CELL);
+    }
+    y += rows * (CELL + LABEL_H + CELL_GAP) + GROUP_GAP;
+  }
+  scene.w = maxRight;
+  scene.h = Math.max(0, y - GROUP_GAP);
+}
+
+// Fit a decoded image inside its square cell, preserving aspect.
+function fitImage(im) {
+  const s = Math.min(im.cell / im.iw, im.cell / im.ih);
+  im.fitFactor = s;
+  im.drawW = im.iw * s;
+  im.drawH = im.ih * s;
+  im.drawX = im.cellX + (im.cell - im.drawW) / 2;
+  im.drawY = im.cellY + (im.cell - im.drawH) / 2;
+  im.maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(im.iw, im.ih) / TILE)));
+}
+
+// ------------------------------------------------------------- view helpers
+function fitView() {
+  const vpw = cv.clientWidth || els.left.clientWidth;
+  const vph = cv.clientHeight || els.left.clientHeight;
+  if (!scene.w || !scene.h) { view.scale = 1; view.vx = 0; view.vy = 0; return; }
+  view.fitScale = Math.min(vpw / scene.w, vph / scene.h) * 0.96;
+  view.scale = view.fitScale;
+  view.vx = (vpw - scene.w * view.scale) / 2;
+  view.vy = (vph - scene.h * view.scale) / 2;
+}
+
+// ------------------------------------------------------------- directory load
+async function loadDirectory() {
+  status("Listing folder…");
+  images = [];
+  cache.clear();
+  inflight.clear();
+  queued.length = 0;
+  readySources.clear();
+  let data;
+  try {
+    const res = await fetch("./?ls", { headers: { "Accept": "application/json" } });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    data = await res.json();
+  } catch (e) {
+    status("Could not list folder: " + e.message);
+    return;
+  }
+  const files = (data.files || []);
+  const list = [];
+  for (const f of files) {
+    const href = f.href;
+    if (!href || !IMG_EXT.test(href)) continue;
+    const meta = parseName(decodeURIComponent(href));
+    if (!meta) continue;
+    list.push({ href, meta });
+  }
+  if (!list.length) {
+    status("No images matching N_N-name found in this folder.");
+    buildLayout([]);
+    requestRender();
+    return;
+  }
+  // order for sequential loading = group asc, order asc
+  list.sort((a, b) => a.meta.group - b.meta.group || a.meta.order - b.meta.order);
+  buildLayout(list);
+  fitView();
+  requestRender();
+  status(`Found ${images.length} image(s) in ${new Set(images.map(i=>i.group)).size} group(s). Loading…`);
+  loadSequential(0);
+}
+
+async function loadSequential(idx) {
+  if (idx >= images.length) { status(`Loaded ${images.length} image(s).`); return; }
+  const im = images[idx];
+  im.status = "downloading";
+  im.progress = 0;
+  requestRender();
+  try {
+    const blob = await downloadWithProgress(im);
+    im.status = "decoding";
+    requestRender();
+    const bitmap = await createImageBitmap(blob);
+    im.bitmap = bitmap;
+    im.iw = bitmap.width;
+    im.ih = bitmap.height;
+    fitImage(im);
+    im.status = "loaded";
+    addSource(im);
+    // seed the coarse whole-image base tile immediately (low quality)
+    requestTilesForBase(im);
+    requestRender();
+  } catch (e) {
+    im.status = "error";
+    im.error = e.message;
+    requestRender();
+  }
+  // strictly sequential: next only after this finishes
+  loadSequential(idx + 1);
+}
+
+async function downloadWithProgress(im) {
+  const res = await fetch(im.href);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const total = parseInt(res.headers.get("content-length") || "0", 10);
+  if (!res.body || !total) {
+    // no streaming/length: indeterminate
+    im.progress = -1;
+    requestRender();
+    return await res.blob();
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    im.progress = received / total;
+    requestRender();
+  }
+  return new Blob(chunks);
+}
+
+// once a source is ready, we still request base via render; this primes it early
+function requestTilesForBase(im) {
+  if (!readySources.has(im.id)) {
+    // will be primed on sourceReady + render
+    return;
+  }
+  requestTile(im.id, im.maxLevel, 0, 0, "low");
+  requestTile(im.id, im.maxLevel, 0, 0, "high");
+  pumpQueue();
+}
+
+// ------------------------------------------------------------- render
+function render() {
+  needRender = false;
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  if (!vpw || !vph) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#808080";
+  ctx.fillRect(0, 0, vpw, vph);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  const sc = view.scale;
+  // viewport in scene coords
+  const sx0 = (0 - view.vx) / sc, sy0 = (0 - view.vy) / sc;
+  const sx1 = (vpw - view.vx) / sc, sy1 = (vph - view.vy) / sc;
+
+  for (const im of images) {
+    // cull by reserved cell (covers placeholder + label)
+    const cx0 = im.cellX, cy0 = im.labelY, cx1 = im.cellX + im.cell, cy1 = im.cellY + im.cell;
+    if (cx1 < sx0 || cx0 > sx1 || cy1 < sy0 || cy0 > sy1) continue;
+    drawImageEntry(im, sc);
+  }
+
+  pumpQueue();
+  els.zoom.textContent = (view.scale * 100).toFixed(0) + "%";
+}
+
+function sceneToDev(x, y) { return [view.vx + x * view.scale, view.vy + y * view.scale]; }
+
+function drawLabel(im) {
+  const [lx, ly] = sceneToDev(im.cellX, im.labelY + LABEL_H);
+  const fs = Math.max(10, Math.min(28, LABEL_FONT * view.scale));
+  ctx.font = "600 " + fs + "px system-ui, sans-serif";
+  ctx.fillStyle = getCss("--text");
+  ctx.textBaseline = "bottom";
+  const label = im.group + "." + im.order + "  " + im.name;
+  ctx.fillText(label, lx, ly - 6 * view.scale);
+}
+
+function getCss(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || "#000"; }
+
+function drawImageEntry(im, sc) {
+  drawLabel(im);
+
+  if (im.status !== "loaded") {
+    drawPlaceholder(im, sc);
+    return;
+  }
+
+  // draw the image via per-image tile composite, clipped to its draw rect
+  const [dx, dy] = sceneToDev(im.drawX, im.drawY);
+  const dw = im.drawW * sc, dh = im.drawH * sc;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(dx, dy, dw, dh);
+  ctx.clip();
+
+  const L = levelForImage(im);
+  // per-image transition tracking
+  if (im._target !== L) { im._active = im._active || new Set(); im._active.add(L); im._target = L; }
+  im._active = im._active || new Set();
+  im._active.add(L);
+
+  // coverage of target level within the image
+  const rTarget = tileRange(im, L, sc, dx, dy, dw, dh);
+  let covered = true;
+  for (let ty = rTarget.ty0; ty <= rTarget.ty1 && covered; ty++)
+    for (let tx = rTarget.tx0; tx <= rTarget.tx1; tx++)
+      if (!cacheHasHigh(tileKey(im.id, L, tx, ty))) { covered = false; break; }
+
+  // drop finer stale active levels; if covered drop coarser (except pinned base)
+  for (const lv of [...im._active]) if (lv < L && lv < im.maxLevel) im._active.delete(lv);
+  if (covered) for (const lv of [...im._active]) if (lv !== L && lv < im.maxLevel) im._active.delete(lv);
+  im._active.add(L);
+  im._active.add(im.maxLevel); // always keep base
+
+  // draw pinned whole-image base first (underlay)
+  const base = cache.get(tileKey(im.id, im.maxLevel, 0, 0));
+  if (base) {
+    cacheGet(tileKey(im.id, im.maxLevel, 0, 0));
+    const btw = TILE * Math.pow(2, im.maxLevel) * im.fitFactor * sc;
+    ctx.drawImage(base.img, dx, dy, btw, btw);
+  }
+
+  // coarse -> fine composite
+  const drawLevels = [...im._active].sort((a, b) => b - a);
+  for (const lv of drawLevels) {
+    const rr = tileRange(im, lv, sc, dx, dy, dw, dh);
+    const twsc = TILE * Math.pow(2, lv) * im.fitFactor * sc;
+    for (let ty = rr.ty0; ty <= rr.ty1; ty++)
+      for (let tx = rr.tx0; tx <= rr.tx1; tx++) {
+        const entry = cacheGet(tileKey(im.id, lv, tx, ty));
+        if (!entry) continue;
+        ctx.drawImage(entry.img, dx + tx * twsc, dy + ty * twsc, twsc, twsc);
+      }
+  }
+
+  // request tiles: base first, then target level
+  requestTile(im.id, im.maxLevel, 0, 0, "low");
+  requestTile(im.id, im.maxLevel, 0, 0, "high");
+  for (let ty = rTarget.ty0; ty <= rTarget.ty1; ty++)
+    for (let tx = rTarget.tx0; tx <= rTarget.tx1; tx++)
+      if (!cacheHasHigh(tileKey(im.id, L, tx, ty))) requestTile(im.id, L, tx, ty, "high");
+
+  if (tileDebug) {
+    const rr = tileRange(im, L, sc, dx, dy, dw, dh);
+    const twsc = TILE * Math.pow(2, L) * im.fitFactor * sc;
+    ctx.lineWidth = 1;
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.textBaseline = "top";
+    for (let ty = rr.ty0; ty <= rr.ty1; ty++)
+      for (let tx = rr.tx0; tx <= rr.tx1; tx++) {
+        const e = cache.get(tileKey(im.id, L, tx, ty));
+        const col = e ? (e.quality === "high" ? "#00e000" : "#e0c000") : "#ff2020";
+        const tdx = dx + tx * twsc, tdy = dy + ty * twsc;
+        ctx.strokeStyle = col;
+        ctx.strokeRect(tdx + 0.5, tdy + 0.5, twsc - 1, twsc - 1);
+        ctx.fillStyle = col;
+        ctx.fillText("L" + L + " " + tx + "," + ty, tdx + 3, tdy + 3);
+      }
+  }
+
+  ctx.restore();
+
+  // frame
+  ctx.strokeStyle = "rgba(0,0,0,0.25)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
+}
+
+// visible tile range for an image level, clamped to image extent and viewport rect
+function tileRange(im, lv, sc, dx, dy, dw, dh) {
+  const tileWpx = TILE * Math.pow(2, lv) * im.fitFactor * sc; // one tile's device px
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  // intersect image draw-rect with viewport in device space
+  const ix0 = Math.max(0, dx), iy0 = Math.max(0, dy);
+  const ix1 = Math.min(vpw, dx + dw), iy1 = Math.min(vph, dy + dh);
+  const nx = Math.ceil(im.iw / (TILE * Math.pow(2, lv))) - 1;
+  const ny = Math.ceil(im.ih / (TILE * Math.pow(2, lv))) - 1;
+  return {
+    tx0: Math.max(0, Math.floor((ix0 - dx) / tileWpx)),
+    ty0: Math.max(0, Math.floor((iy0 - dy) / tileWpx)),
+    tx1: Math.min(nx, Math.floor((ix1 - dx) / tileWpx)),
+    ty1: Math.min(ny, Math.floor((iy1 - dy) / tileWpx)),
+  };
+}
+
+function drawPlaceholder(im, sc) {
+  const [dx, dy] = sceneToDev(im.cellX, im.cellY);
+  const dw = im.cell * sc, dh = im.cell * sc;
+  ctx.fillStyle = "rgba(255,255,255,0.06)";
+  ctx.fillRect(dx, dy, dw, dh);
+  ctx.strokeStyle = im.status === "error" ? "#e05555" : "rgba(255,255,255,0.35)";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([8, 8]);
+  ctx.strokeRect(dx + 1, dy + 1, dw - 2, dh - 2);
+  ctx.setLineDash([]);
+
+  // loading bar (downloading / decoding)
+  const barW = Math.min(dw * 0.7, 480);
+  const barH = Math.max(6, Math.min(22, dh * 0.03));
+  const bx = dx + (dw - barW) / 2, by = dy + (dh - barH) / 2;
+  const label =
+    im.status === "downloading" ? (im.progress >= 0 ? Math.round(im.progress * 100) + "%" : "downloading…") :
+    im.status === "decoding" ? "decoding…" :
+    im.status === "error" ? ("error: " + (im.error || "")) : "";
+
+  if (im.status === "downloading" || im.status === "decoding") {
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fillRect(bx, by, barW, barH);
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, barW - 1, barH - 1);
+    let frac = 0;
+    if (im.status === "downloading") frac = im.progress >= 0 ? im.progress : 0.15;
+    else frac = 1;
+    ctx.fillStyle = getCss("--accent");
+    ctx.fillRect(bx + 1, by + 1, Math.max(0, (barW - 2) * frac), barH - 2);
+  }
+  if (label) {
+    const fs = Math.max(11, Math.min(30, barH + 6));
+    ctx.font = "600 " + fs + "px system-ui, sans-serif";
+    ctx.fillStyle = im.status === "error" ? "#ff8888" : getCss("--text");
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(label, dx + dw / 2, by + barH + 8);
+    ctx.textAlign = "left";
+  }
+}
+
+// ------------------------------------------------------------- interaction
+cv.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const f = Math.exp(-e.deltaY * 0.0012);
+  const ns = clamp(view.scale * f, 0.00005, 64);
+  const wx = (mx - view.vx) / view.scale;
+  const wy = (my - view.vy) / view.scale;
+  view.vx = mx - wx * ns;
+  view.vy = my - wy * ns;
+  view.scale = ns;
+  markInteracting();
+  requestRender();
+}, { passive: false });
+
+let panning = null;
+const activePointers = new Map();
+let pinch = null;
+
+cv.addEventListener("pointerdown", (e) => {
+  try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (e.pointerType === "touch") {
+    activePointers.set(e.pointerId, { x: mx, y: my });
+    if (activePointers.size === 2) { beginPinch(); panning = null; return; }
+    if (activePointers.size > 2) return;
+  }
+  panning = { x: e.clientX, y: e.clientY, vx: view.vx, vy: view.vy };
+});
+cv.addEventListener("pointermove", (e) => {
+  const rect = cv.getBoundingClientRect();
+  if (e.pointerType === "touch" && activePointers.has(e.pointerId)) {
+    activePointers.set(e.pointerId, { x: e.clientX - rect.left, y: e.clientY - rect.top });
+    if (pinch && activePointers.size >= 2) { updatePinch(); return; }
+  }
+  if (!panning) return;
+  view.vx = panning.vx + (e.clientX - panning.x);
+  view.vy = panning.vy + (e.clientY - panning.y);
+  markInteracting();
+  requestRender();
+});
+function endPointer(e) {
+  if (e.pointerType === "touch" && activePointers.has(e.pointerId)) {
+    if (pinch) { activePointers.delete(e.pointerId); pinch = null;
+      if (activePointers.size === 1) {
+        const only = activePointers.values().next().value;
+        const rect = cv.getBoundingClientRect();
+        panning = { x: only.x + rect.left, y: only.y + rect.top, vx: view.vx, vy: view.vy };
+      }
+      return;
+    }
+    activePointers.delete(e.pointerId);
+  }
+  panning = null;
+}
+cv.addEventListener("pointerup", endPointer);
+cv.addEventListener("pointercancel", endPointer);
+cv.addEventListener("contextmenu", (e) => e.preventDefault());
+
+function beginPinch() {
+  const [a, b] = [...activePointers.values()];
+  const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  pinch = { startDist: dist, startScale: view.scale, startVx: view.vx, startVy: view.vy,
+            midX: (a.x + b.x) / 2, midY: (a.y + b.y) / 2 };
+}
+function updatePinch() {
+  const [a, b] = [...activePointers.values()];
+  if (!a || !b) return;
+  const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+  const ns = clamp(pinch.startScale * (dist / pinch.startDist), 0.00005, 64);
+  const wx = (pinch.midX - pinch.startVx) / pinch.startScale;
+  const wy = (pinch.midY - pinch.startVy) / pinch.startScale;
+  view.scale = ns;
+  view.vx = midX - wx * ns;
+  view.vy = midY - wy * ns;
+  markInteracting();
+  requestRender();
+}
+
+// ------------------------------------------------------------- toolbar
+els.fit.addEventListener("click", () => { fitView(); requestRender(); });
+els.reload.addEventListener("click", () => { loadDirectory(); });
+els.tiledbg.addEventListener("click", () => {
+  tileDebug = !tileDebug;
+  els.tiledbg.textContent = "Tile debug: " + (tileDebug ? "on" : "off");
+  requestRender();
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key === "f" || e.key === "F") { fitView(); requestRender(); }
+});
+
+// ------------------------------------------------------------- go
+loadDirectory();
+
+})();
+</script>
+</body>
+</html>
