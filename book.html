@@ -902,12 +902,12 @@ function render() {
 
   // All visible images render dynamically with the full tile loop. The
   // nearest-first sort above just controls enqueue order so the area the user
-  // cares about sharpens first. Only the focused image (visible[0]) triggers a
-  // source re-decode if evicted - prevents evict->re-decode churn.
-  const focus = visible[0] || null;
+  // cares about sharpens first - and keeps the queue grouped by image (all of
+  // one image's tiles before the next) so the worker doesn't switch sources.
+  // Any visible image whose source was evicted gets re-decoded (throttled).
   const tDraw = profStart("draw.images");
   for (const im of visible) {
-    if (im === focus && im.status === "loaded" && !readySources.has(im.id)) ensureSource(im);
+    if (im.status === "loaded" && !readySources.has(im.id)) ensureSource(im);
     drawImageEntry(im, sc);
   }
   profEnd(tDraw);
@@ -962,10 +962,13 @@ function drawImageEntry(im, sc) {
   // (re)request it when it's missing or needs a quality upgrade. Requesting it
   // unconditionally every frame would regenerate it forever (the queue is
   // cleared each render), pinning the worker at 100% and starving target tiles.
+  // Base requests are enqueued normally (no priority) so the queue stays
+  // grouped by image - all of one image's tiles before the next image's, so
+  // the worker doesn't thrash between sources.
   const baseK = tileKey(im.id, im.maxLevel, 0, 0);
   const baseE = cache.get(baseK);
   if (!baseE) {
-    requestTile(im.id, im.maxLevel, 0, 0, "low", true);
+    requestTile(im.id, im.maxLevel, 0, 0, "low");
   } else if (baseE.quality !== "high") {
     requestTile(im.id, im.maxLevel, 0, 0, "high");
   }
