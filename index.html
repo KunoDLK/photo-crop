@@ -484,6 +484,7 @@ function tileKey(L, tx, ty) { return L + ":" + tx + ":" + ty; }
 const activeLevels = new Set();
 let tileClock = 0;
 let targetLevel = -1;
+let initialBaseLevel = -1; // level seeded with a low-quality first paint
 
 function isPinnedLevel(L) {
   return L >= Math.max(0, state.maxLevel - 1);
@@ -728,26 +729,30 @@ function cacheHasHigh(k) {
 // Called when the target detail level changes: abandon stale levels and queue
 // the new level's tiles nearest-first. Keeps active underlays + pinned base.
 function switchTargetLevel(L) {
+  // once the user changes level, the initial low-quality first paint no longer
+  // applies; revisiting that level should request high quality directly
+  if (L !== initialBaseLevel) initialBaseLevel = -1;
   targetLevel = L;
   const keep = new Set([L]);
   for (const al of activeLevels) keep.add(al);
   keep.add(state.maxLevel);
   if (state.maxLevel - 1 >= 0) keep.add(state.maxLevel - 1);
   abandonNonTargetLevels(keep);
-  // For coarse base levels the low-quality first paint is queued separately by
-  // queueInitialBase(); render() promotes them to high once the low exists.
-  // For other levels, enqueue high-quality tiles nearest-first now.
-  if (!isPinnedLevel(L)) enqueueLevelNearestFirst(L, "high");
+  // The initial fit level gets a low-quality first paint queued separately by
+  // queueInitialBase(); render() promotes it to high once the low exists.
+  // For every other level, enqueue high-quality tiles nearest-first now.
+  if (L !== initialBaseLevel) enqueueLevelNearestFirst(L, "high");
   pumpQueue();
 }
 
 function queueInitialBase() {
   if (!state.img) return;
-  const minL = Math.max(0, state.maxLevel - 1);
-  // Fast low-quality base first for an instant first paint. High-quality
-  // upgrades are requested from render() only after each low tile exists, so
-  // the user always sees the blurry base before crisp tiles replace it.
-  for (let L = state.maxLevel; L >= minL; L--) enqueueLevelNearestFirst(L, "low");
+  // Seed a fast low-quality first paint at the level that is actually shown
+  // first (the fit level), so the user immediately sees a blurry image which
+  // is then replaced by high-quality tiles.
+  const L = levelForScale();
+  initialBaseLevel = L;
+  enqueueLevelNearestFirst(L, "low");
   pumpQueue();
 }
 
@@ -827,17 +832,17 @@ function render() {
     }
   }
 
-  // Request high-quality tiles for the target level. For the coarse base
-  // levels (which get an instant low-quality first paint), only request "high"
-  // once the low tile exists, so the blurry base always paints before crisp
-  // tiles replace it. For all other levels, request "high" directly (the
-  // coarser active level is the visible preview meanwhile).
-  const baseLevel = isPinnedLevel(L);
+  // Request high-quality tiles for the target level. At the initial fit level
+  // (which gets a low-quality first paint), only request "high" once the low
+  // tile exists, so the blurry base always paints before crisp tiles replace
+  // it. For every other level, request "high" directly (the coarser active
+  // level is the visible preview meanwhile).
+  const deferForBase = (L === initialBaseLevel);
   for (let ty = r.ty0; ty <= r.ty1; ty++) {
     for (let tx = r.tx0; tx <= r.tx1; tx++) {
       const e = cache.get(tileKey(L, tx, ty));
       if (e && e.quality === "high") continue;
-      if (baseLevel && !e) continue; // wait for the low base tile first
+      if (deferForBase && !e) continue; // wait for the low base tile first
       requestTile(L, tx, ty, "high");
     }
   }
