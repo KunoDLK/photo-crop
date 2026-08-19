@@ -413,6 +413,17 @@ async function loadFile(file) {
   setToolbar(true);
   refreshList();
   requestRender();
+  const mp = (state.iw * state.ih / 1e6).toFixed(1);
+  const sizeMB = file.size ? (file.size / 1048576).toFixed(2) + " MB" : "unknown size";
+  console.log(
+    `[image loaded] "${file.name}"\n` +
+    `  resolution : ${state.iw} × ${state.ih} px (${mp} MP)\n` +
+    `  file size  : ${sizeMB}${file.type ? " · " + file.type : ""}\n` +
+    `  tile size  : ${TILE} px\n` +
+    `  max level  : ${state.maxLevel} (0 = full res, ${state.maxLevel} = whole image on 1 tile)\n` +
+    `  fit scale  : ${(state.fitScale * 100).toFixed(1)}%  ·  fit level: ${levelForScale()}\n` +
+    `  base tile  : level ${pinnedBaseLevel} (pinned, ${(TILE * Math.pow(2, pinnedBaseLevel))} px footprint)`
+  );
   status(`Loaded ${file.name}  (${state.iw}×${state.ih}) — draw boxes or auto-detect`);
 }
 
