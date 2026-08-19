@@ -112,6 +112,12 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   border-left: 1px solid var(--border);
   min-height: 0;
 }
+/* sidebar only shown while crop mode is active */
+body:not(.cropmode) .right { display: none; }
+/* in pan mode (crop off), the canvas drags the image */
+body:not(.cropmode) #view { cursor: grab; }
+body:not(.cropmode) #view:active { cursor: grabbing; }
+#btn-crop.active { background: var(--sel); color: #fff; border-color: var(--sel); }
 .right .rhead {
   padding: 10px 12px 6px;
   font-weight: 600;
@@ -234,6 +240,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   <button id="btn-openurl">Open URL…</button>
   <button id="btn-detect" disabled>Auto-detect</button>
   <button id="btn-clear" disabled>Clear boxes</button>
+  <button id="btn-crop" disabled>Crop mode: off</button>
   <button id="btn-tiledbg">Tile debug: off</button>
   <input type="file" id="file" accept="image/png,image/jpeg,image/tiff,image/bmp,image/webp" hidden>
   <div class="spacer"></div>
@@ -245,7 +252,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
     <canvas id="view"></canvas>
     <div id="drop-msg">
       <div>Drop a scan here</div>
-      <div class="sub">or use “Open image…” / “Open URL…” · wheel zooms · Ctrl+drag pans<br>drag empty canvas to draw a box</div>
+      <div class="sub">or use “Open image…” / “Open URL…” · wheel zooms · drag pans<br>enable “Crop mode” to draw and edit crop boxes</div>
     </div>
   </div>
   <div class="right">
@@ -299,6 +306,7 @@ const els = {
   file: document.getElementById("file"),
   detect: document.getElementById("btn-detect"),
   clear: document.getElementById("btn-clear"),
+  crop: document.getElementById("btn-crop"),
   tiledbg: document.getElementById("btn-tiledbg"),
   list: document.getElementById("list"),
   zoom: document.getElementById("zoom-lbl"),
@@ -332,10 +340,19 @@ const state = {
 const cache = new Map();
 let needRender = false;
 let tileDebug = false;
+let cropMode = false;
 let thumbDirty = new Set();
 let items = [];
 
 function status(msg) { els.status.textContent = msg; }
+function setCropMode(on) {
+  cropMode = on;
+  document.body.classList.toggle("cropmode", on);
+  els.crop.classList.toggle("active", on);
+  els.crop.textContent = "Crop mode: " + (on ? "on" : "off");
+  requestRender();
+}
+els.crop.addEventListener("click", () => setCropMode(!cropMode));
 els.tiledbg.addEventListener("click", () => {
   tileDebug = !tileDebug;
   els.tiledbg.textContent = "Tile debug: " + (tileDebug ? "on" : "off");
@@ -356,6 +373,7 @@ function fmtDeg(v) {
 function setToolbar(hasImg) {
   els.detect.disabled = !hasImg;
   els.clear.disabled = !hasImg;
+  els.crop.disabled = !hasImg;
   els.export.disabled = !hasImg;
 }
 
@@ -1031,7 +1049,7 @@ cv.addEventListener("pointerdown", (e) => {
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const [wx, wy] = devToWorld(mx, my);
-  if (e.ctrlKey || e.button === 1) {
+  if (e.ctrlKey || e.button === 1 || !cropMode) {
     state.mode = "pan";
     state.drag = { x: e.clientX, y: e.clientY, vx: state.vx, vy: state.vy };
     return;
