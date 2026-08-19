@@ -69,19 +69,6 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   cursor: grab;
 }
 #view:active { cursor: grabbing; }
-.dbgpanel {
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  padding: 8px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  flex: 0 0 auto;
-}
-.dbgrow { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
-.dbgrow label { flex: 0 0 auto; }
-.dbgrow input[type=range] { flex: 1 1 auto; }
-.dbgval { width: 4em; text-align: right; font-variant-numeric: tabular-nums; }
 .stats {
   position: absolute;
   left: 0;
@@ -118,17 +105,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   <button id="btn-reload">Reload</button>
   <button id="btn-fit">Fit</button>
   <button id="btn-tiledbg">Tile debug: off</button>
-  <button id="btn-dbg">Debug menu</button>
   <div class="spacer"></div>
   <span class="zoom-lbl" id="zoom-lbl">—</span>
-</div>
-
-<div class="dbgpanel" id="dbgpanel" hidden>
-  <div class="dbgrow">
-    <label for="dbg-srcmb">Max in-memory sources (MB)</label>
-    <input type="range" id="dbg-srcmb" min="16" max="8192" step="16" value="512">
-    <span class="dbgval" id="dbg-srcmb-val">512</span>
-  </div>
 </div>
 
 <div class="left" id="left">
@@ -169,10 +147,6 @@ const els = {
   reload: document.getElementById("btn-reload"),
   fit: document.getElementById("btn-fit"),
   tiledbg: document.getElementById("btn-tiledbg"),
-  dbg: document.getElementById("btn-dbg"),
-  dbgpanel: document.getElementById("dbgpanel"),
-  dbgsrcmb: document.getElementById("dbg-srcmb"),
-  dbgsrcmbval: document.getElementById("dbg-srcmb-val"),
   stats: document.getElementById("stats"),
 };
 
@@ -217,19 +191,12 @@ function cacheLog(msg) { if (CACHE_DEBUG) console.log("[cache] " + msg); }
 const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
 const deviceMemoryGB = navigator.deviceMemory || (isMobile ? 4 : 16);
 // Budget for full-res source bitmaps held in the worker, proportional to RAM.
-// Approx 160MB per GB of RAM, clamped to a sane range. Debug menu can override.
-let sourceBudgetMB = Math.round((deviceMemoryGB * 160));
-sourceBudgetMB = clamp(sourceBudgetMB, 320, 3 * 1024);
+// Approx 160MB per GB of RAM, clamped to a sane range.
+const sourceBudgetMB = clamp(Math.round(deviceMemoryGB * 160), 320, 3 * 1024);
 const SOURCE_BUDGET = sourceBudgetMB * 1024 * 1024;
 // Tile cache byte budget, scaled by RAM (256KB/tile). Protects low-memory phones
 // from holding thousands of decoded tiles; protected base tiles are excluded.
 const CACHE_MAX_BYTES = Math.max(64 * 1024 * 1024, Math.round(deviceMemoryGB * 64 * 1024 * 1024));
-function setSourceBudgetMB(mb) {
-  sourceBudgetMB = clamp(Math.round(mb), 16, 16 * 1024);
-  const b = sourceBudgetMB * 1024 * 1024;
-  if (workerReady && tileWorker) tileWorker.postMessage({ type: "cfg", TILE, srcBudget: b });
-  cacheLog(`source budget -> ${sourceBudgetMB}MB`);
-}
 // High-RAM devices keep blobs in RAM; low-RAM (phones) use IndexedDB.
 const USE_RAM_CACHE = deviceMemoryGB >= 8 || !isMobile;
 
@@ -1354,18 +1321,6 @@ els.tiledbg.addEventListener("click", () => {
   els.stats.hidden = !tileDebug;
   requestRender();
 });
-els.dbg.addEventListener("click", () => {
-  els.dbgpanel.hidden = !els.dbgpanel.hidden;
-});
-els.dbgsrcmb.addEventListener("input", () => {
-  const mb = parseInt(els.dbgsrcmb.value, 10);
-  els.dbgsrcmbval.textContent = mb;
-  setSourceBudgetMB(mb);
-  reconcile();
-});
-// initialise the debug slider to the current budget
-els.dbgsrcmb.value = sourceBudgetMB;
-els.dbgsrcmbval.textContent = sourceBudgetMB;
 window.addEventListener("keydown", (e) => {
   if (e.key === "f" || e.key === "F") { fitView(); reconcile(); requestRender(); }
 });
