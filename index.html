@@ -405,6 +405,8 @@ async function loadFile(file) {
   queued.length = 0;
   activeLevels.clear();
   targetLevel = -1;
+  initialBaseLevel = -1;
+  pinnedBaseLevel = -1;
   await workerSetSource(file);
   fitView();
   queueInitialBase();
@@ -484,13 +486,14 @@ function tileKey(L, tx, ty) { return L + ":" + tx + ":" + ty; }
 const activeLevels = new Set();
 let tileClock = 0;
 let targetLevel = -1;
-let initialBaseLevel = -1; // level seeded with a low-quality first paint
+let initialBaseLevel = -1;  // level seeded with a low-quality first paint
+let pinnedBaseLevel = -1;   // initial fit level: kept in cache for the image's lifetime
 
 function isPinnedLevel(L) {
   return L >= Math.max(0, state.maxLevel - 1);
 }
 function isProtectedLevel(L) {
-  return isPinnedLevel(L) || activeLevels.has(L);
+  return isPinnedLevel(L) || L === pinnedBaseLevel || activeLevels.has(L);
 }
 function cacheGet(k) {
   const v = cache.get(k);
@@ -752,6 +755,7 @@ function queueInitialBase() {
   // is then replaced by high-quality tiles.
   const L = levelForScale();
   initialBaseLevel = L;
+  pinnedBaseLevel = L; // keep this level's tiles in cache for the whole session
   enqueueLevelNearestFirst(L, "low");
   pumpQueue();
 }
