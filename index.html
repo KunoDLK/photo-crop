@@ -395,6 +395,7 @@ async function loadFile(file) {
   state.maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(state.iw, state.ih) / TILE)));
   cache.clear();
   pending.clear();
+  queueCoarsePreviewTiles();
   fitView();
   setToolbar(true);
   refreshList();
@@ -472,11 +473,22 @@ function cacheGet(k) {
   cache.set(k, v);
   return v.canvas;
 }
-function cacheSet(k, canvas) {
+function isPinnedLevel(L) {
+  return L >= Math.max(0, state.maxLevel - 1);
+}
+function cacheSet(k, canvas, L) {
   cache.delete(k);
-  cache.set(k, { canvas });
+  cache.set(k, { canvas, pinned: isPinnedLevel(L) });
   while (cache.size > CACHE_MAX) {
-    cache.delete(cache.keys().next().value);
+    let victim = null;
+    for (const [key, val] of cache.entries()) {
+      if (!val.pinned) {
+        victim = key;
+        break;
+      }
+    }
+    if (!victim) victim = cache.keys().next().value;
+    cache.delete(victim);
   }
 }
 async function generateTile(L, tx, ty) {
@@ -490,14 +502,41 @@ async function generateTile(L, tx, ty) {
   tctx.imageSmoothingEnabled = true;
   tctx.imageSmoothingQuality = "high";
   tctx.drawImage(state.img, sx, sy, sw, sh, 0, 0, sw / p, sh / p);
-  cacheSet(tileKey(L, tx, ty), c);
+  cacheSet(tileKey(L, tx, ty), c, L);
+}
+function queueCoarsePreviewTiles() {
+  if (!state.img) return;
+  const minL = Math.max(0, state.maxLevel - 1);
+  for (let L = minL; L <= state.maxLevel; L++) {
+    const tileW = TILE * Math.pow(2, L);
+    const txMax = Math.ceil(state.iw / tileW);
+    const tyMax = Math.ceil(state.ih / tileW);
+    for (let ty = 0; ty < tyMax; ty++) {
+      for (let tx = 0; tx < txMax; tx++) {
+        pending.add(tileKey(L, tx, ty));
+      }
+    }
+  }
+  scheduleGenerate();
+}
+function nextPendingKey() {
+  // Prefer tiles at the current view level so visible high-res tiles are not
+  // starved behind background coarse-preview preloading.
+  const L = state.img ? levelForScale() : -1;
+  if (L >= 0) {
+    const prefix = L + ":";
+    for (const k of pending) {
+      if (k.startsWith(prefix)) return k;
+    }
+  }
+  return pending.values().next().value;
 }
 function scheduleGenerate() {
   if (genRunning) return;
   genRunning = true;
   (async () => {
     while (pending.size) {
-      const k = pending.values().next().value;
+      const k = nextPendingKey();
       pending.delete(k);
       await new Promise((r) => setTimeout(r, 0));
       const [L, tx, ty] = k.split(":").map(Number);
@@ -530,40 +569,49 @@ function render() {
   const tx1 = Math.min(Math.ceil(state.iw / tileW) - 1, Math.floor(x1 / tileW));
   const ty1 = Math.min(Math.ceil(state.ih / tileW) - 1, Math.floor(y1 / tileW));
 
-  const groups = new Map();
   const infos = [];
   for (let ty = ty0; ty <= ty1; ty++) {
     for (let tx = tx0; tx <= tx1; tx++) {
       const key = tileKey(L, tx, ty);
       const exact = cacheGet(key);
-      const g = L > 0 ? tileKey(L - 1, tx >> 1, ty >> 1) : key;
-      let grp = groups.get(g);
-      if (!grp) { grp = { total: 0, done: 0, fallback: null, searched: false }; groups.set(g, grp); }
-      grp.total++;
-      if (exact) grp.done++;
-      if (!grp.searched) {
-        grp.searched = true;
-        for (let k = L - 1; k >= 0; k--) {
-          const s = L - k;
+      let fallback = null;
+      if (!exact) {
+        for (let k = L + 1; k <= state.maxLevel; k++) {
+          const s = k - L;
           const c = cacheGet(tileKey(k, tx >> s, ty >> s));
-          if (c) { grp.fallback = { canvas: c, level: k }; break; }
+          if (c) {
+            fallback = { canvas: c, level: k };
+            break;
+          }
         }
       }
-      infos.push({ tx, ty, key, exact, g });
+      infos.push({ tx, ty, key, exact, fallback });
     }
   }
+
   for (const it of infos) {
-    const grp = groups.get(it.g);
-    if (it.exact && grp.done === grp.total) {
+    if (!it.exact && it.fallback) {
+      const k = it.fallback.level;
+      const s = k - L;
+      const cxt = it.tx >> s;
+      const cyt = it.ty >> s;
+      const cw = TILE * Math.pow(2, k);
+      const dx = state.vx + it.tx * tileW * sc;
+      const dy = state.vy + it.ty * tileW * sc;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(dx, dy, tileW * sc, tileW * sc);
+      ctx.clip();
+      ctx.drawImage(it.fallback.canvas,
+        state.vx + cxt * cw * sc, state.vy + cyt * cw * sc, cw * sc, cw * sc);
+      ctx.restore();
+    }
+  }
+
+  for (const it of infos) {
+    if (it.exact) {
       ctx.drawImage(it.exact,
         state.vx + it.tx * tileW * sc, state.vy + it.ty * tileW * sc, tileW * sc, tileW * sc);
-    } else if (grp.fallback) {
-      const k = grp.fallback.level;
-      const s = L - k;
-      const cxt = it.tx >> s, cyt = it.ty >> s;
-      const cw = TILE * Math.pow(2, k);
-      ctx.drawImage(grp.fallback.canvas,
-        state.vx + cxt * cw * sc, state.vy + cyt * cw * sc, cw * sc, cw * sc);
     }
     if (!it.exact) pending.add(it.key);
   }
