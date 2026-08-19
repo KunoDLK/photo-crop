@@ -380,6 +380,7 @@ function buildLayout(list) {
         href: items[i].href,
         name: items[i].meta.name,
         group: gk, order: items[i].meta.order,
+        extra: !!items[i].meta.extra,
         cellX: ox, cellY: oy + LABEL_H, cell: CELL, labelY: oy,
         iw: 0, ih: 0, maxLevel: 0, fitFactor: 1,
         drawX: ox, drawY: oy + LABEL_H, drawW: CELL, drawH: CELL,
@@ -435,22 +436,34 @@ async function loadDirectory() {
     return;
   }
   const files = (data.files || []);
-  const list = [];
+  const matched = [];
+  const extra = [];
   for (const f of files) {
     const href = f.href;
     if (!href || !IMG_EXT.test(href)) continue;
-    const meta = parseName(decodeURIComponent(href));
-    if (!meta) continue;
-    list.push({ href, meta });
+    const dec = decodeURIComponent(href);
+    const meta = parseName(dec);
+    if (meta) matched.push({ href, meta });
+    else extra.push({ href, name: dec.replace(/\/+$/, "").replace(/\.[^.]+$/, "") });
   }
-  if (!list.length) {
-    status("No images matching N_N-name found in this folder.");
+  if (!matched.length && !extra.length) {
+    status("No images found in this folder.");
     buildLayout([]);
     requestRender();
     return;
   }
-  // order for sequential loading = group asc, order asc
-  list.sort((a, b) => a.meta.group - b.meta.group || a.meta.order - b.meta.order);
+  // matched: group asc, order asc
+  matched.sort((a, b) => a.meta.group - b.meta.group || a.meta.order - b.meta.order);
+  // non-matching images go into an extra group placed below all numbered groups
+  const list = matched.slice();
+  if (extra.length) {
+    let maxGroup = matched.length ? matched[matched.length - 1].meta.group : 0;
+    const extraGroup = maxGroup + 1;
+    extra.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    extra.forEach((it, i) => {
+      list.push({ href: it.href, meta: { group: extraGroup, order: i + 1, name: it.name, extra: true } });
+    });
+  }
   buildLayout(list);
   fitView();
   requestRender();
@@ -557,7 +570,7 @@ function drawLabel(im) {
   ctx.font = "600 " + fs + "px system-ui, sans-serif";
   ctx.fillStyle = getCss("--text");
   ctx.textBaseline = "bottom";
-  const label = im.group + "." + im.order + "  " + im.name;
+  const label = im.extra ? im.name : (im.group + "." + im.order + "  " + im.name);
   ctx.fillText(label, lx, ly - 6 * view.scale);
 }
 
