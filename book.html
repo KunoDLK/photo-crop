@@ -364,12 +364,13 @@ function pumpQueue() {
     tileWorker.postMessage({ type: "gen", id: req.id, L: req.L, tx: req.tx, ty: req.ty, quality: req.quality });
   }
 }
-function requestTile(id, L, tx, ty, quality) {
+function requestTile(id, L, tx, ty, quality, priority) {
   if (!readySources.has(id)) return;
   const rk = id + ":" + L + ":" + tx + ":" + ty + ":" + quality;
   if (inflight.has(rk)) return;
   if (queued.some((q) => q.rk === rk)) return;
-  queued.push({ id, L, tx, ty, quality, rk });
+  const req = { id, L, tx, ty, quality, rk };
+  if (priority) queued.unshift(req); else queued.push(req);
 }
 
 // ------------------------------------------------------------- images/layout
@@ -686,10 +687,11 @@ function drawImageEntry(im, sc) {
       }
   }
 
-  // request tiles: base first, then target level ordered nearest-first from the
-  // cursor (if over the canvas) else the viewport centre, so the area the user
-  // cares about sharpens first.
-  requestTile(im.id, im.maxLevel, 0, 0, "low");
+  // request tiles: the low-quality whole-image base first (priority) so there is
+  // always a low-res underlay to show on cache misses instead of grey; then the
+  // high base, then the target level ordered nearest-first from the cursor (or
+  // viewport centre) so the area the user cares about sharpens first.
+  requestTile(im.id, im.maxLevel, 0, 0, "low", true);
   requestTile(im.id, im.maxLevel, 0, 0, "high");
   const vpw = cv.clientWidth, vph = cv.clientHeight;
   const ox = cursorX >= 0 ? cursorX : vpw / 2;
