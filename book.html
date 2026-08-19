@@ -1129,6 +1129,13 @@ function drawImageEntry(im, sc) {
   // whatever is already in the cache (base underlay + generated finer tiles).
 
   if (tileDebug) {
+    // blue border around loaded images
+    if (im.status === "loaded") {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#1ca7e8";
+      ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
+      ctx.lineWidth = 1;
+    }
     const rr = tileRange(im, L, sc, dx, dy, dw, dh);
     const twsc = TILE * Math.pow(2, L) * im.fitFactor * sc;
     ctx.lineWidth = 1;
