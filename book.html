@@ -144,7 +144,10 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 // ------------------------------------------------------------- constants
 const TILE = 256;
+const TILE_BYTES = TILE * TILE * 4; // RGBA bytes per tile (worker always emits TILE×TILE)
 const CACHE_MAX = 1024;
+const MAX_ACTIVE = 12;      // upper bound on concurrently resident sources
+const MAX_SRC_LOADS = 2;    // max parallel source decodes
 const MAX_INFLIGHT = 6;
 const SETTLE_MS = 180;
 const DOWNLOAD_GAP_MS = 400;   // pause between sequential image downloads
@@ -185,6 +188,12 @@ let needRender = false;
 let tileDebug = false;
 let interacting = false;
 let settleTimer = null;
+let stateHasImages = false;
+let loadGeneration = 0;        // bumped on reload; invalidates stale decode callbacks
+let avgSourceBytes = 0;         // running estimate of a full-res source's size
+let sourceLoadCount = 0;        // in-flight source decodes
+const sourceLoading = new Set(); // image ids awaiting a source decode/ack
+const sourceFailedAt = new Map(); // id -> timestamp of last failed decode
 // last known cursor position in canvas (device/CSS) coords; -1 = unknown/off
 let cursorX = -1, cursorY = -1;
 
@@ -199,8 +208,8 @@ let profFrames = 0;
 const tileTiming = new Map(); // "L:quality" -> { n, sum, max }
 let tileTimingFrames = 0;
 // queue debug logging
-const QUEUE_DEBUG = true;
-const CACHE_DEBUG = true;
+const QUEUE_DEBUG = false;
+const CACHE_DEBUG = false;
 function queueLog(msg) { if (QUEUE_DEBUG) console.log("[queue] " + msg); }
 function cacheLog(msg) { if (CACHE_DEBUG) console.log("[cache] " + msg); }
 
@@ -212,6 +221,9 @@ const deviceMemoryGB = navigator.deviceMemory || (isMobile ? 4 : 16);
 let sourceBudgetMB = Math.round((deviceMemoryGB * 160));
 sourceBudgetMB = clamp(sourceBudgetMB, 320, 3 * 1024);
 const SOURCE_BUDGET = sourceBudgetMB * 1024 * 1024;
+// Tile cache byte budget, scaled by RAM (256KB/tile). Protects low-memory phones
+// from holding thousands of decoded tiles; protected base tiles are excluded.
+const CACHE_MAX_BYTES = Math.max(64 * 1024 * 1024, Math.round(deviceMemoryGB * 64 * 1024 * 1024));
 function setSourceBudgetMB(mb) {
   sourceBudgetMB = clamp(Math.round(mb), 16, 16 * 1024);
   const b = sourceBudgetMB * 1024 * 1024;
@@ -414,7 +426,13 @@ function requestRender() {
 function markInteracting() {
   interacting = true;
   if (settleTimer) clearTimeout(settleTimer);
-  settleTimer = setTimeout(() => { settleTimer = null; interacting = false; requestRender(); }, SETTLE_MS);
+  settleTimer = setTimeout(() => {
+    settleTimer = null;
+    interacting = false;
+    reconcile();
+    requestRender();
+  }, SETTLE_MS);
+  reconcile();
 }
 
 // ------------------------------------------------------------- canvas size
@@ -425,7 +443,7 @@ function resizeCanvas() {
   cv.width = Math.round(w * dpr);
   cv.height = Math.round(h * dpr);
 }
-new ResizeObserver(() => { resizeCanvas(); requestRender(); }).observe(els.left);
+new ResizeObserver(() => { resizeCanvas(); reconcile(); requestRender(); }).observe(els.left);
 resizeCanvas();
 
 // ------------------------------------------------------------- tile worker
@@ -434,6 +452,7 @@ const workerSupported = typeof Worker !== "undefined" &&
   typeof createImageBitmap !== "undefined";
 
 const WORKER_SRC = `
+const DEBUG = false;
 const sources = new Map(); // id -> {img, iw, ih, bytes, lastUsed}
 const sourceOrder = [];     // LRU order of source ids (most-recent at end)
 let TILE = 256;
@@ -492,17 +511,14 @@ self.onmessage = (e) => {
     srcBytes += bytes;
     evictSources();
     self.postMessage({ type: "sourceReady", id: m.id });
+    if (DEBUG) console.log("[worker] addSource", m.id, m.iw + "x" + m.ih, "srcBytes", (srcBytes / 1048576).toFixed(1) + "MB");
     return;
   }
-  if (m.type === "dropSource") {
-    const s = sources.get(m.id);
-    if (s) {
-      if (s.img && s.img.close) s.img.close();
-      srcBytes -= s.bytes;
-      sources.delete(m.id);
-      const i = sourceOrder.indexOf(m.id);
-      if (i >= 0) sourceOrder.splice(i, 1);
-    }
+  if (m.type === "clear") {
+    for (const s of sources.values()) { if (s.img && s.img.close) s.img.close(); }
+    sources.clear();
+    sourceOrder.length = 0;
+    srcBytes = 0;
     return;
   }
   if (m.type === "gen") {
@@ -511,6 +527,7 @@ self.onmessage = (e) => {
       // source was evicted; tell the main thread so it can drop the inflight
       // entry (otherwise the queue stalls forever)
       self.postMessage({ type: "genSkipped", id: m.id, L: m.L, tx: m.tx, ty: m.ty, quality: m.quality });
+      if (DEBUG) console.log("[worker] genSkipped(no source) L" + m.L + (m.quality === "low" ? "-low" : "") + " " + m.id + ":" + m.tx + "," + m.ty);
       return;
     }
     sourceUsed(m.id);
@@ -522,6 +539,7 @@ self.onmessage = (e) => {
     const sh = Math.min(TILE * p, s.ih - sy);
     if (sw <= 0 || sh <= 0) {
       self.postMessage({ type: "genSkipped", id: m.id, L, tx, ty, quality });
+      if (DEBUG) console.log("[worker] genSkipped(bad rect) L" + L + " " + m.id + ":" + tx + "," + ty);
       return;
     }
     const dw = Math.max(1, Math.round(sw / p));
@@ -540,6 +558,7 @@ self.onmessage = (e) => {
     self.postMessage(
       { type: "tile", id: m.id, L, tx, ty, quality, bitmap: bmp, ms: performance.now() - t0 },
       [bmp]);
+    if (DEBUG) console.log("[worker] tile done L" + L + (quality === "low" ? "-low" : "") + " " + m.id + ":" + tx + "," + ty + " " + (performance.now() - t0).toFixed(1) + "ms");
   }
 };
 `;
@@ -547,6 +566,7 @@ self.onmessage = (e) => {
 let tileWorker = null;
 let workerReady = false;
 const cache = new Map();          // key "id:L:tx:ty" -> {img,L,quality,lastUsed,id}
+let cacheBytes = 0;               // sum of decoded tile bytes held in the cache
 let tileClock = 0;
 const inflight = new Set();        // "id:L:tx:ty:quality"
 const queued = [];                 // {id,L,tx,ty,quality,rk}
@@ -562,25 +582,29 @@ function initWorker() {
   tileWorker.onmessage = (e) => {
     const m = e.data;
     if (m.type === "sourceReady") {
+      queueLog(`sourceReady ${m.id}`);
       readySources.add(m.id);
-      pumpQueue();
+      sourceLoading.delete(m.id);
+      sourceFailedAt.delete(m.id);
+      const im = imgById.get(m.id);
+      if (im) requestBaseTiles(im);
+      reconcile();
       requestRender();
       return;
     }
     if (m.type === "sourceEvicted") {
+      queueLog(`sourceEvicted ${m.id}`);
       readySources.delete(m.id);
-      // No requestRender here: re-decoding is driven by the render loop (only
-      // for the focused image) and by genSkipped draining in-flight entries.
-      // Triggering a render here caused an evict->re-decode->evict churn loop.
       return;
     }
     if (m.type === "genSkipped") {
-      // worker couldn't build this tile (source evicted). Drop the inflight
-      // entry so the queue keeps draining; the render loop will re-request it
-      // once the source is re-decoded.
+      // Worker couldn't build this tile (source evicted). Drop the inflight
+      // entry and re-run the scheduler so it reloads the source if the image is
+      // still inside the active window.
       const rk = m.id + ":" + m.L + ":" + m.tx + ":" + m.ty + ":" + m.quality;
       inflight.delete(rk);
-      pumpQueue();
+      queueLog(`genSkipped ${rk}  inflight=${inflight.size}/${MAX_INFLIGHT}`);
+      reconcile();
       return;
     }
     if (m.type === "tile") {
@@ -597,6 +621,9 @@ function initWorker() {
         m.bitmap.close();
       }
       pumpQueue();
+      // When the queue and in-flight set both drain, re-run the scheduler to
+      // advance the active window onto the next-priority images.
+      if (queued.length === 0 && inflight.size === 0) reconcile();
       requestRender();
       profEnd(tTile);
     }
@@ -612,34 +639,24 @@ function addSource(im) {
     { type: "addSource", id: im.id, bitmap: im.bitmap, iw: im.iw, ih: im.ih }, [im.bitmap]);
   im.bitmap = null; // ownership moved to the worker
 }
-// Tell the worker to free an image's source bitmap (unload after processing).
-function unloadSource(id) {
-  if (!workerSupported || !tileWorker) return;
-  readySources.delete(id);
-  tileWorker.postMessage({ type: "dropSource", id });
-}
 
-// Re-decode a source (from the cached blob) so the worker can generate its
-// tiles. Used by the sequential processor for the single active image.
+// Re-decode a source from the cached blob so the worker can generate its tiles.
+// Returns true once the source has been transferred to the worker.
 const redecoding = new Set();
-const redecodedAt = new Map(); // id -> timestamp (ms)
 async function ensureSource(im) {
-  if (readySources.has(im.id) || redecoding.has(im.id)) return;
-  if (im.status !== "loaded") return;
-  const now = performance.now();
-  const last = redecodedAt.get(im.id) || 0;
-  if (now - last < 500) return; // small throttle; only one image at a time anyway
-  redecodedAt.set(im.id, now);
+  if (readySources.has(im.id) || redecoding.has(im.id)) return true;
+  if (im.status !== "loaded") return false;
   redecoding.add(im.id);
   try {
     const blob = await blobCacheGet(im.url);
-    if (!blob) return;
+    if (!blob) return false;
     const bmp = await createImageBitmap(blob);
     im.bitmap = bmp;
     addSource(im);
-    requestTilesForBase(im);
+    return true;
   } catch (e) {
     cacheLog(`re-decode failed ${im.url}: ${e.message}`);
+    return false;
   } finally {
     redecoding.delete(im.id);
   }
@@ -662,7 +679,8 @@ function cacheSet(k, img, id, L, quality) {
   const prev = cache.get(k);
   if (prev && prev.img && prev.img.close && prev.img !== img) prev.img.close();
   cache.set(k, { img, id, L, quality, lastUsed: ++tileClock });
-  while (cache.size > CACHE_MAX) {
+  if (!prev) cacheBytes += TILE_BYTES;
+  while (cache.size > CACHE_MAX || cacheBytes > CACHE_MAX_BYTES) {
     let victimKey = null, victimTime = Infinity;
     for (const [key, val] of cache.entries()) {
       if (isProtected(val)) continue;
@@ -672,6 +690,7 @@ function cacheSet(k, img, id, L, quality) {
     const ev = cache.get(victimKey);
     if (ev && ev.img && ev.img.close) ev.img.close();
     cache.delete(victimKey);
+    cacheBytes -= TILE_BYTES;
   }
 }
 function cacheHasHigh(k) { const v = cache.get(k); return !!(v && v.quality === "high"); }
@@ -681,20 +700,32 @@ function pumpQueue() {
   if (!workerSupported || !workerReady) return;
   while (inflight.size < MAX_INFLIGHT && queued.length) {
     const req = queued.shift();
-    if (inflight.has(req.rk)) { queueLog(`skip(inflight) ${req.rk}`); continue; }
-    if (!readySources.has(req.id)) { queueLog(`skip(source) ${req.rk}`); continue; } // re-requested by render
+    if (inflight.has(req.rk)) {
+      queueLog(`drop(inflight dup) ${req.rk}  queued=${queued.length}`);
+      continue;
+    }
+    if (!readySources.has(req.id)) {
+      // Source not ready yet (being decoded / evicted). Do NOT drop the request
+      // forever - put it back at the front and stop draining, so it is sent once
+      // the source becomes ready (sourceReady -> pumpQueue).
+      queueLog(`defer(no source) ${req.rk}  srcReady=${[...readySources]}  queued=${queued.length}`);
+      queued.unshift(req);
+      break;
+    }
     inflight.add(req.rk);
     queueLog(`send ${req.rk}  [inflight=${inflight.size}/${MAX_INFLIGHT} queued=${queued.length}]`);
     tileWorker.postMessage({ type: "gen", id: req.id, L: req.L, tx: req.tx, ty: req.ty, quality: req.quality });
   }
+  if (inflight.size >= MAX_INFLIGHT && queued.length) {
+    queueLog(`STALL inflight=${inflight.size}/${MAX_INFLIGHT} queued=${queued.length} [${[...inflight].slice(0, 8).join(",")}]`);
+  }
 }
-function requestTile(id, L, tx, ty, quality, priority) {
+function requestTile(id, L, tx, ty, quality) {
   if (!readySources.has(id)) return;
   const rk = id + ":" + L + ":" + tx + ":" + ty + ":" + quality;
   if (inflight.has(rk)) return;
   if (queued.some((q) => q.rk === rk)) return;
-  const req = { id, L, tx, ty, quality, rk };
-  if (priority) queued.unshift(req); else queued.push(req);
+  queued.push({ id, L, tx, ty, quality, rk });
 }
 
 // ------------------------------------------------------------- images/layout
@@ -773,6 +804,12 @@ function fitImage(im) {
   im.maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(im.iw, im.ih) / TILE)));
 }
 
+// Update the running estimate of a full-res source's size (for window sizing).
+function trackSourceSize(im) {
+  const bytes = im.iw * im.ih * 4;
+  avgSourceBytes = avgSourceBytes ? avgSourceBytes * 0.8 + bytes * 0.2 : bytes;
+}
+
 // ------------------------------------------------------------- view helpers
 function fitView() {
   const vpw = cv.clientWidth || els.left.clientWidth;
@@ -787,11 +824,18 @@ function fitView() {
 // ------------------------------------------------------------- directory load
 async function loadDirectory() {
   status("Listing folder…");
+  loadGeneration++;
   images = [];
   cache.clear();
+  cacheBytes = 0;
   inflight.clear();
   queued.length = 0;
   readySources.clear();
+  sourceLoading.clear();
+  redecoding.clear();
+  sourceFailedAt.clear();
+  sourceLoadCount = 0;
+  if (tileWorker) tileWorker.postMessage({ type: "clear" });
   let data;
   try {
     const res = await cpFetch("./?ls", { headers: { "Accept": "application/json" }, cache: "no-store" });
@@ -815,7 +859,6 @@ async function loadDirectory() {
   if (!matched.length && !extra.length) {
     status("No images found in this folder.");
     stateHasImages = false;
-    procActive = null;
     buildLayout([]);
     requestRender();
     return;
@@ -834,7 +877,6 @@ async function loadDirectory() {
   }
   buildLayout(list);
   stateHasImages = images.length > 0;
-  procActive = null;
   fitView();
   requestRender();
   status(`Found ${images.length} image(s) in ${new Set(images.map(i=>i.group)).size} group(s). Loading…`);
@@ -860,9 +902,8 @@ async function loadSequential(idx) {
     im.ih = bitmap.height;
     fitImage(im);
     im.status = "loaded";
+    trackSourceSize(im);
     addSource(im);
-    // seed the coarse whole-image base tile immediately (low quality)
-    requestTilesForBase(im);
     requestRender();
     profEnd(tLoad);
   } catch (e) {
@@ -913,28 +954,44 @@ async function downloadWithProgress(im) {
   return new Blob(chunks);
 }
 
-// once a source is ready, we still request base via render; this primes it early
-function requestTilesForBase(im) {
-  if (!readySources.has(im.id)) {
-    // will be primed on sourceReady + render
-    return;
-  }
-  requestTile(im.id, im.maxLevel, 0, 0, "low");
-  requestTile(im.id, im.maxLevel, 0, 0, "high");
-  pumpQueue();
+// ------------------------------------------------------------- scheduler
+// Event-driven tile scheduler. Recomputes the desired tile set for the current
+// view, keeps a budget-sized window of sources resident in the worker, and
+// enqueues tiles image-by-image in priority order. It runs only in response to
+// real changes (view move/settle, source ready/evicted, tile skipped) — never
+// from inside the draw pass — so the app is fully idle when nothing changes.
+
+// Number of images allowed to hold a resident source concurrently, derived from
+// the source memory budget. Scales from 1 (phones) up to MAX_ACTIVE (desktops).
+function activeWindowSize() {
+  if (avgSourceBytes <= 0) return 1;
+  const budget = sourceBudgetMB * 1024 * 1024;
+  return clamp(Math.floor(budget / avgSourceBytes), 1, MAX_ACTIVE);
 }
 
-// ------------------------------------------------------- sequential tiles
-// Process images ONE AT A TIME: load the next image's source, enqueue all its
-// outstanding visible tiles, wait until they're generated, then unload the
-// source and move on. All in-view images eventually get all their tiles, while
-// the worker only ever holds one source at a time (no memory blowup, no
-// evict/re-decode churn). During pan/zoom the coarse base stays on screen.
-let procActive = null;       // image id currently loaded + being tiled
-let procWaitReady = false;   // active image's source is being decoded
+// Visible, loaded images ordered nearest-first from the cursor (or centre).
+function visibleImages() {
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  const sc = view.scale;
+  const sx0 = (0 - view.vx) / sc, sy0 = (0 - view.vy) / sc;
+  const sx1 = (vpw - view.vx) / sc, sy1 = (vph - view.vy) / sc;
+  const ox = cursorX >= 0 ? cursorX : vpw / 2;
+  const oy = cursorY >= 0 ? cursorY : vph / 2;
+  const out = [];
+  for (const im of images) {
+    if (im.status !== "loaded") continue;
+    const cx0 = im.cellX, cy0 = im.labelY, cx1 = im.cellX + im.cell, cy1 = im.cellY + im.cell;
+    if (cx1 < sx0 || cx0 > sx1 || cy1 < sy0 || cy0 > sy1) continue;
+    const [cx, cy] = sceneToDev(im.cellX + im.cell / 2, im.labelY + im.cell / 2);
+    const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
+    out.push({ im, d2 });
+  }
+  out.sort((a, b) => a.d2 - b.d2);
+  return out.map((o) => o.im);
+}
 
-// Does this image have any outstanding high tiles at its current level?
-function imageNeedsTiles(im) {
+// Does this image still have missing high tiles at its current target level?
+function imageNeedsHighTiles(im) {
   if (im.status !== "loaded") return false;
   const sc = view.scale;
   const [dx, dy] = sceneToDev(im.drawX, im.drawY);
@@ -946,74 +1003,8 @@ function imageNeedsTiles(im) {
       if (!cacheHasHigh(tileKey(im.id, L, tx, ty))) return true;
   return false;
 }
-// Is every visible tile of this image at its current level present (high)?
-function imageCovered(im) { return !imageNeedsTiles(im); }
 
-// Advance the sequential processor: either keep processing the active image's
-// outstanding tiles, or unload it and start the next image that needs tiles.
-function stepProcessor() {
-  if (!workerSupported || !workerReady) return;
-  if (!stateHasImages) return;
-
-  // 1) If an image is active, make sure its source is loaded and tiles enqueued.
-  if (procActive !== null) {
-    const im = imgById.get(procActive);
-    if (im && im.status === "loaded") {
-      if (!readySources.has(im.id)) {
-        // source not in worker yet - decode it (one at a time)
-        if (!procWaitReady && !redecoding.has(im.id)) { procWaitReady = true; ensureSource(im).then(() => { procWaitReady = false; stepProcessor(); }); }
-        return;
-      }
-      // source ready: enqueue all of this image's outstanding tiles
-      enqueueImageTiles(im);
-      pumpQueue();
-      if (imageCovered(im)) {
-        // done with this image - unload it and move to the next
-        unloadSource(im.id);
-        procActive = null;
-        pumpQueue();
-      }
-      return;
-    } else {
-      // active image gone/failed
-      procActive = null;
-    }
-  }
-
-  // 2) Pick the next image that needs tiles (in priority order).
-  const next = findNextImage();
-  if (next) {
-    procActive = next.id;
-    procWaitReady = false;
-    if (!readySources.has(next.id)) {
-      procWaitReady = true;
-      ensureSource(next).then(() => { procWaitReady = false; stepProcessor(); });
-      return;
-    }
-    enqueueImageTiles(next);
-    pumpQueue();
-  }
-}
-let stateHasImages = false;
-
-// Ordered list (by priority) of images needing tiles - recomputed each step.
-function findNextImage() {
-  const vpw = cv.clientWidth, vph = cv.clientHeight;
-  const ox = cursorX >= 0 ? cursorX : vpw / 2;
-  const oy = cursorY >= 0 ? cursorY : vph / 2;
-  const candidates = [];
-  for (const im of images) {
-    if (!imageNeedsTiles(im)) continue;
-    const [cx, cy] = sceneToDev(im.cellX + im.cell / 2, im.labelY + im.cell / 2);
-    const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
-    candidates.push({ im, d2 });
-  }
-  candidates.sort((a, b) => a.d2 - b.d2);
-  return candidates.length ? candidates[0].im : null;
-}
-
-// Enqueue all outstanding high tiles for one image (its current level),
-// nearest-first from cursor/centre, in a stable (image-grouped) order.
+// Enqueue this image's outstanding high tiles, nearest-first from the cursor.
 function enqueueImageTiles(im) {
   if (!readySources.has(im.id)) return;
   const sc = view.scale;
@@ -1024,18 +1015,70 @@ function enqueueImageTiles(im) {
   const vpw = cv.clientWidth, vph = cv.clientHeight;
   const ox = cursorX >= 0 ? cursorX : vpw / 2;
   const oy = cursorY >= 0 ? cursorY : vph / 2;
-  const twscT = TILE * Math.pow(2, L) * im.fitFactor * sc;
+  const twsc = TILE * Math.pow(2, L) * im.fitFactor * sc;
   const pend = [];
   for (let ty = r.ty0; ty <= r.ty1; ty++)
     for (let tx = r.tx0; tx <= r.tx1; tx++) {
       if (cacheHasHigh(tileKey(im.id, L, tx, ty))) continue;
-      const cx = dx + (tx + 0.5) * twscT;
-      const cy = dy + (ty + 0.5) * twscT;
+      const cx = dx + (tx + 0.5) * twsc;
+      const cy = dy + (ty + 0.5) * twsc;
       const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
       pend.push({ tx, ty, d2 });
     }
   pend.sort((a, b) => a.d2 - b.d2);
   for (const t of pend) requestTile(im.id, L, t.tx, t.ty, "high");
+}
+
+// Ensure the pinned whole-image base tile (low, then high) exists for the image
+// so every visible image always has a low-quality background underlay.
+function requestBaseTiles(im) {
+  const k = tileKey(im.id, im.maxLevel, 0, 0);
+  const e = cache.get(k);
+  if (!e) requestTile(im.id, im.maxLevel, 0, 0, "low");
+  else if (e.quality !== "high") requestTile(im.id, im.maxLevel, 0, 0, "high");
+}
+
+// Start decoding an image's source (from the cached blob) if it is missing and
+// a decode slot is free. The window ordering guarantees this never evicts a
+// higher-priority resident source.
+function requestSourceLoad(im) {
+  if (readySources.has(im.id) || sourceLoading.has(im.id) || redecoding.has(im.id)) return;
+  if (sourceLoadCount >= MAX_SRC_LOADS) return;
+  const failed = sourceFailedAt.get(im.id);
+  if (failed && performance.now() - failed < 2000) return; // backoff after a miss
+  sourceLoadCount++;
+  sourceLoading.add(im.id);
+  const gen = loadGeneration;
+  ensureSource(im).then((ok) => {
+    if (gen !== loadGeneration) return; // stale after a reload
+    if (!ok) { sourceFailedAt.set(im.id, performance.now()); sourceLoading.delete(im.id); }
+    sourceLoadCount--;
+    reconcile();
+  });
+}
+
+// Rebuild the pending queue from the current desired set. Drops stale (now
+// off-screen) requests and only tiles images inside the active window.
+function reconcile() {
+  if (!workerSupported || !workerReady || !stateHasImages) return;
+  queued.length = 0;
+
+  // Every visible image gets its base tile; while interacting we stop here so
+  // pan/zoom shows a low-quality background instead of chasing moving tiles.
+  const order = visibleImages();
+  for (const im of order) requestBaseTiles(im);
+  if (interacting) { pumpQueue(); return; }
+
+  const win = activeWindowSize();
+  let activated = 0;
+  for (const im of order) {
+    if (!imageNeedsHighTiles(im)) continue;
+    if (activated >= win) break;
+    activated++;
+    if (!readySources.has(im.id)) { requestSourceLoad(im); continue; }
+    enqueueImageTiles(im);
+  }
+  pumpQueue();
 }
 
 // ------------------------------------------------------------- render
@@ -1045,9 +1088,6 @@ function render() {
   const tView = profStart("view.collect");
   const vpw = cv.clientWidth, vph = cv.clientHeight;
   if (!vpw || !vph) return;
-  // Drop stale pending requests each frame; the sequential processor re-enqueues
-  // exactly the active image's outstanding tiles. In-flight jobs are left to finish.
-  queued.length = 0;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#808080";
   ctx.fillRect(0, 0, vpw, vph);
@@ -1060,8 +1100,6 @@ function render() {
   const sx1 = (vpw - view.vx) / sc, sy1 = (vph - view.vy) / sc;
 
   // collect visible images
-  const ox = cursorX >= 0 ? cursorX : vpw / 2;
-  const oy = cursorY >= 0 ? cursorY : vph / 2;
   const visible = [];
   for (const im of images) {
     const cx0 = im.cellX, cy0 = im.labelY, cx1 = im.cellX + im.cell, cy1 = im.cellY + im.cell;
@@ -1070,22 +1108,14 @@ function render() {
   }
   profEnd(tView);
 
-  // Draw all visible images from cache (base underlay + any generated finer
-  // tiles). Drawing never enqueues requests; the sequential processor does that
-  // for one image at a time, so the UI stays smooth and low-res while working.
+  // Pure cache read: base underlay + any generated tiles. Drawing never
+  // enqueues requests — the event-driven scheduler handles all of that.
   const tDraw = profStart("draw.images");
   for (const im of visible) {
     drawImageEntry(im, sc);
   }
   profEnd(tDraw);
 
-  // Drive the one-at-a-time tile processor (unless the user is actively
-  // panning/zooming - keep the current lower quality during interaction).
-  if (!interacting) stepProcessor();
-
-  const tQueue = profStart("queue.pump");
-  pumpQueue();
-  profEnd(tQueue);
   els.zoom.textContent = (view.scale * 100).toFixed(0) + "%";
   if (tileDebug) updateStats();
   profEnd(tFrame);
@@ -1122,64 +1152,21 @@ function drawImageEntry(im, sc) {
   ctx.rect(dx, dy, dw, dh);
   ctx.clip();
 
-  // draw pinned whole-image base first (underlay) so cache misses show a
-  // low-res image instead of grey
-  const base = cache.get(tileKey(im.id, im.maxLevel, 0, 0));
-  if (base) {
-    cacheGet(tileKey(im.id, im.maxLevel, 0, 0));
-    const btw = TILE * Math.pow(2, im.maxLevel) * im.fitFactor * sc;
-    ctx.drawImage(base.img, dx, dy, btw, btw);
-  }
-  // Keep the whole-image base tile available for every visible image, but only
-  // (re)request it when it's missing or needs a quality upgrade. Requesting it
-  // unconditionally every frame would regenerate it forever (the queue is
-  // cleared each render), pinning the worker at 100% and starving target tiles.
-  // Base requests are enqueued normally (no priority) so the queue stays
-  // grouped by image - all of one image's tiles before the next image's, so
-  // the worker doesn't thrash between sources.
-  const baseK = tileKey(im.id, im.maxLevel, 0, 0);
-  const baseE = cache.get(baseK);
-  if (!baseE) {
-    requestTile(im.id, im.maxLevel, 0, 0, "low");
-  } else if (baseE.quality !== "high") {
-    requestTile(im.id, im.maxLevel, 0, 0, "high");
-  }
-
+  // Stateless composite: draw every cached tile from the coarsest whole-image
+  // base (the low-quality underlay) down to the current target level. Absent
+  // tiles fall through to whatever is beneath, so cache misses show the base
+  // instead of grey, and zoom-in progressively sharpens as finer tiles arrive.
   const L = levelForImage(im);
-  // per-image transition tracking
-  if (im._target !== L) { im._active = im._active || new Set(); im._active.add(L); im._target = L; }
-  im._active = im._active || new Set();
-  im._active.add(L);
-
-  // coverage of target level within the image
-  const rTarget = tileRange(im, L, sc, dx, dy, dw, dh);
-  let covered = true;
-  for (let ty = rTarget.ty0; ty <= rTarget.ty1 && covered; ty++)
-    for (let tx = rTarget.tx0; tx <= rTarget.tx1; tx++)
-      if (!cacheHasHigh(tileKey(im.id, L, tx, ty))) { covered = false; break; }
-
-  // drop finer stale active levels; if covered drop coarser (except pinned base)
-  for (const lv of [...im._active]) if (lv < L && lv < im.maxLevel) im._active.delete(lv);
-  if (covered) for (const lv of [...im._active]) if (lv !== L && lv < im.maxLevel) im._active.delete(lv);
-  im._active.add(L);
-  im._active.add(im.maxLevel); // always keep base
-
-  // coarse -> fine composite
-  const drawLevels = [...im._active].sort((a, b) => b - a);
-  for (const lv of drawLevels) {
-    const rr = tileRange(im, lv, sc, dx, dy, dw, dh);
+  for (let lv = im.maxLevel; lv >= L; lv--) {
+    const r = tileRange(im, lv, sc, dx, dy, dw, dh);
     const twsc = TILE * Math.pow(2, lv) * im.fitFactor * sc;
-    for (let ty = rr.ty0; ty <= rr.ty1; ty++)
-      for (let tx = rr.tx0; tx <= rr.tx1; tx++) {
+    for (let ty = r.ty0; ty <= r.ty1; ty++)
+      for (let tx = r.tx0; tx <= r.tx1; tx++) {
         const entry = cacheGet(tileKey(im.id, lv, tx, ty));
         if (!entry) continue;
         ctx.drawImage(entry.img, dx + tx * twsc, dy + ty * twsc, twsc, twsc);
       }
   }
-
-  // Tile requests are NOT made here: the sequential processor enqueues the
-  // active image's outstanding tiles one image at a time. Drawing only reads
-  // whatever is already in the cache (base underlay + generated finer tiles).
 
   if (tileDebug) {
     // blue border around loaded images
@@ -1359,7 +1346,7 @@ function updatePinch() {
 }
 
 // ------------------------------------------------------------- toolbar
-els.fit.addEventListener("click", () => { fitView(); requestRender(); });
+els.fit.addEventListener("click", () => { fitView(); reconcile(); requestRender(); });
 els.reload.addEventListener("click", () => { loadDirectory(); });
 els.tiledbg.addEventListener("click", () => {
   tileDebug = !tileDebug;
@@ -1374,12 +1361,13 @@ els.dbgsrcmb.addEventListener("input", () => {
   const mb = parseInt(els.dbgsrcmb.value, 10);
   els.dbgsrcmbval.textContent = mb;
   setSourceBudgetMB(mb);
+  reconcile();
 });
 // initialise the debug slider to the current budget
 els.dbgsrcmb.value = sourceBudgetMB;
 els.dbgsrcmbval.textContent = sourceBudgetMB;
 window.addEventListener("keydown", (e) => {
-  if (e.key === "f" || e.key === "F") { fitView(); requestRender(); }
+  if (e.key === "f" || e.key === "F") { fitView(); reconcile(); requestRender(); }
 });
 
 // ------------------------------------------------------------- stats bar
@@ -1395,11 +1383,10 @@ function updateStats() {
   let loadedImages = 0, totalImages = images.length;
   let cached = cache.size;
   let inFlight = inflight.size, queuedN = queued.length;
-  let outstand = 0;      // images still needing tiles (from processor view)
-  let sourceBytes = 0;
+  let outstand = 0;      // images still needing high tiles
   for (const im of images) {
     if (im.status === "loaded") loadedImages++;
-    if (im.status === "loaded" && imageNeedsTiles(im)) outstand++;
+    if (im.status === "loaded" && imageNeedsHighTiles(im)) outstand++;
     if (im.status !== "loaded") continue;
     const cx0 = im.cellX, cy0 = im.labelY, cx1 = im.cellX + im.cell, cy1 = im.cellY + im.cell;
     if (cx1 < sx0 || cx0 > sx1 || cy1 < sy0 || cy0 > sy1) continue;
@@ -1417,7 +1404,7 @@ function updateStats() {
     `img ${loadedImages}/${totalImages} (needTiles ${outstand})  ` +
     `tiles onScreen ${onScreen}  toProcess ${toProcess}  cached ${cached}  ` +
     `inflight ${inFlight}/${MAX_INFLIGHT}  queued ${queuedN}  ` +
-    `srcBudget ${sourceBudgetMB}MB  procActive ${procActive !== null ? procActive : "-"}`;
+    `srcBudget ${sourceBudgetMB}MB  window ${activeWindowSize()}  resident ${readySources.size}`;
 }
 
 // ------------------------------------------------------------- go
