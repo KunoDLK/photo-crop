@@ -403,8 +403,10 @@ async function loadFile(file) {
   cache.clear();
   inflight.clear();
   queued.length = 0;
+  activeLevels.clear();
+  targetLevel = -1;
   await workerSetSource(file);
-  queueCoarsePreviewTiles();
+  queueInitialBase();
   fitView();
   setToolbar(true);
   refreshList();
@@ -475,31 +477,41 @@ function levelForScale() {
   return clamp(Math.round(-Math.log2(state.scale)), 0, state.maxLevel);
 }
 function tileKey(L, tx, ty) { return L + ":" + tx + ":" + ty; }
-function cacheGet(k) {
-  if (!cache.has(k)) return null;
-  const v = cache.get(k);
-  cache.delete(k);
-  cache.set(k, v);
-  return v;
-}
+
+// Levels currently drawn/kept as underlays during a transition (protected from
+// eviction until the finer level covers them). The coarsest levels are always
+// pinned as the ultimate fallback base.
+const activeLevels = new Set();
+let tileClock = 0;
+let targetLevel = -1;
+
 function isPinnedLevel(L) {
   return L >= Math.max(0, state.maxLevel - 1);
 }
+function isProtectedLevel(L) {
+  return isPinnedLevel(L) || activeLevels.has(L);
+}
+function cacheGet(k) {
+  const v = cache.get(k);
+  if (!v) return null;
+  v.lastUsed = ++tileClock;   // timestamp LRU: no Map re-insertion churn
+  return v;
+}
 function cacheSet(k, img, L, quality) {
-  cache.delete(k);
-  cache.set(k, { img, pinned: isPinnedLevel(L), quality });
+  const prev = cache.get(k);
+  if (prev && prev.img && prev.img.close && prev.img !== img) prev.img.close();
+  cache.set(k, { img, L, quality, lastUsed: ++tileClock });
   while (cache.size > CACHE_MAX) {
-    let victim = null;
+    // evict the least-recently-used unprotected entry
+    let victimKey = null, victimTime = Infinity;
     for (const [key, val] of cache.entries()) {
-      if (!val.pinned) {
-        victim = key;
-        break;
-      }
+      if (isProtectedLevel(val.L)) continue;
+      if (val.lastUsed < victimTime) { victimTime = val.lastUsed; victimKey = key; }
     }
-    if (!victim) victim = cache.keys().next().value;
-    const ev = cache.get(victim);
+    if (victimKey === null) break; // everything left is protected
+    const ev = cache.get(victimKey);
     if (ev && ev.img && ev.img.close) ev.img.close();
-    cache.delete(victim);
+    cache.delete(victimKey);
   }
 }
 
@@ -644,12 +656,11 @@ function genTileMainThread(L, tx, ty, quality) {
     cacheSet(k, c, L, quality);
   }
 }
+// Drain the queue in its existing (enqueue-time) order. Order is decided when
+// tiles are enqueued (nearest-first at a level switch) and never re-sorted here.
 function pumpQueue() {
   if (!workerSupported) {
-    // fallback: generate high-quality tiles directly (no worker available)
     if (!queued.length || !state.img) return;
-    const curL = state.img ? levelForScale() : -1;
-    queued.sort((a, b) => (a.L === curL ? 0 : 1) - (b.L === curL ? 0 : 1));
     const req = queued.shift();
     genTileMainThread(req.L, req.tx, req.ty, "high");
     requestRender();
@@ -657,14 +668,6 @@ function pumpQueue() {
     return;
   }
   if (!workerReady) return;
-  // prioritize current view level
-  const curL = state.img ? levelForScale() : -1;
-  queued.sort((a, b) => {
-    const pa = a.L === curL ? 0 : 1, pb = b.L === curL ? 0 : 1;
-    if (pa !== pb) return pa - pb;
-    // low quality before high so previews land first
-    return (a.quality === "low" ? 0 : 1) - (b.quality === "low" ? 0 : 1);
-  });
   while (inflight.size < MAX_INFLIGHT && queued.length) {
     const req = queued.shift();
     if (inflight.has(req.rk)) continue;
@@ -674,7 +677,7 @@ function pumpQueue() {
 }
 
 function requestTile(L, tx, ty, quality) {
-  // no fast-preview path without a worker; only fetch high quality
+  // low quality only used for the one-time initial coarse base
   if (!workerSupported && quality === "low") return;
   const rk = L + ":" + tx + ":" + ty + ":" + quality;
   if (inflight.has(rk)) return;
@@ -682,28 +685,66 @@ function requestTile(L, tx, ty, quality) {
   queued.push({ L, tx, ty, quality, rk });
 }
 
-function cancelStaleRequests(keepL) {
-  // drop queued requests not at the current level, but keep the pinned
-  // coarse-preview levels so the low-res base still loads
+// Prune not-yet-sent requests for levels we no longer care about. In-flight
+// worker jobs are left to finish (their tiles may still be useful).
+function abandonNonTargetLevels(keep) {
   for (let i = queued.length - 1; i >= 0; i--) {
-    const q = queued[i];
-    if (q.L !== keepL && !isPinnedLevel(q.L)) queued.splice(i, 1);
+    if (!keep.has(queued[i].L)) queued.splice(i, 1);
   }
 }
 
-function queueCoarsePreviewTiles() {
-  if (!state.img) return;
-  const minL = Math.max(0, state.maxLevel - 1);
-  for (let L = minL; L <= state.maxLevel; L++) {
-    const tileW = TILE * Math.pow(2, L);
-    const txMax = Math.ceil(state.iw / tileW);
-    const tyMax = Math.ceil(state.ih / tileW);
-    for (let ty = 0; ty < tyMax; ty++) {
-      for (let tx = 0; tx < txMax; tx++) {
-        requestTile(L, tx, ty, "high");
-      }
+// Enqueue every visible tile at the target level, ordered nearest-first from
+// the viewport centre. Order is snapshotted here and not changed afterwards.
+function enqueueLevelNearestFirst(L, quality) {
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  const sc = state.scale;
+  const tileW = TILE * Math.pow(2, L);
+  const x0 = (0 - state.vx) / sc, y0 = (0 - state.vy) / sc;
+  const x1 = (vpw - state.vx) / sc, y1 = (vph - state.vy) / sc;
+  const tx0 = Math.max(0, Math.floor(x0 / tileW));
+  const ty0 = Math.max(0, Math.floor(y0 / tileW));
+  const tx1 = Math.min(Math.ceil(state.iw / tileW) - 1, Math.floor(x1 / tileW));
+  const ty1 = Math.min(Math.ceil(state.ih / tileW) - 1, Math.floor(y1 / tileW));
+  const ccx = vpw / 2, ccy = vph / 2;
+  const list = [];
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
+      if (cacheHasHigh(tileKey(L, tx, ty))) continue; // already done
+      const cx = state.vx + (tx + 0.5) * tileW * sc;
+      const cy = state.vy + (ty + 0.5) * tileW * sc;
+      const d2 = (cx - ccx) * (cx - ccx) + (cy - ccy) * (cy - ccy);
+      list.push({ tx, ty, d2 });
     }
   }
+  list.sort((a, b) => a.d2 - b.d2);
+  for (const t of list) requestTile(L, t.tx, t.ty, quality);
+}
+
+function cacheHasHigh(k) {
+  const v = cache.get(k);
+  return !!(v && v.quality === "high");
+}
+
+// Called when the target detail level changes: abandon stale levels and queue
+// the new level's tiles nearest-first. Keeps active underlays + pinned base.
+function switchTargetLevel(L) {
+  targetLevel = L;
+  const keep = new Set([L]);
+  for (const al of activeLevels) keep.add(al);
+  keep.add(state.maxLevel);
+  if (state.maxLevel - 1 >= 0) keep.add(state.maxLevel - 1);
+  abandonNonTargetLevels(keep);
+  enqueueLevelNearestFirst(L, "high");
+  pumpQueue();
+}
+
+function queueInitialBase() {
+  if (!state.img) return;
+  const minL = Math.max(0, state.maxLevel - 1);
+  // fast low-quality base first for instant first paint...
+  for (let L = state.maxLevel; L >= minL; L--) enqueueLevelNearestFirst(L, "low");
+  // ...then high-quality upgrade of the same coarse levels
+  for (let L = state.maxLevel; L >= minL; L--) enqueueLevelNearestFirst(L, "high");
   pumpQueue();
 }
 
@@ -720,84 +761,96 @@ function render() {
   ctx.imageSmoothingQuality = "high";
 
   const L = levelForScale();
-  const tileW = TILE * Math.pow(2, L);
   const sc = state.scale;
-  const x0 = (0 - state.vx) / sc, y0 = (0 - state.vy) / sc;
-  const x1 = (vpw - state.vx) / sc, y1 = (vph - state.vy) / sc;
-  const tx0 = Math.max(0, Math.floor(x0 / tileW));
-  const ty0 = Math.max(0, Math.floor(y0 / tileW));
-  const tx1 = Math.min(Math.ceil(state.iw / tileW) - 1, Math.floor(x1 / tileW));
-  const ty1 = Math.min(Math.ceil(state.ih / tileW) - 1, Math.floor(y1 / tileW));
+  const vpw2 = vpw, vph2 = vph;
 
-  const infos = [];
-  for (let ty = ty0; ty <= ty1; ty++) {
-    for (let tx = tx0; tx <= tx1; tx++) {
-      const key = tileKey(L, tx, ty);
-      const exact = cacheGet(key);
-      let fallback = null;
-      if (!exact) {
-        for (let k = L + 1; k <= state.maxLevel; k++) {
-          const s = k - L;
-          const c = cacheGet(tileKey(k, tx >> s, ty >> s));
-          if (c) {
-            fallback = { entry: c, level: k };
-            break;
-          }
-        }
+  // helper: visible tile range at a given level
+  function rangeAt(lv) {
+    const tw = TILE * Math.pow(2, lv);
+    const rx0 = (0 - state.vx) / sc, ry0 = (0 - state.vy) / sc;
+    const rx1 = (vpw2 - state.vx) / sc, ry1 = (vph2 - state.vy) / sc;
+    return {
+      tw,
+      tx0: Math.max(0, Math.floor(rx0 / tw)),
+      ty0: Math.max(0, Math.floor(ry0 / tw)),
+      tx1: Math.min(Math.ceil(state.iw / tw) - 1, Math.floor(rx1 / tw)),
+      ty1: Math.min(Math.ceil(state.ih / tw) - 1, Math.floor(ry1 / tw)),
+    };
+  }
+
+  // On a target-level change: abandon stale levels and enqueue the new level's
+  // tiles nearest-first (order fixed here, not re-sorted per frame).
+  if (L !== targetLevel) {
+    activeLevels.add(L);
+    switchTargetLevel(L);
+  }
+
+  // Coverage: is every visible tile at the target level present (high quality)?
+  const r = rangeAt(L);
+  let covered = true;
+  for (let ty = r.ty0; ty <= r.ty1 && covered; ty++) {
+    for (let tx = r.tx0; tx <= r.tx1; tx++) {
+      if (!cacheHasHigh(tileKey(L, tx, ty))) { covered = false; break; }
+    }
+  }
+
+  // Build the set of levels to composite: the target level plus any coarser
+  // cached levels kept as underlay until the target covers the view.
+  activeLevels.add(L);
+  // Drop finer stale levels: a finer level drawn on top of a coarser target
+  // (zoom-out) would show outdated detail. Only keep target + coarser underlays.
+  for (const lv of [...activeLevels]) {
+    if (lv < L && !isPinnedLevel(lv)) activeLevels.delete(lv);
+  }
+  if (covered) {
+    // target fully covers the viewport -> unload coarser underlays (keep base)
+    for (const lv of [...activeLevels]) {
+      if (lv !== L && !isPinnedLevel(lv)) activeLevels.delete(lv);
+    }
+  }
+
+  // Draw coarse -> fine so finer tiles land on top of coarser ones.
+  const drawLevels = [...activeLevels].sort((a, b) => b - a);
+  for (const lv of drawLevels) {
+    const rr = rangeAt(lv);
+    const twsc = rr.tw * sc;
+    for (let ty = rr.ty0; ty <= rr.ty1; ty++) {
+      for (let tx = rr.tx0; tx <= rr.tx1; tx++) {
+        const entry = cacheGet(tileKey(lv, tx, ty));
+        if (!entry) continue;
+        ctx.drawImage(entry.img,
+          state.vx + tx * twsc, state.vy + ty * twsc, twsc, twsc);
       }
-      infos.push({ tx, ty, key, exact, fallback });
     }
   }
 
-  for (const it of infos) {
-    if (!it.exact && it.fallback) {
-      const k = it.fallback.level;
-      const s = k - L;
-      const cxt = it.tx >> s;
-      const cyt = it.ty >> s;
-      const cw = TILE * Math.pow(2, k);
-      const dx = state.vx + it.tx * tileW * sc;
-      const dy = state.vy + it.ty * tileW * sc;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(dx, dy, tileW * sc, tileW * sc);
-      ctx.clip();
-      ctx.drawImage(it.fallback.entry.img,
-        state.vx + cxt * cw * sc, state.vy + cyt * cw * sc, cw * sc, cw * sc);
-      ctx.restore();
+  // Upgrade any low-quality target tiles to high quality (nearest-first order
+  // was already set at the level switch; this just backfills stragglers).
+  for (let ty = r.ty0; ty <= r.ty1; ty++) {
+    for (let tx = r.tx0; tx <= r.tx1; tx++) {
+      const e = cache.get(tileKey(L, tx, ty));
+      if (!e || e.quality !== "high") requestTile(L, tx, ty, "high");
     }
   }
 
-  cancelStaleRequests(L);
-  for (const it of infos) {
-    if (it.exact) {
-      ctx.drawImage(it.exact.img,
-        state.vx + it.tx * tileW * sc, state.vy + it.ty * tileW * sc, tileW * sc, tileW * sc);
-      // upgrade low-quality tiles to high quality
-      if (it.exact.quality !== "high") requestTile(L, it.tx, it.ty, "high");
-    } else {
-      // request a fast preview first, then high quality
-      requestTile(L, it.tx, it.ty, "low");
-      requestTile(L, it.tx, it.ty, "high");
-    }
-  }
   if (tileDebug) {
+    const rr = rangeAt(L);
+    const twsc = rr.tw * sc;
     ctx.save();
     ctx.lineWidth = 1;
     ctx.font = "600 11px system-ui, sans-serif";
     ctx.textBaseline = "top";
-    for (const it of infos) {
-      const dx = state.vx + it.tx * tileW * sc;
-      const dy = state.vy + it.ty * tileW * sc;
-      const ts = tileW * sc;
-      // green = exact high-quality tile, yellow = low-quality preview, red = missing
-      const col = it.exact
-        ? (it.exact.quality === "high" ? "#00e000" : "#e0c000")
-        : "#ff2020";
-      ctx.strokeStyle = col;
-      ctx.strokeRect(dx + 0.5, dy + 0.5, ts - 1, ts - 1);
-      ctx.fillStyle = col;
-      ctx.fillText(`L${L} ${it.tx},${it.ty}`, dx + 3, dy + 3);
+    for (let ty = rr.ty0; ty <= rr.ty1; ty++) {
+      for (let tx = rr.tx0; tx <= rr.tx1; tx++) {
+        const e = cache.get(tileKey(L, tx, ty));
+        // green = HQ present, yellow = low-quality base, red = uncovered gap
+        const col = e ? (e.quality === "high" ? "#00e000" : "#e0c000") : "#ff2020";
+        const dx = state.vx + tx * twsc, dy = state.vy + ty * twsc;
+        ctx.strokeStyle = col;
+        ctx.strokeRect(dx + 0.5, dy + 0.5, twsc - 1, twsc - 1);
+        ctx.fillStyle = col;
+        ctx.fillText(`L${L} ${tx},${ty}`, dx + 3, dy + 3);
+      }
     }
     ctx.restore();
   }
