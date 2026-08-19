@@ -406,8 +406,8 @@ async function loadFile(file) {
   activeLevels.clear();
   targetLevel = -1;
   await workerSetSource(file);
-  queueInitialBase();
   fitView();
+  queueInitialBase();
   setToolbar(true);
   refreshList();
   requestRender();
@@ -734,17 +734,20 @@ function switchTargetLevel(L) {
   keep.add(state.maxLevel);
   if (state.maxLevel - 1 >= 0) keep.add(state.maxLevel - 1);
   abandonNonTargetLevels(keep);
-  enqueueLevelNearestFirst(L, "high");
+  // For coarse base levels the low-quality first paint is queued separately by
+  // queueInitialBase(); render() promotes them to high once the low exists.
+  // For other levels, enqueue high-quality tiles nearest-first now.
+  if (!isPinnedLevel(L)) enqueueLevelNearestFirst(L, "high");
   pumpQueue();
 }
 
 function queueInitialBase() {
   if (!state.img) return;
   const minL = Math.max(0, state.maxLevel - 1);
-  // fast low-quality base first for instant first paint...
+  // Fast low-quality base first for an instant first paint. High-quality
+  // upgrades are requested from render() only after each low tile exists, so
+  // the user always sees the blurry base before crisp tiles replace it.
   for (let L = state.maxLevel; L >= minL; L--) enqueueLevelNearestFirst(L, "low");
-  // ...then high-quality upgrade of the same coarse levels
-  for (let L = state.maxLevel; L >= minL; L--) enqueueLevelNearestFirst(L, "high");
   pumpQueue();
 }
 
@@ -824,12 +827,18 @@ function render() {
     }
   }
 
-  // Upgrade any low-quality target tiles to high quality (nearest-first order
-  // was already set at the level switch; this just backfills stragglers).
+  // Request high-quality tiles for the target level. For the coarse base
+  // levels (which get an instant low-quality first paint), only request "high"
+  // once the low tile exists, so the blurry base always paints before crisp
+  // tiles replace it. For all other levels, request "high" directly (the
+  // coarser active level is the visible preview meanwhile).
+  const baseLevel = isPinnedLevel(L);
   for (let ty = r.ty0; ty <= r.ty1; ty++) {
     for (let tx = r.tx0; tx <= r.tx1; tx++) {
       const e = cache.get(tileKey(L, tx, ty));
-      if (!e || e.quality !== "high") requestTile(L, tx, ty, "high");
+      if (e && e.quality === "high") continue;
+      if (baseLevel && !e) continue; // wait for the low base tile first
+      requestTile(L, tx, ty, "high");
     }
   }
 
