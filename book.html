@@ -108,6 +108,7 @@ const TILE = 256;
 const CACHE_MAX = 1024;
 const MAX_INFLIGHT = 6;
 const SETTLE_MS = 180;
+const DOWNLOAD_GAP_MS = 400;   // pause between sequential image downloads
 const IMG_EXT = /\.(png|jpe?g|tiff?|bmp|webp|gif|avif)$/i;
 const NAME_RE = /^(\d+)_(\d+)-(.*)$/;
 
@@ -140,6 +141,8 @@ let needRender = false;
 let tileDebug = false;
 let interacting = false;
 let settleTimer = null;
+// last known cursor position in canvas (device/CSS) coords; -1 = unknown/off
+let cursorX = -1, cursorY = -1;
 
 function status(msg) { els.status.textContent = msg; }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -413,6 +416,9 @@ function buildLayout(list) {
       const im = {
         id: nextId++,
         href: items[i].href,
+        // Resolve to an absolute URL up front so Safari doesn't re-encode the
+        // already-percent-encoded href (which turned %20 into %2520 -> bad req).
+        url: new URL(items[i].href, location.href).href,
         name: items[i].meta.name,
         group: gk, order: items[i].meta.order,
         extra: !!items[i].meta.extra,
@@ -531,12 +537,13 @@ async function loadSequential(idx) {
     im.error = e.message;
     requestRender();
   }
-  // strictly sequential: next only after this finishes
-  loadSequential(idx + 1);
+  // strictly sequential: next only after this finishes, with a small pause to
+  // let the (slow) server catch up before the next request
+  setTimeout(() => loadSequential(idx + 1), DOWNLOAD_GAP_MS);
 }
 
 async function downloadWithProgress(im) {
-  const res = await cpFetch(im.href, {});
+  const res = await cpFetch(im.url, {});
   if (!res.ok) throw new Error("HTTP " + res.status);
   const total = parseInt(res.headers.get("content-length") || "0", 10);
   if (!res.body || !total) {
@@ -586,12 +593,21 @@ function render() {
   const sx0 = (0 - view.vx) / sc, sy0 = (0 - view.vy) / sc;
   const sx1 = (vpw - view.vx) / sc, sy1 = (vph - view.vy) / sc;
 
+  // collect visible images; images don't overlap (grid + gaps) so draw order is
+  // visually irrelevant -> process the one nearest the cursor/centre first so
+  // its tiles are enqueued (and thus generated) before the others.
+  const ox = cursorX >= 0 ? cursorX : vpw / 2;
+  const oy = cursorY >= 0 ? cursorY : vph / 2;
+  const visible = [];
   for (const im of images) {
-    // cull by reserved cell (covers placeholder + label)
     const cx0 = im.cellX, cy0 = im.labelY, cx1 = im.cellX + im.cell, cy1 = im.cellY + im.cell;
     if (cx1 < sx0 || cx0 > sx1 || cy1 < sy0 || cy0 > sy1) continue;
-    drawImageEntry(im, sc);
+    const [ccx, ccy] = sceneToDev(im.cellX + im.cell / 2, im.labelY + im.cell / 2);
+    im._d2 = (ccx - ox) * (ccx - ox) + (ccy - oy) * (ccy - oy);
+    visible.push(im);
   }
+  visible.sort((a, b) => a._d2 - b._d2);
+  for (const im of visible) drawImageEntry(im, sc);
 
   pumpQueue();
   els.zoom.textContent = (view.scale * 100).toFixed(0) + "%";
@@ -667,12 +683,26 @@ function drawImageEntry(im, sc) {
       }
   }
 
-  // request tiles: base first, then target level
+  // request tiles: base first, then target level ordered nearest-first from the
+  // cursor (if over the canvas) else the viewport centre, so the area the user
+  // cares about sharpens first.
   requestTile(im.id, im.maxLevel, 0, 0, "low");
   requestTile(im.id, im.maxLevel, 0, 0, "high");
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  const ox = cursorX >= 0 ? cursorX : vpw / 2;
+  const oy = cursorY >= 0 ? cursorY : vph / 2;
+  const twscT = TILE * Math.pow(2, L) * im.fitFactor * sc;
+  const pend = [];
   for (let ty = rTarget.ty0; ty <= rTarget.ty1; ty++)
-    for (let tx = rTarget.tx0; tx <= rTarget.tx1; tx++)
-      if (!cacheHasHigh(tileKey(im.id, L, tx, ty))) requestTile(im.id, L, tx, ty, "high");
+    for (let tx = rTarget.tx0; tx <= rTarget.tx1; tx++) {
+      if (cacheHasHigh(tileKey(im.id, L, tx, ty))) continue;
+      const cx = dx + (tx + 0.5) * twscT;
+      const cy = dy + (ty + 0.5) * twscT;
+      const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
+      pend.push({ tx, ty, d2 });
+    }
+  pend.sort((a, b) => a.d2 - b.d2);
+  for (const t of pend) requestTile(im.id, L, t.tx, t.ty, "high");
 
   if (tileDebug) {
     const rr = tileRange(im, L, sc, dx, dy, dw, dh);
@@ -793,6 +823,8 @@ cv.addEventListener("pointerdown", (e) => {
 });
 cv.addEventListener("pointermove", (e) => {
   const rect = cv.getBoundingClientRect();
+  cursorX = e.clientX - rect.left;
+  cursorY = e.clientY - rect.top;
   if (e.pointerType === "touch" && activePointers.has(e.pointerId)) {
     activePointers.set(e.pointerId, { x: e.clientX - rect.left, y: e.clientY - rect.top });
     if (pinch && activePointers.size >= 2) { updatePinch(); return; }
@@ -820,7 +852,7 @@ function endPointer(e) {
 cv.addEventListener("pointerup", endPointer);
 cv.addEventListener("pointercancel", endPointer);
 cv.addEventListener("contextmenu", (e) => e.preventDefault());
-
+cv.addEventListener("pointerleave", () => { cursorX = -1; cursorY = -1; });
 function beginPinch() {
   const [a, b] = [...activePointers.values()];
   const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
