@@ -455,7 +455,12 @@ self.onmessage = (e) => {
   }
   if (m.type === "gen") {
     const s = sources.get(m.id);
-    if (!s) return;
+    if (!s) {
+      // source was evicted; tell the main thread so it can drop the inflight
+      // entry (otherwise the queue stalls forever)
+      self.postMessage({ type: "genSkipped", id: m.id, L: m.L, tx: m.tx, ty: m.ty, quality: m.quality });
+      return;
+    }
     sourceUsed(m.id);
     const t0 = performance.now();
     const { L, tx, ty, quality } = m;
@@ -463,7 +468,10 @@ self.onmessage = (e) => {
     const sx = tx * TILE * p, sy = ty * TILE * p;
     const sw = Math.min(TILE * p, s.iw - sx);
     const sh = Math.min(TILE * p, s.ih - sy);
-    if (sw <= 0 || sh <= 0) return;
+    if (sw <= 0 || sh <= 0) {
+      self.postMessage({ type: "genSkipped", id: m.id, L, tx, ty, quality });
+      return;
+    }
     const dw = Math.max(1, Math.round(sw / p));
     const dh = Math.max(1, Math.round(sh / p));
     const c = new OffscreenCanvas(TILE, TILE);
@@ -509,8 +517,18 @@ function initWorker() {
     }
     if (m.type === "sourceEvicted") {
       readySources.delete(m.id);
-      // ensure it gets re-decoded from cache when viewed again
-      requestRender();
+      // No requestRender here: re-decoding is driven by the render loop (only
+      // for the focused image) and by genSkipped draining in-flight entries.
+      // Triggering a render here caused an evict->re-decode->evict churn loop.
+      return;
+    }
+    if (m.type === "genSkipped") {
+      // worker couldn't build this tile (source evicted). Drop the inflight
+      // entry so the queue keeps draining; the render loop will re-request it
+      // once the source is re-decoded.
+      const rk = m.id + ":" + m.L + ":" + m.tx + ":" + m.ty + ":" + m.quality;
+      inflight.delete(rk);
+      pumpQueue();
       return;
     }
     if (m.type === "tile") {
@@ -544,11 +562,17 @@ function addSource(im) {
 }
 
 // Re-decode a source that was evicted from the worker (memory cap) using the
-// cached blob, so a revisited image gets its tiles back seamlessly.
+// cached blob. Only the focused image (nearest cursor/centre) is re-decoded,
+// throttled, to avoid an evict->re-decode->evict churn loop at 100% CPU.
 const redecoding = new Set();
+const redecodedAt = new Map(); // id -> timestamp (ms)
 async function ensureSource(im) {
   if (readySources.has(im.id) || redecoding.has(im.id)) return;
   if (im.status !== "loaded") return;
+  const now = performance.now();
+  const last = redecodedAt.get(im.id) || 0;
+  if (now - last < 2000) return; // throttle re-decode attempts
+  redecodedAt.set(im.id, now);
   redecoding.add(im.id);
   try {
     const blob = await blobCacheGet(im.url);
@@ -878,10 +902,12 @@ function render() {
 
   // All visible images render dynamically with the full tile loop. The
   // nearest-first sort above just controls enqueue order so the area the user
-  // cares about sharpens first.
+  // cares about sharpens first. Only the focused image (visible[0]) triggers a
+  // source re-decode if evicted - prevents evict->re-decode churn.
+  const focus = visible[0] || null;
   const tDraw = profStart("draw.images");
   for (const im of visible) {
-    if (im.status === "loaded" && !readySources.has(im.id)) ensureSource(im);
+    if (im === focus && im.status === "loaded" && !readySources.has(im.id)) ensureSource(im);
     drawImageEntry(im, sc);
   }
   profEnd(tDraw);
