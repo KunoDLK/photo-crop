@@ -510,6 +510,35 @@ const workerSupported = typeof Worker !== "undefined" &&
 
 const WORKER_SRC = `
 let img = null, iw = 0, ih = 0, TILE = 256;
+
+// High-quality downscale via progressive halving: never reduce by more than
+// 2x per step so every source pixel contributes (avoids aliasing/moire that a
+// single large-ratio drawImage can produce).
+function downscaleHQ(src, sx, sy, sw, sh, dw, dh) {
+  let cur = new OffscreenCanvas(Math.max(1, Math.round(sw)), Math.max(1, Math.round(sh)));
+  let cg = cur.getContext("2d");
+  cg.imageSmoothingEnabled = true;
+  cg.imageSmoothingQuality = "high";
+  cg.drawImage(src, sx, sy, sw, sh, 0, 0, cur.width, cur.height);
+  let cw = cur.width, ch = cur.height;
+  while (cw > dw * 2 || ch > dh * 2) {
+    const nw = Math.max(dw, Math.floor(cw / 2));
+    const nh = Math.max(dh, Math.floor(ch / 2));
+    const next = new OffscreenCanvas(nw, nh);
+    const ng = next.getContext("2d");
+    ng.imageSmoothingEnabled = true;
+    ng.imageSmoothingQuality = "high";
+    ng.drawImage(cur, 0, 0, cw, ch, 0, 0, nw, nh);
+    cur = next; cg = ng; cw = nw; ch = nh;
+  }
+  const out = new OffscreenCanvas(dw, dh);
+  const og = out.getContext("2d");
+  og.imageSmoothingEnabled = true;
+  og.imageSmoothingQuality = "high";
+  og.drawImage(cur, 0, 0, cw, ch, 0, 0, dw, dh);
+  return out;
+}
+
 self.onmessage = async (e) => {
   const m = e.data;
   if (m.type === "init") {
@@ -526,11 +555,23 @@ self.onmessage = async (e) => {
     const sw = Math.min(TILE * p, iw - sx);
     const sh = Math.min(TILE * p, ih - sy);
     if (sw <= 0 || sh <= 0) return;
+    const dw = Math.max(1, Math.round(sw / p));
+    const dh = Math.max(1, Math.round(sh / p));
+    // always emit a TILE x TILE tile; partial (edge) tiles fill the top-left
+    // dw x dh region, matching how render maps tiles onto the grid
     const c = new OffscreenCanvas(TILE, TILE);
     const g = c.getContext("2d");
-    g.imageSmoothingEnabled = quality !== "low";
-    g.imageSmoothingQuality = quality;
-    g.drawImage(img, sx, sy, sw, sh, 0, 0, sw / p, sh / p);
+    if (quality === "low") {
+      // fast, blocky nearest-neighbour preview
+      g.imageSmoothingEnabled = false;
+      g.drawImage(img, sx, sy, sw, sh, 0, 0, dw, dh);
+    } else {
+      // high quality: progressive halving so no source pixel is skipped
+      const out = downscaleHQ(img, sx, sy, sw, sh, dw, dh);
+      g.imageSmoothingEnabled = true;
+      g.imageSmoothingQuality = "high";
+      g.drawImage(out, 0, 0, dw, dh, 0, 0, dw, dh);
+    }
     const bmp = c.transferToImageBitmap();
     self.postMessage({ type: "tile", L, tx, ty, quality, bitmap: bmp }, [bmp]);
   }
