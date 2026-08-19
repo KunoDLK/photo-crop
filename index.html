@@ -104,6 +104,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 .right {
   flex: 0 0 360px;
+  min-width: 0;
+  max-width: 360px;
   display: flex;
   flex-direction: column;
   background: var(--panel);
@@ -154,7 +156,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   font-size: 13px;
 }
 .rot-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
-.rot-actions { display: flex; gap: 4px; }
+.rot-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .rot-actions button {
   padding: 2px 6px;
   font-size: 11px;
@@ -229,6 +231,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 <div class="toolbar">
   <button id="btn-open">Open image…</button>
+  <button id="btn-openurl">Open URL…</button>
   <button id="btn-detect" disabled>Auto-detect</button>
   <button id="btn-clear" disabled>Clear boxes</button>
   <input type="file" id="file" accept="image/png,image/jpeg,image/tiff,image/bmp,image/webp" hidden>
@@ -241,7 +244,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
     <canvas id="view"></canvas>
     <div id="drop-msg">
       <div>Drop a scan here</div>
-      <div class="sub">or use “Open image…” · wheel zooms · Ctrl+drag pans<br>drag empty canvas to draw a box</div>
+      <div class="sub">or use “Open image…” / “Open URL…” · wheel zooms · Ctrl+drag pans<br>drag empty canvas to draw a box</div>
     </div>
   </div>
   <div class="right">
@@ -291,6 +294,7 @@ const els = {
   left: document.getElementById("left"),
   drop: document.getElementById("drop-msg"),
   open: document.getElementById("btn-open"),
+  openurl: document.getElementById("btn-openurl"),
   file: document.getElementById("file"),
   detect: document.getElementById("btn-detect"),
   clear: document.getElementById("btn-clear"),
@@ -351,6 +355,10 @@ function setToolbar(hasImg) {
 
 // --------------------------------------------------------------- files
 els.open.addEventListener("click", () => els.file.click());
+els.openurl.addEventListener("click", () => {
+  const url = (prompt("Paste an image URL:") || "").trim();
+  if (url) loadFromURL(url);
+});
 els.file.addEventListener("change", () => {
   if (els.file.files[0]) loadFile(els.file.files[0]);
   els.file.value = "";
@@ -361,6 +369,15 @@ els.file.addEventListener("change", () => {
 window.addEventListener("drop", (e) => {
   const f = e.dataTransfer.files[0];
   if (f) loadFile(f);
+});
+window.addEventListener("paste", (e) => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  const text = (e.clipboardData || window.clipboardData || {}).getData ? (e.clipboardData || window.clipboardData).getData("text").trim() : "";
+  if (/^https?:\/\//i.test(text)) {
+    e.preventDefault();
+    loadFromURL(text);
+  }
 });
 
 async function loadFile(file) {
@@ -384,6 +401,22 @@ async function loadFile(file) {
   requestRender();
   status(`Loaded ${file.name}  (${state.iw}×${state.ih}) — draw boxes or auto-detect`);
 }
+
+async function loadFromURL(url) {
+  status("Downloading…");
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const name = decodeURIComponent(url.split(/[?#]/)[0].split("/").pop()) || "image";
+    loadFile(new File([blob], name));
+  } catch (e) {
+    status(`Could not open URL: ${e.message}`);
+  }
+}
+
+const openParam = new URLSearchParams(location.search).get("file");
+if (openParam) loadFromURL(openParam);
 
 function fitView() {
   const vpw = cv.clientWidth || els.left.clientWidth;
@@ -769,7 +802,7 @@ cv.addEventListener("wheel", (e) => {
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const f = Math.exp(-e.deltaY * 0.0012);
-  const ns = clamp(state.scale * f, 0.0001, 1);
+  const ns = clamp(state.scale * f, 0.0001, 32);
   const wx = (mx - state.vx) / state.scale;
   const wy = (my - state.vy) / state.scale;
   state.vx = mx - wx * ns;

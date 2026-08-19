@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Scan on the Epson ET-7750 (eSCL, color, 1200dpi), then open the result in Chrome with photo-crop.
+set -euo pipefail
+
+HERE="$(dirname "$(readlink -f "$0")")"
+INGEST="${SCAN_CROP_INGEST:-$HOME/Docker-Server/copyparty/data/private/Photos/Scans/Ingest}"
+BROWSER="${SCAN_CROP_BROWSER:-}"
+if [ -z "$BROWSER" ]; then
+  for b in google-chrome google-chrome-stable chromium chromium-browser; do
+    if command -v "$b" >/dev/null 2>&1; then BROWSER="$b"; break; fi
+  done
+fi
+[ -n "$BROWSER" ] || { echo "scan-crop: no Chrome/Chromium binary found" >&2; exit 1; }
+
+mkdir -p "$INGEST"
+OUT="$INGEST/scan-$(date +%Y%m%d-%H%M%S).png"
+echo "scan-crop: scanning to $OUT …"
+scanimage -d "escl:https://192.168.1.5:443" \
+  --mode Color \
+  --resolution 1200 \
+  --format=png \
+  -o "$OUT"
+if [ ! -s "$OUT" ]; then
+  echo "scan-crop: scan produced no data — nothing written to $OUT" >&2
+  exit 1
+fi
+echo "scan-crop: scan done, opening in $BROWSER …"
+PHOTO_CROP_BROWSER="$BROWSER" exec python3 "$HERE/open.py" "$OUT"

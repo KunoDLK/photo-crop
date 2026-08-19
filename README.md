@@ -21,6 +21,34 @@ Either:
 Chrome/Edge are recommended (full tiling + folder save dialog). Firefox/Safari work for
 viewing/editing (canvas capped at 16384px per side); export falls back to standard downloads.
 
+## Open from the command line
+
+A browser can't read arbitrary file paths, so `open.py` serves the scan over localhost and
+opens it in the app (requires Python 3):
+
+```bash
+python3 open.py /path/to/scan.png
+```
+
+`index.html` also accepts a `?file=` query parameter (a path relative to the page), so any
+static server works too:
+
+```bash
+python -m http.server 8000
+# open http://localhost:8000/?file=scan.png
+```
+
+For a scan-then-crop workflow, e.g.:
+
+```bash
+scanimage --format png --resolution 1200 > scan.png && python3 open.py scan.png
+```
+
+A ready-made `scan-crop` command (install: `ln -s "$PWD/scan-crop" ~/.local/bin/scan-crop`)
+scans the Epson ET-7750 at 1200dpi color into `~/Docker-Server/copyparty/data/private/Photos/Scans/Ingest/`
+(override with `SCAN_CROP_INGEST`) and opens the result in Chrome. `open.py` exits by itself
+once the page has loaded, so the terminal returns.
+
 ## Usage
 
 1. **Open** — drag & drop a scan onto the window, or click *Open image…*.
