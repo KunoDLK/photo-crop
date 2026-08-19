@@ -234,6 +234,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   <button id="btn-openurl">Open URL…</button>
   <button id="btn-detect" disabled>Auto-detect</button>
   <button id="btn-clear" disabled>Clear boxes</button>
+  <button id="btn-tiledbg">Tile debug: off</button>
   <input type="file" id="file" accept="image/png,image/jpeg,image/tiff,image/bmp,image/webp" hidden>
   <div class="spacer"></div>
   <span class="zoom-lbl" id="zoom-lbl">—</span>
@@ -298,6 +299,7 @@ const els = {
   file: document.getElementById("file"),
   detect: document.getElementById("btn-detect"),
   clear: document.getElementById("btn-clear"),
+  tiledbg: document.getElementById("btn-tiledbg"),
   list: document.getElementById("list"),
   zoom: document.getElementById("zoom-lbl"),
   fmt: document.getElementById("fmt"),
@@ -331,10 +333,16 @@ const cache = new Map();
 const pending = new Set();
 let genRunning = false;
 let needRender = false;
+let tileDebug = false;
 let thumbDirty = new Set();
 let items = [];
 
 function status(msg) { els.status.textContent = msg; }
+els.tiledbg.addEventListener("click", () => {
+  tileDebug = !tileDebug;
+  els.tiledbg.textContent = "Tile debug: " + (tileDebug ? "on" : "off");
+  requestRender();
+});
 function requestRender() {
   if (needRender) return;
   needRender = true;
@@ -614,6 +622,23 @@ function render() {
         state.vx + it.tx * tileW * sc, state.vy + it.ty * tileW * sc, tileW * sc, tileW * sc);
     }
     if (!it.exact) pending.add(it.key);
+  }
+  if (tileDebug) {
+    ctx.save();
+    ctx.lineWidth = 1;
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.textBaseline = "top";
+    for (const it of infos) {
+      const dx = state.vx + it.tx * tileW * sc;
+      const dy = state.vy + it.ty * tileW * sc;
+      const ts = tileW * sc;
+      // green = exact high-res tile drawn, red = missing (showing coarse preview)
+      ctx.strokeStyle = it.exact ? "#00e000" : "#ff2020";
+      ctx.strokeRect(dx + 0.5, dy + 0.5, ts - 1, ts - 1);
+      ctx.fillStyle = it.exact ? "#00e000" : "#ff2020";
+      ctx.fillText(`L${L} ${it.tx},${it.ty}`, dx + 3, dy + 3);
+    }
+    ctx.restore();
   }
   scheduleGenerate();
   drawBoxes();
