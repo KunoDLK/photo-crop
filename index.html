@@ -330,8 +330,6 @@ const state = {
   nameCounter: 1,
 };
 const cache = new Map();
-const pending = new Set();
-let genRunning = false;
 let needRender = false;
 let tileDebug = false;
 let thumbDirty = new Set();
@@ -401,8 +399,11 @@ async function loadFile(file) {
   state.sel = null;
   state.nameCounter = 1;
   state.maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(state.iw, state.ih) / TILE)));
+  for (const v of cache.values()) { if (v.img && v.img.close) v.img.close(); }
   cache.clear();
-  pending.clear();
+  inflight.clear();
+  queued.length = 0;
+  await workerSetSource(file);
   queueCoarsePreviewTiles();
   fitView();
   setToolbar(true);
@@ -479,14 +480,14 @@ function cacheGet(k) {
   const v = cache.get(k);
   cache.delete(k);
   cache.set(k, v);
-  return v.canvas;
+  return v;
 }
 function isPinnedLevel(L) {
   return L >= Math.max(0, state.maxLevel - 1);
 }
-function cacheSet(k, canvas, L) {
+function cacheSet(k, img, L, quality) {
   cache.delete(k);
-  cache.set(k, { canvas, pinned: isPinnedLevel(L) });
+  cache.set(k, { img, pinned: isPinnedLevel(L), quality });
   while (cache.size > CACHE_MAX) {
     let victim = null;
     for (const [key, val] of cache.entries()) {
@@ -496,22 +497,159 @@ function cacheSet(k, canvas, L) {
       }
     }
     if (!victim) victim = cache.keys().next().value;
+    const ev = cache.get(victim);
+    if (ev && ev.img && ev.img.close) ev.img.close();
     cache.delete(victim);
   }
 }
-async function generateTile(L, tx, ty) {
+
+// ------------------------------------------------------- tile worker
+const workerSupported = typeof Worker !== "undefined" &&
+  typeof OffscreenCanvas !== "undefined" &&
+  typeof createImageBitmap !== "undefined";
+
+const WORKER_SRC = `
+let img = null, iw = 0, ih = 0, TILE = 256;
+self.onmessage = async (e) => {
+  const m = e.data;
+  if (m.type === "init") {
+    if (img && img.close) img.close();
+    img = m.bitmap; iw = m.iw; ih = m.ih; TILE = m.TILE;
+    self.postMessage({ type: "ready" });
+    return;
+  }
+  if (m.type === "gen") {
+    if (!img) return;
+    const { L, tx, ty, quality } = m;
+    const p = Math.pow(2, L);
+    const sx = tx * TILE * p, sy = ty * TILE * p;
+    const sw = Math.min(TILE * p, iw - sx);
+    const sh = Math.min(TILE * p, ih - sy);
+    if (sw <= 0 || sh <= 0) return;
+    const c = new OffscreenCanvas(TILE, TILE);
+    const g = c.getContext("2d");
+    g.imageSmoothingEnabled = quality !== "low";
+    g.imageSmoothingQuality = quality;
+    g.drawImage(img, sx, sy, sw, sh, 0, 0, sw / p, sh / p);
+    const bmp = c.transferToImageBitmap();
+    self.postMessage({ type: "tile", L, tx, ty, quality, bitmap: bmp }, [bmp]);
+  }
+};
+`;
+
+let tileWorker = null;
+let workerReady = false;
+const inflight = new Set(); // keys "L:tx:ty:quality" currently requested
+const queued = [];          // pending gen requests {L,tx,ty,quality,key}
+
+function initWorker() {
+  if (!workerSupported) return;
+  if (tileWorker) { tileWorker.terminate(); tileWorker = null; }
+  workerReady = false;
+  inflight.clear();
+  queued.length = 0;
+  const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: "text/javascript" }));
+  tileWorker = new Worker(url);
+  URL.revokeObjectURL(url);
+  tileWorker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === "ready") {
+      workerReady = true;
+      pumpQueue();
+      return;
+    }
+    if (m.type === "tile") {
+      const rk = m.L + ":" + m.tx + ":" + m.ty + ":" + m.quality;
+      inflight.delete(rk);
+      const k = tileKey(m.L, m.tx, m.ty);
+      const existing = cache.get(k);
+      // never downgrade an existing high-quality tile
+      if (!(existing && existing.quality === "high" && m.quality !== "high")) {
+        cacheSet(k, m.bitmap, m.L, m.quality);
+      } else if (m.bitmap.close) {
+        m.bitmap.close();
+      }
+      pumpQueue();
+      requestRender();
+    }
+  };
+}
+
+async function workerSetSource(file) {
+  if (!workerSupported) return;
+  initWorker();
+  const bmp = await createImageBitmap(file);
+  tileWorker.postMessage(
+    { type: "init", bitmap: bmp, iw: state.iw, ih: state.ih, TILE },
+    [bmp]
+  );
+}
+
+const MAX_INFLIGHT = 6;
+function genTileMainThread(L, tx, ty, quality) {
   const p = Math.pow(2, L);
-  const sx = tx * TILE * p;
-  const sy = ty * TILE * p;
+  const sx = tx * TILE * p, sy = ty * TILE * p;
   const sw = Math.min(TILE * p, state.iw - sx);
   const sh = Math.min(TILE * p, state.ih - sy);
+  if (sw <= 0 || sh <= 0) return;
   const c = new OffscreenCanvas(TILE, TILE);
-  const tctx = c.getContext("2d");
-  tctx.imageSmoothingEnabled = true;
-  tctx.imageSmoothingQuality = "high";
-  tctx.drawImage(state.img, sx, sy, sw, sh, 0, 0, sw / p, sh / p);
-  cacheSet(tileKey(L, tx, ty), c, L);
+  const g = c.getContext("2d");
+  g.imageSmoothingEnabled = quality !== "low";
+  g.imageSmoothingQuality = quality;
+  g.drawImage(state.img, sx, sy, sw, sh, 0, 0, sw / p, sh / p);
+  const k = tileKey(L, tx, ty);
+  const existing = cache.get(k);
+  if (!(existing && existing.quality === "high" && quality !== "high")) {
+    cacheSet(k, c, L, quality);
+  }
 }
+function pumpQueue() {
+  if (!workerSupported) {
+    // fallback: generate high-quality tiles directly (no worker available)
+    if (!queued.length || !state.img) return;
+    const curL = state.img ? levelForScale() : -1;
+    queued.sort((a, b) => (a.L === curL ? 0 : 1) - (b.L === curL ? 0 : 1));
+    const req = queued.shift();
+    genTileMainThread(req.L, req.tx, req.ty, "high");
+    requestRender();
+    if (queued.length) setTimeout(pumpQueue, 0);
+    return;
+  }
+  if (!workerReady) return;
+  // prioritize current view level
+  const curL = state.img ? levelForScale() : -1;
+  queued.sort((a, b) => {
+    const pa = a.L === curL ? 0 : 1, pb = b.L === curL ? 0 : 1;
+    if (pa !== pb) return pa - pb;
+    // low quality before high so previews land first
+    return (a.quality === "low" ? 0 : 1) - (b.quality === "low" ? 0 : 1);
+  });
+  while (inflight.size < MAX_INFLIGHT && queued.length) {
+    const req = queued.shift();
+    if (inflight.has(req.rk)) continue;
+    inflight.add(req.rk);
+    tileWorker.postMessage({ type: "gen", L: req.L, tx: req.tx, ty: req.ty, quality: req.quality });
+  }
+}
+
+function requestTile(L, tx, ty, quality) {
+  // no fast-preview path without a worker; only fetch high quality
+  if (!workerSupported && quality === "low") return;
+  const rk = L + ":" + tx + ":" + ty + ":" + quality;
+  if (inflight.has(rk)) return;
+  if (queued.some((q) => q.rk === rk)) return;
+  queued.push({ L, tx, ty, quality, rk });
+}
+
+function cancelStaleRequests(keepL) {
+  // drop queued requests not at the current level, but keep the pinned
+  // coarse-preview levels so the low-res base still loads
+  for (let i = queued.length - 1; i >= 0; i--) {
+    const q = queued[i];
+    if (q.L !== keepL && !isPinnedLevel(q.L)) queued.splice(i, 1);
+  }
+}
+
 function queueCoarsePreviewTiles() {
   if (!state.img) return;
   const minL = Math.max(0, state.maxLevel - 1);
@@ -521,38 +659,11 @@ function queueCoarsePreviewTiles() {
     const tyMax = Math.ceil(state.ih / tileW);
     for (let ty = 0; ty < tyMax; ty++) {
       for (let tx = 0; tx < txMax; tx++) {
-        pending.add(tileKey(L, tx, ty));
+        requestTile(L, tx, ty, "high");
       }
     }
   }
-  scheduleGenerate();
-}
-function nextPendingKey() {
-  // Prefer tiles at the current view level so visible high-res tiles are not
-  // starved behind background coarse-preview preloading.
-  const L = state.img ? levelForScale() : -1;
-  if (L >= 0) {
-    const prefix = L + ":";
-    for (const k of pending) {
-      if (k.startsWith(prefix)) return k;
-    }
-  }
-  return pending.values().next().value;
-}
-function scheduleGenerate() {
-  if (genRunning) return;
-  genRunning = true;
-  (async () => {
-    while (pending.size) {
-      const k = nextPendingKey();
-      pending.delete(k);
-      await new Promise((r) => setTimeout(r, 0));
-      const [L, tx, ty] = k.split(":").map(Number);
-      try { await generateTile(L, tx, ty); } catch (e) { status("Tile error: " + e.message); }
-      requestRender();
-    }
-    genRunning = false;
-  })();
+  pumpQueue();
 }
 
 // -------------------------------------------------------------- render
@@ -588,7 +699,7 @@ function render() {
           const s = k - L;
           const c = cacheGet(tileKey(k, tx >> s, ty >> s));
           if (c) {
-            fallback = { canvas: c, level: k };
+            fallback = { entry: c, level: k };
             break;
           }
         }
@@ -610,18 +721,24 @@ function render() {
       ctx.beginPath();
       ctx.rect(dx, dy, tileW * sc, tileW * sc);
       ctx.clip();
-      ctx.drawImage(it.fallback.canvas,
+      ctx.drawImage(it.fallback.entry.img,
         state.vx + cxt * cw * sc, state.vy + cyt * cw * sc, cw * sc, cw * sc);
       ctx.restore();
     }
   }
 
+  cancelStaleRequests(L);
   for (const it of infos) {
     if (it.exact) {
-      ctx.drawImage(it.exact,
+      ctx.drawImage(it.exact.img,
         state.vx + it.tx * tileW * sc, state.vy + it.ty * tileW * sc, tileW * sc, tileW * sc);
+      // upgrade low-quality tiles to high quality
+      if (it.exact.quality !== "high") requestTile(L, it.tx, it.ty, "high");
+    } else {
+      // request a fast preview first, then high quality
+      requestTile(L, it.tx, it.ty, "low");
+      requestTile(L, it.tx, it.ty, "high");
     }
-    if (!it.exact) pending.add(it.key);
   }
   if (tileDebug) {
     ctx.save();
@@ -632,15 +749,18 @@ function render() {
       const dx = state.vx + it.tx * tileW * sc;
       const dy = state.vy + it.ty * tileW * sc;
       const ts = tileW * sc;
-      // green = exact high-res tile drawn, red = missing (showing coarse preview)
-      ctx.strokeStyle = it.exact ? "#00e000" : "#ff2020";
+      // green = exact high-quality tile, yellow = low-quality preview, red = missing
+      const col = it.exact
+        ? (it.exact.quality === "high" ? "#00e000" : "#e0c000")
+        : "#ff2020";
+      ctx.strokeStyle = col;
       ctx.strokeRect(dx + 0.5, dy + 0.5, ts - 1, ts - 1);
-      ctx.fillStyle = it.exact ? "#00e000" : "#ff2020";
+      ctx.fillStyle = col;
       ctx.fillText(`L${L} ${it.tx},${it.ty}`, dx + 3, dy + 3);
     }
     ctx.restore();
   }
-  scheduleGenerate();
+  pumpQueue();
   drawBoxes();
   els.zoom.textContent = (state.scale * 100).toFixed(0) + "%";
   if (state.sel !== null && state.boxes[state.sel]) {
