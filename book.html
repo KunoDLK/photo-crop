@@ -672,13 +672,12 @@ function render() {
   visible.sort((a, b) => a._d2 - b._d2);
   profEnd(tView);
 
-  // Only the focused image (under the cursor, else nearest the viewport centre)
-  // gets the full tile loop; all other visible images use a single static base
-  // tile so we don't generate huge amounts of detail for off-focus pages.
-  const focus = visible[0] || null;
+  // All visible images render dynamically with the full tile loop. The
+  // nearest-first sort above just controls enqueue order so the area the user
+  // cares about sharpens first.
   const tDraw = profStart("draw.images");
   for (const im of visible) {
-    drawImageEntry(im, sc, im === focus);
+    drawImageEntry(im, sc);
   }
   profEnd(tDraw);
 
@@ -704,7 +703,7 @@ function drawLabel(im) {
 
 function getCss(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || "#000"; }
 
-function drawImageEntry(im, sc, focused) {
+function drawImageEntry(im, sc) {
   drawLabel(im);
 
   if (im.status !== "loaded") {
@@ -738,13 +737,6 @@ function drawImageEntry(im, sc, focused) {
     requestTile(im.id, im.maxLevel, 0, 0, "low", true);
   } else if (baseE.quality !== "high") {
     requestTile(im.id, im.maxLevel, 0, 0, "high");
-  }
-
-  // Non-focused images are drawn as a single static base tile only - no
-  // coarse->fine composite and no detail-tile requests, to save GPU/CPU/worker.
-  if (!focused) {
-    ctx.restore();
-    return;
   }
 
   const L = levelForImage(im);
