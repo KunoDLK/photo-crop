@@ -143,6 +143,41 @@ let settleTimer = null;
 
 function status(msg) { els.status.textContent = msg; }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+// ---------------------------------------------------------- copyparty auth
+// iOS Safari drops copyparty's SameSite=Strict HttpOnly session cookie on
+// programmatic fetches, causing intermittent 403s. To be robust we send the
+// password explicitly via the `PW:` header (and ?pw= as a fallback). The
+// password is taken from ?pw= in the page URL, or a one-time prompt cached in
+// sessionStorage. Never hardcoded.
+let cpPw = (() => {
+  const u = new URLSearchParams(location.search).get("pw");
+  if (u) { try { sessionStorage.setItem("cppw", u); } catch (e) {} return u; }
+  try { return sessionStorage.getItem("cppw") || ""; } catch (e) { return ""; }
+})();
+function promptForPw() {
+  const v = (prompt(
+    "Session expired / not authorized.\n" +
+    "Enter copyparty password (or user:password) to load images:") || "").trim();
+  if (v) { cpPw = v; try { sessionStorage.setItem("cppw", v); } catch (e) {} }
+  return v;
+}
+async function cpFetch(url, opts) {
+  opts = Object.assign({ credentials: "include" }, opts || {});
+  const headers = new Headers(opts.headers || {});
+  if (cpPw) headers.set("PW", cpPw);
+  opts.headers = headers;
+  let res = await fetch(url, opts);
+  if (res.status === 403) {
+    // cookie wasn't accepted; ask for a password and retry once
+    if (promptForPw()) {
+      headers.set("PW", cpPw);
+      res = await fetch(url, opts);
+    }
+  }
+  return res;
+}
+
 function requestRender() {
   if (needRender) return;
   needRender = true;
@@ -428,7 +463,7 @@ async function loadDirectory() {
   readySources.clear();
   let data;
   try {
-    const res = await fetch("./?ls", { headers: { "Accept": "application/json" } });
+    const res = await cpFetch("./?ls", { headers: { "Accept": "application/json" }, cache: "no-store" });
     if (!res.ok) throw new Error("HTTP " + res.status);
     data = await res.json();
   } catch (e) {
@@ -501,7 +536,7 @@ async function loadSequential(idx) {
 }
 
 async function downloadWithProgress(im) {
-  const res = await fetch(im.href);
+  const res = await cpFetch(im.href, {});
   if (!res.ok) throw new Error("HTTP " + res.status);
   const total = parseInt(res.headers.get("content-length") || "0", 10);
   if (!res.body || !total) {
