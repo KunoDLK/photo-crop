@@ -407,9 +407,27 @@ async function loadFromURL(url) {
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
+    if (!res.body) {
+      const blob = await res.blob();
+      const name = decodeURIComponent(url.split(/[?#]/)[0].split("/").pop()) || "image";
+      loadFile(new File([blob], name));
+      return;
+    }
+    const total = parseInt(res.headers.get("content-length") || "0", 10);
+    const reader = res.body.getReader();
+    const chunks = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      status(total
+        ? `Downloading… ${Math.min(100, Math.round(received / total * 100))}%`
+        : `Downloading… ${(received / 1048576).toFixed(1)} MB`);
+    }
     const name = decodeURIComponent(url.split(/[?#]/)[0].split("/").pop()) || "image";
-    loadFile(new File([blob], name));
+    loadFile(new File([new Blob(chunks)], name));
   } catch (e) {
     status(`Could not open URL: ${e.message}`);
   }
