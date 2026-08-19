@@ -151,6 +151,12 @@ let cursorX = -1, cursorY = -1;
 const PROFILE_EVERY = 60;
 const profAcc = new Map(); // name -> { n, sum, max }
 let profFrames = 0;
+// per-level tile generation timing from the worker
+const tileTiming = new Map(); // "L:quality" -> { n, sum, max }
+let tileTimingFrames = 0;
+// queue debug logging
+const QUEUE_DEBUG = true;
+function queueLog(msg) { if (QUEUE_DEBUG) console.log("[queue] " + msg); }
 function profStart(name) { return { name, t: performance.now() }; }
 function profEnd(m) {
   const dt = performance.now() - m.t;
@@ -166,7 +172,21 @@ function profFrame() {
   }
   profAcc.clear();
   profFrames = 0;
+  // per-level tile timing
+  const tparts = [];
+  for (const [key, e] of tileTiming) {
+    tparts.push(`${key}: avg=${(e.sum / e.n).toFixed(2)}ms max=${e.max.toFixed(2)}ms (${e.n})`);
+  }
+  tileTiming.clear();
+  tileTimingFrames = 0;
   console.log("[perf] " + (parts.length ? parts.join("  ") : "(no ops)"));
+  if (tparts.length) console.log("[tiles] " + tparts.join("  "));
+}
+function recordTileTime(L, quality, ms) {
+  const key = "L" + L + (quality === "low" ? "-low" : "-high");
+  let e = tileTiming.get(key);
+  if (!e) { e = { n: 0, sum: 0, max: 0 }; tileTiming.set(key, e); }
+  e.n++; e.sum += ms; if (ms > e.max) e.max = ms;
 }
 
 function status(msg) { els.status.textContent = msg; }
@@ -274,6 +294,7 @@ self.onmessage = (e) => {
   if (m.type === "gen") {
     const s = sources.get(m.id);
     if (!s) return;
+    const t0 = performance.now();
     const { L, tx, ty, quality } = m;
     const p = Math.pow(2, L);
     const sx = tx * TILE * p, sy = ty * TILE * p;
@@ -293,7 +314,9 @@ self.onmessage = (e) => {
       g.drawImage(out, 0, 0, dw, dh, 0, 0, dw, dh);
     }
     const bmp = c.transferToImageBitmap();
-    self.postMessage({ type: "tile", id: m.id, L, tx, ty, quality, bitmap: bmp }, [bmp]);
+    self.postMessage(
+      { type: "tile", id: m.id, L, tx, ty, quality, bitmap: bmp, ms: performance.now() - t0 },
+      [bmp]);
   }
 };
 `;
@@ -323,8 +346,10 @@ function initWorker() {
     }
     if (m.type === "tile") {
       const tTile = profStart("msg.tileReceived");
+      if (m.ms) recordTileTime(m.L, m.quality, m.ms);
       const rk = m.id + ":" + m.L + ":" + m.tx + ":" + m.ty + ":" + m.quality;
       inflight.delete(rk);
+      queueLog(`tile in ${m.ms != null ? m.ms.toFixed(1) + "ms" : "?"} L${m.L}${m.quality === "low" ? "-low" : ""} ${m.id}:${m.tx},${m.ty}`);
       const k = tileKey(m.id, m.L, m.tx, m.ty);
       const existing = cache.get(k);
       if (!(existing && existing.quality === "high" && m.quality !== "high")) {
@@ -385,9 +410,10 @@ function pumpQueue() {
   if (!workerSupported || !workerReady) return;
   while (inflight.size < MAX_INFLIGHT && queued.length) {
     const req = queued.shift();
-    if (inflight.has(req.rk)) continue;
-    if (!readySources.has(req.id)) continue; // source not ready yet; drop (re-requested by render)
+    if (inflight.has(req.rk)) { queueLog(`skip(inflight) ${req.rk}`); continue; }
+    if (!readySources.has(req.id)) { queueLog(`skip(source) ${req.rk}`); continue; } // re-requested by render
     inflight.add(req.rk);
+    queueLog(`send ${req.rk}  [inflight=${inflight.size}/${MAX_INFLIGHT} queued=${queued.length}]`);
     tileWorker.postMessage({ type: "gen", id: req.id, L: req.L, tx: req.tx, ty: req.ty, quality: req.quality });
   }
 }
@@ -702,10 +728,17 @@ function drawImageEntry(im, sc, focused) {
     const btw = TILE * Math.pow(2, im.maxLevel) * im.fitFactor * sc;
     ctx.drawImage(base.img, dx, dy, btw, btw);
   }
-  // keep the base tile fresh for every visible image (priority low so it's
-  // generated first when missing)
-  requestTile(im.id, im.maxLevel, 0, 0, "low", true);
-  requestTile(im.id, im.maxLevel, 0, 0, "high");
+  // Keep the whole-image base tile available for every visible image, but only
+  // (re)request it when it's missing or needs a quality upgrade. Requesting it
+  // unconditionally every frame would regenerate it forever (the queue is
+  // cleared each render), pinning the worker at 100% and starving target tiles.
+  const baseK = tileKey(im.id, im.maxLevel, 0, 0);
+  const baseE = cache.get(baseK);
+  if (!baseE) {
+    requestTile(im.id, im.maxLevel, 0, 0, "low", true);
+  } else if (baseE.quality !== "high") {
+    requestTile(im.id, im.maxLevel, 0, 0, "high");
+  }
 
   // Non-focused images are drawn as a single static base tile only - no
   // coarse->fine composite and no detail-tile requests, to save GPU/CPU/worker.
