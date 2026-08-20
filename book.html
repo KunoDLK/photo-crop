@@ -1347,21 +1347,29 @@ function drawImageEntry(im, sc) {
       ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
       ctx.lineWidth = 1;
     }
-    const rr = tileRange(im, L, sc, dx, dy, dw, dh);
-    const twsc = TILE * Math.pow(2, L) * im.fitFactor * sc;
-    ctx.lineWidth = 1;
-    ctx.font = "600 11px system-ui, sans-serif";
+    // Overlay every cached tile of this image that lies within the viewport, at
+    // its actual level, colored by quality (green=high, yellow=low). No red
+    // "queued" cells — so you can watch coarse tiles get chopped into finer
+    // tiles as quality improves, with lingering fine tiles floating on top.
+    const vpw = cv.clientWidth, vph = cv.clientHeight;
+    ctx.font = "600 10px system-ui, sans-serif";
     ctx.textBaseline = "top";
-    for (let ty = rr.ty0; ty <= rr.ty1; ty++)
-      for (let tx = rr.tx0; tx <= rr.tx1; tx++) {
-        const e = cache.get(tileKey(im.id, L, tx, ty));
-        const col = e ? (e.quality === "high" ? "#00e000" : "#e0c000") : "#ff2020";
-        const tdx = dx + tx * twsc, tdy = dy + ty * twsc;
-        ctx.strokeStyle = col;
-        ctx.strokeRect(tdx + 0.5, tdy + 0.5, twsc - 1, twsc - 1);
-        ctx.fillStyle = col;
-        ctx.fillText("L" + L + " " + tx + "," + ty, tdx + 3, tdy + 3);
-      }
+    const drawBox = (v) => {
+      const twsc = TILE * Math.pow(2, v.L) * im.fitFactor * sc;
+      const tdx = dx + v.tx * twsc, tdy = dy + v.ty * twsc;
+      if (tdx + twsc < 0 || tdx > vpw || tdy + twsc < 0 || tdy > vph) return;
+      const col = v.quality === "high" ? "#00e000" : "#e0c000";
+      ctx.fillStyle = col + "22";
+      ctx.fillRect(tdx, tdy, twsc, twsc);
+      ctx.strokeStyle = col;
+      ctx.strokeRect(tdx + 0.5, tdy + 0.5, twsc - 1, twsc - 1);
+      ctx.fillStyle = col;
+      ctx.fillText("L" + v.L + " " + v.tx + "," + v.ty, tdx + 3, tdy + 3);
+    };
+    for (const v of cache.values()) {
+      if (v.id !== im.id) continue;
+      drawBox(v);
+    }
   }
 
   ctx.restore();
