@@ -198,6 +198,9 @@ const SOURCE_BUDGET = sourceBudgetMB * 1024 * 1024;
 // Tile cache byte budget, scaled by RAM (256KB/tile). Protects low-memory phones
 // from holding thousands of decoded tiles; protected base tiles are excluded.
 const CACHE_MAX_BYTES = Math.max(64 * 1024 * 1024, Math.round(deviceMemoryGB * 64 * 1024 * 1024));
+// Fraction of the tile cache budget reserved for the pinned (coarse) tier — the
+// overview tiles that guarantee every image always has *something* to render.
+const PINNED_RESERVE_FRAC = 0.5;
 // High-RAM devices keep blobs in RAM; low-RAM (phones) use IndexedDB.
 const USE_RAM_CACHE = deviceMemoryGB >= 8 || !isMobile;
 
@@ -579,7 +582,7 @@ function initWorker() {
       readySources.add(m.id);
       sourceLoading.delete(m.id);
       sourceFailedAt.delete(m.id);
-      requestBaseTiles(im);
+      requestPinnedTiles(im);
       reconcile();
       requestRender();
       return;
@@ -667,7 +670,7 @@ function tileKey(id, L, tx, ty) { return id + ":" + L + ":" + tx + ":" + ty; }
 function isProtected(entry) {
   const im = imgById.get(entry.id);
   if (!im) return false;
-  return entry.L >= im.maxLevel; // pin each image's coarsest whole-image base
+  return entry.L >= pinnedLevelFor(im); // pin the whole coarse "pinned tier"
 }
 function cacheGet(k) {
   const v = cache.get(k);
@@ -738,6 +741,35 @@ function levelForImage(im) {
   const eff = s * im.fitFactor; // source px -> css px
   if (interacting) return clamp(Math.round(-Math.log2(eff)), 0, im.maxLevel);
   return clamp(Math.floor(-Math.log2(eff * dpr)), 0, im.maxLevel);
+}
+
+// ------------------------------------------------------------- pinned tier
+// The pinned tier is the coarse overview that is always kept in the cache so
+// every image can render *something* at any zoom/location, even during
+// navigation when no new tiles are generated. It is allocated a fixed slice of
+// the tile cache budget (PINNED_RESERVE_FRAC); each image pins the finest level
+// whose per-image footprint fits within its share of that reserve. A handful of
+// images therefore pin relatively fine tiles (high-quality navigation), while
+// hundreds of images pin only the single whole-image tile — the level adapts to
+// device memory and image count without any hardcoded pixel size.
+function computePinnedLevel(im) {
+  const perImage = (CACHE_MAX_BYTES * PINNED_RESERVE_FRAC) / Math.max(1, images.length);
+  let L = im.maxLevel; // coarsest: one whole-image tile
+  for (; L > 0; L--) {
+    const nl = L - 1; // try one level finer (4x the tiles)
+    const ntx = Math.ceil(im.iw / (TILE * Math.pow(2, nl)));
+    const nty = Math.ceil(im.ih / (TILE * Math.pow(2, nl)));
+    if (ntx * nty * TILE_BYTES > perImage) break;
+  }
+  return L;
+}
+// Cached per image; recomputed when the image set changes size.
+function pinnedLevelFor(im) {
+  if (im.pinnedLevel === undefined || im.pinnedCount !== images.length) {
+    im.pinnedLevel = computePinnedLevel(im);
+    im.pinnedCount = images.length;
+  }
+  return im.pinnedLevel;
 }
 
 function parseName(fname) {
@@ -1125,13 +1157,19 @@ function enqueueImageTiles(im) {
   for (const t of pend) requestTile(im.id, L, t.tx, t.ty, "high");
 }
 
-// Ensure the pinned whole-image base tile (low, then high) exists for the image
-// so every visible image always has a low-quality background underlay.
-function requestBaseTiles(im) {
-  const k = tileKey(im.id, im.maxLevel, 0, 0);
-  const e = cache.get(k);
-  if (!e) requestTile(im.id, im.maxLevel, 0, 0, "low");
-  else if (e.quality !== "high") requestTile(im.id, im.maxLevel, 0, 0, "high");
+// Ensure the pinned coarse overview tiles exist for the image (low, then high)
+// so it always has a ready underlay no matter where or how far the view zooms.
+function requestPinnedTiles(im) {
+  const L = pinnedLevelFor(im);
+  const ntx = Math.ceil(im.iw / (TILE * Math.pow(2, L)));
+  const nty = Math.ceil(im.ih / (TILE * Math.pow(2, L)));
+  for (let ty = 0; ty < nty; ty++)
+    for (let tx = 0; tx < ntx; tx++) {
+      const k = tileKey(im.id, L, tx, ty);
+      const e = cache.get(k);
+      if (!e) requestTile(im.id, L, tx, ty, "low");
+      else if (e.quality !== "high") requestTile(im.id, L, tx, ty, "high");
+    }
 }
 
 // Start decoding an image's source (from the cached blob) if it is missing and
@@ -1164,7 +1202,7 @@ function reconcile() {
   // level selection) so tiles are fewer and finish fast — keeping the view
   // legible during pan/zoom instead of showing an empty base underlay.
   const order = visibleImages();
-  for (const im of order) requestBaseTiles(im);
+  for (const im of order) requestPinnedTiles(im);
 
   const win = activeWindowSize();
   let activated = 0;
