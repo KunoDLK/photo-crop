@@ -315,6 +315,20 @@ async function blobCachePut(url, blob) {
     await idbPut(url, blob);
   }
 }
+// Remove a blob from the cache (used when a file changes or disappears).
+async function blobCacheDelete(url) {
+  if (USE_RAM_CACHE) { ramBlobs.delete(url); return; }
+  const db = await idbOpen();
+  if (!db) return;
+  try {
+    await new Promise((res, rej) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).delete(url);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  } catch (e) {}
+}
 function profStart(name) { return { name, t: performance.now() }; }
 function profEnd(m) {
   const dt = performance.now() - m.t;
@@ -480,11 +494,15 @@ self.onmessage = (e) => {
     if (DEBUG) console.log("[worker] addSource", m.id, m.iw + "x" + m.ih, "srcBytes", (srcBytes / 1048576).toFixed(1) + "MB");
     return;
   }
-  if (m.type === "clear") {
-    for (const s of sources.values()) { if (s.img && s.img.close) s.img.close(); }
-    sources.clear();
-    sourceOrder.length = 0;
-    srcBytes = 0;
+  if (m.type === "dropSource") {
+    const s = sources.get(m.id);
+    if (s) {
+      if (s.img && s.img.close) s.img.close();
+      srcBytes -= s.bytes;
+      sources.delete(m.id);
+      const i = sourceOrder.indexOf(m.id);
+      if (i >= 0) sourceOrder.splice(i, 1);
+    }
     return;
   }
   if (m.type === "gen") {
@@ -549,11 +567,17 @@ function initWorker() {
     const m = e.data;
     if (m.type === "sourceReady") {
       queueLog(`sourceReady ${m.id}`);
+      const im = imgById.get(m.id);
+      if (!im) {
+        // Image was removed by a warm reload while this source was decoding.
+        readySources.delete(m.id);
+        tileWorker.postMessage({ type: "dropSource", id: m.id });
+        return;
+      }
       readySources.add(m.id);
       sourceLoading.delete(m.id);
       sourceFailedAt.delete(m.id);
-      const im = imgById.get(m.id);
-      if (im) requestBaseTiles(im);
+      requestBaseTiles(im);
       reconcile();
       requestRender();
       return;
@@ -579,6 +603,14 @@ function initWorker() {
       const rk = m.id + ":" + m.L + ":" + m.tx + ":" + m.ty + ":" + m.quality;
       inflight.delete(rk);
       queueLog(`tile in ${m.ms != null ? m.ms.toFixed(1) + "ms" : "?"} L${m.L}${m.quality === "low" ? "-low" : ""} ${m.id}:${m.tx},${m.ty}`);
+      if (!imgById.has(m.id)) {
+        // stale tile for an image removed by a warm reload
+        if (m.bitmap.close) m.bitmap.close();
+        pumpQueue();
+        requestRender();
+        profEnd(tTile);
+        return;
+      }
       const k = tileKey(m.id, m.L, m.tx, m.ty);
       const existing = cache.get(k);
       if (!(existing && existing.quality === "high" && m.quality !== "high")) {
@@ -714,9 +746,25 @@ function parseName(fname) {
   return { group: parseInt(m[1], 10), order: parseInt(m[2], 10), name: m[3] || noext };
 }
 
+// Signature of a listing entry so a warm reload can detect an on-disk change
+// (size/mtime) even when the filename is unchanged. Null if the server gave us
+// neither, in which case we fall back to reusing the image by URL alone.
+// copyparty's ?ls JSON exposes these as `sz` (bytes) and `ts` (unix mtime).
+function fileSignature(f) {
+  const size = f.sz != null ? f.sz : (f.size != null ? f.size : null);
+  const mt = f.ts != null ? f.ts : (f.mt != null ? f.mt : (f.mtime != null ? f.mtime : null));
+  if (size == null && mt == null) return null;
+  return (size == null ? "?" : size) + ":" + (mt == null ? "?" : mt);
+}
+
 // Build the layout: groups stacked top->bottom, each a square grid of square cells.
+// Warm reloads reuse existing image objects (by URL) so their cached tiles and
+// worker sources survive; removed images are dropped and new ones added as pending.
 function buildLayout(list) {
   // list: [{href, meta:{group,order,name}}]
+  const existingByUrl = new Map();
+  for (const im of images) existingByUrl.set(im.url, im);
+
   const groups = new Map();
   for (const it of list) {
     if (!groups.has(it.meta.group)) groups.set(it.meta.group, []);
@@ -725,8 +773,8 @@ function buildLayout(list) {
   const gkeys = [...groups.keys()].sort((a, b) => a - b);
   let y = 0;
   let maxRight = 0;
-  images = [];
-  imgById.clear();
+  const nextImages = [];
+  const kept = new Set();
   for (const gk of gkeys) {
     const items = groups.get(gk).sort((a, b) => a.meta.order - b.meta.order);
     const cols = Math.max(1, Math.ceil(Math.sqrt(items.length)));
@@ -735,28 +783,78 @@ function buildLayout(list) {
       const col = i % cols, row = (i / cols) | 0;
       const ox = col * (CELL + CELL_GAP);
       const oy = y + row * (CELL + LABEL_H + CELL_GAP);
-      const im = {
-        id: nextId++,
-        href: items[i].href,
-        // Resolve to an absolute URL up front so Safari doesn't re-encode the
-        // already-percent-encoded href (which turned %20 into %2520 -> bad req).
-        url: new URL(items[i].href, location.href).href,
-        name: items[i].meta.name,
-        group: gk, order: items[i].meta.order,
-        extra: !!items[i].meta.extra,
-        cellX: ox, cellY: oy + LABEL_H, cell: CELL, labelY: oy,
-        iw: 0, ih: 0, maxLevel: 0, fitFactor: 1,
-        drawX: ox, drawY: oy + LABEL_H, drawW: CELL, drawH: CELL,
-        bitmap: null, status: "pending", progress: 0,
-      };
-      images.push(im);
-      imgById.set(im.id, im);
+      const href = items[i].href;
+      const url = new URL(href, location.href).href;
+      const sig = items[i].sig;
+      let im = existingByUrl.get(url);
+      if (im && sig != null && im.fileSig != null && im.fileSig !== sig) {
+        // Same filename but the file changed on disk: drop and re-load.
+        dropImage(im);
+        existingByUrl.delete(url);
+        im = null;
+      }
+      if (im) {
+        // reuse: refresh labels/position but keep id, bitmap, tiles and source
+        im.href = href;
+        im.name = items[i].meta.name;
+        im.group = gk;
+        im.order = items[i].meta.order;
+        im.extra = !!items[i].meta.extra;
+        im.fileSig = sig;
+        im.cellX = ox; im.cellY = oy + LABEL_H; im.cell = CELL; im.labelY = oy;
+      } else {
+        im = {
+          id: nextId++,
+          href,
+          // Resolve to an absolute URL up front so Safari doesn't re-encode the
+          // already-percent-encoded href (which turned %20 into %2520 -> bad req).
+          url,
+          name: items[i].meta.name,
+          group: gk, order: items[i].meta.order,
+          extra: !!items[i].meta.extra,
+          fileSig: sig,
+          cellX: ox, cellY: oy + LABEL_H, cell: CELL, labelY: oy,
+          iw: 0, ih: 0, maxLevel: 0, fitFactor: 1,
+          drawX: ox, drawY: oy + LABEL_H, drawW: CELL, drawH: CELL,
+          bitmap: null, status: "pending", progress: 0,
+        };
+        existingByUrl.set(url, im);
+      }
+      if (im.status === "loaded") fitImage(im);
+      else { im.drawX = ox; im.drawY = oy + LABEL_H; im.drawW = CELL; im.drawH = CELL; }
+      nextImages.push(im);
+      kept.add(im.id);
       maxRight = Math.max(maxRight, ox + CELL);
     }
     y += rows * (CELL + LABEL_H + CELL_GAP) + GROUP_GAP;
   }
+  // Drop images that are no longer in the listing.
+  for (const im of images) if (!kept.has(im.id)) dropImage(im);
+
+  images = nextImages;
+  imgById.clear();
+  for (const im of images) imgById.set(im.id, im);
   scene.w = maxRight;
   scene.h = Math.max(0, y - GROUP_GAP);
+}
+
+// Release an image that disappeared from the listing: drop its worker source,
+// evict its cached tiles, and clear any per-image scheduler state.
+function dropImage(im) {
+  readySources.delete(im.id);
+  sourceLoading.delete(im.id);
+  sourceFailedAt.delete(im.id);
+  redecoding.delete(im.id);
+  if (im.bitmap && im.bitmap.close) im.bitmap.close();
+  blobCacheDelete(im.url);
+  for (const [k, v] of cache.entries()) {
+    if (v.id === im.id) {
+      if (v.img && v.img.close) v.img.close();
+      cache.delete(k);
+      cacheBytes -= TILE_BYTES;
+    }
+  }
+  if (workerSupported && tileWorker) tileWorker.postMessage({ type: "dropSource", id: im.id });
 }
 
 // Fit a decoded image inside its square cell, preserving aspect.
@@ -791,17 +889,8 @@ function fitView() {
 async function loadDirectory() {
   status("Listing folder…");
   loadGeneration++;
-  images = [];
-  cache.clear();
-  cacheBytes = 0;
-  inflight.clear();
-  queued.length = 0;
-  readySources.clear();
-  sourceLoading.clear();
-  redecoding.clear();
-  sourceFailedAt.clear();
-  sourceLoadCount = 0;
-  if (tileWorker) tileWorker.postMessage({ type: "clear" });
+  const gen = loadGeneration;
+  const hadImages = images.length > 0;
   let data;
   try {
     const res = await cpFetch("./?ls", { headers: { "Accept": "application/json" }, cache: "no-store" });
@@ -811,6 +900,7 @@ async function loadDirectory() {
     status("Could not list folder: " + e.message);
     return;
   }
+  if (gen !== loadGeneration) return; // superseded by a newer reload
   const files = (data.files || []);
   const matched = [];
   const extra = [];
@@ -819,8 +909,9 @@ async function loadDirectory() {
     if (!href || !IMG_EXT.test(href)) continue;
     const dec = decodeURIComponent(href);
     const meta = parseName(dec);
-    if (meta) matched.push({ href, meta });
-    else extra.push({ href, name: dec.replace(/\/+$/, "").replace(/\.[^.]+$/, "") });
+    const sig = fileSignature(f);
+    if (meta) matched.push({ href, meta, sig });
+    else extra.push({ href, name: dec.replace(/\/+$/, "").replace(/\.[^.]+$/, ""), sig });
   }
   if (!matched.length && !extra.length) {
     status("No images found in this folder.");
@@ -838,47 +929,53 @@ async function loadDirectory() {
     const extraGroup = maxGroup + 1;
     extra.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     extra.forEach((it, i) => {
-      list.push({ href: it.href, meta: { group: extraGroup, order: i + 1, name: it.name, extra: true } });
+      list.push({ href: it.href, meta: { group: extraGroup, order: i + 1, name: it.name, extra: true }, sig: it.sig });
     });
   }
   buildLayout(list);
   stateHasImages = images.length > 0;
-  fitView();
+  queued.length = 0;
+  if (!hadImages) fitView();
+  reconcile();
   requestRender();
   status(`Found ${images.length} image(s) in ${new Set(images.map(i=>i.group)).size} group(s). Loading…`);
-  loadSequential(0);
+  loadSequential(gen);
 }
 
-async function loadSequential(idx) {
-  if (idx >= images.length) { status(`Loaded ${images.length} image(s).`); return; }
-  const im = images[idx];
-  im.status = "downloading";
-  im.progress = 0;
-  requestRender();
-  try {
-    const tLoad = profStart("load.image");
-    const blob = await getImageBlob(im);
-    im.status = "decoding";
+async function loadSequential(gen) {
+  for (const im of images) {
+    if (gen !== loadGeneration) return;      // superseded by a newer reload
+    if (im.status === "loaded") continue;    // already have it (warm reload)
+    im.status = "downloading";
+    im.progress = 0;
     requestRender();
-    const tDecode = profStart("load.decode");
-    const bitmap = await createImageBitmap(blob);
-    profEnd(tDecode);
-    im.bitmap = bitmap;
-    im.iw = bitmap.width;
-    im.ih = bitmap.height;
-    fitImage(im);
-    im.status = "loaded";
-    trackSourceSize(im);
-    addSource(im);
-    requestRender();
-    profEnd(tLoad);
-  } catch (e) {
-    im.status = "error";
-    im.error = e.message;
-    requestRender();
+    try {
+      const tLoad = profStart("load.image");
+      const blob = await getImageBlob(im);
+      if (gen !== loadGeneration) return;
+      im.status = "decoding";
+      requestRender();
+      const tDecode = profStart("load.decode");
+      const bitmap = await createImageBitmap(blob);
+      profEnd(tDecode);
+      if (gen !== loadGeneration) { if (bitmap.close) bitmap.close(); return; }
+      im.bitmap = bitmap;
+      im.iw = bitmap.width;
+      im.ih = bitmap.height;
+      fitImage(im);
+      im.status = "loaded";
+      trackSourceSize(im);
+      addSource(im);
+      requestRender();
+      profEnd(tLoad);
+    } catch (e) {
+      if (gen !== loadGeneration) return;
+      im.status = "error";
+      im.error = e.message;
+      requestRender();
+    }
   }
-  // strictly sequential: next image starts as soon as this one finishes
-  loadSequential(idx + 1);
+  if (gen === loadGeneration) status(`Loaded ${images.length} image(s).`);
 }
 
 // Get the image blob: blob cache first, else download (with progress) and store.
@@ -1015,7 +1112,7 @@ function requestSourceLoad(im) {
   sourceLoading.add(im.id);
   const gen = loadGeneration;
   ensureSource(im).then((ok) => {
-    if (gen !== loadGeneration) return; // stale after a reload
+    if (gen !== loadGeneration) { sourceLoadCount = Math.max(0, sourceLoadCount - 1); return; }
     if (!ok) { sourceFailedAt.set(im.id, performance.now()); sourceLoading.delete(im.id); }
     sourceLoadCount--;
     reconcile();
