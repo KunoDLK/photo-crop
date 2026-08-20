@@ -169,6 +169,8 @@ const sourceLoading = new Set(); // image ids awaiting a source decode/ack
 const sourceFailedAt = new Map(); // id -> timestamp of last failed decode
 // last known cursor position in canvas (device/CSS) coords; -1 = unknown/off
 let cursorX = -1, cursorY = -1;
+// image currently "focused" via double-click / arrow-key navigation
+let focusedImage = null;
 
 // ------------------------------------------------------------- profiler
 // Simple per-operation timing profiler. Each frame accumulates the time spent
@@ -892,6 +894,31 @@ function fitView() {
   view.vy = (vph - scene.h * view.scale) / 2;
 }
 
+// Fit a single image's draw rect to the viewport, centered.
+function fitViewToImage(im) {
+  const vpw = cv.clientWidth || els.left.clientWidth;
+  const vph = cv.clientHeight || els.left.clientHeight;
+  if (!vpw || !vph) return;
+  const cx = im.drawX + im.drawW / 2;
+  const cy = im.drawY + im.drawH / 2;
+  const s = Math.min(vpw / im.drawW, vph / im.drawH) * 0.96;
+  view.scale = clamp(s, 0.00005, 64);
+  view.vx = vpw / 2 - cx * view.scale;
+  view.vy = vph / 2 - cy * view.scale;
+}
+
+// Find the image whose cell (label + image) contains the device point.
+function imageAtPoint(mx, my) {
+  const sx = (mx - view.vx) / view.scale;
+  const sy = (my - view.vy) / view.scale;
+  for (let i = images.length - 1; i >= 0; i--) {
+    const im = images[i];
+    if (sx >= im.cellX && sx <= im.cellX + im.cell &&
+        sy >= im.labelY && sy <= im.cellY + im.cell) return im;
+  }
+  return null;
+}
+
 // ------------------------------------------------------------- directory load
 async function loadDirectory() {
   status("Listing folder…");
@@ -1394,6 +1421,12 @@ cv.addEventListener("pointerup", endPointer);
 cv.addEventListener("pointercancel", endPointer);
 cv.addEventListener("contextmenu", (e) => e.preventDefault());
 cv.addEventListener("pointerleave", () => { cursorX = -1; cursorY = -1; });
+cv.addEventListener("dblclick", (e) => {
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const im = imageAtPoint(mx, my);
+  if (im) { focusedImage = im; fitViewToImage(im); reconcile(); requestRender(); }
+});
 function beginPinch() {
   const [a, b] = [...activePointers.values()];
   const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
@@ -1426,6 +1459,16 @@ els.tiledbg.addEventListener("click", () => {
 });
 window.addEventListener("keydown", (e) => {
   if (e.key === "f" || e.key === "F") { fitView(); reconcile(); requestRender(); }
+  else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    if (!images.length) return;
+    let idx = images.indexOf(focusedImage);
+    idx += e.key === "ArrowRight" ? 1 : -1;
+    idx = clamp(idx, 0, images.length - 1);
+    focusedImage = images[idx];
+    fitViewToImage(focusedImage);
+    reconcile();
+    requestRender();
+  }
 });
 
 // ------------------------------------------------------------- stats bar
