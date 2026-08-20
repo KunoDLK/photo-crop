@@ -1419,14 +1419,14 @@ function endPointer(e) {
 }
 cv.addEventListener("pointerup", endPointer);
 cv.addEventListener("pointercancel", endPointer);
-cv.addEventListener("contextmenu", (e) => e.preventDefault());
-cv.addEventListener("pointerleave", () => { cursorX = -1; cursorY = -1; });
-cv.addEventListener("dblclick", (e) => {
+cv.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const im = imageAtPoint(mx, my);
   if (im) { focusedImage = im; fitViewToImage(im); reconcile(); requestRender(); }
 });
+cv.addEventListener("pointerleave", () => { cursorX = -1; cursorY = -1; });
 function beginPinch() {
   const [a, b] = [...activePointers.values()];
   const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
