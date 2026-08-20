@@ -129,6 +129,7 @@ const MAX_SRC_LOADS = 2;    // max parallel source decodes
 const MAX_INFLIGHT = 6;
 const SETTLE_MS = 500;
 const REFINE_BUDGET_MS = 6;   // per-frame time budget for cache-only tile swaps
+const PREFETCH_NEIGHBORS = 4; // images before/after the view to warm while idle
 const IMG_EXT = /\.(png|jpe?g|tiff?|bmp|webp|gif|avif)$/i;
 const NAME_RE = /^(\d+)_(\d+)-(.*)$/;
 
@@ -417,6 +418,7 @@ function markInteracting() {
     interacting = false;
     reconcile();
     requestRender();
+    schedulePrefetch();
   }, SETTLE_MS);
   reconcile();
 }
@@ -1048,7 +1050,10 @@ async function loadSequential(gen) {
       requestRender();
     }
   }
-  if (gen === loadGeneration) status(`Loaded ${images.length} image(s) — ${totalMegapixels().toFixed(1)} megapixels`);
+  if (gen === loadGeneration) {
+    status(`Loaded ${images.length} image(s) — ${totalMegapixels().toFixed(1)} megapixels`);
+    schedulePrefetch();
+  }
 }
 
 // Get the image blob: blob cache first, else download (with progress) and store.
@@ -1246,6 +1251,35 @@ function reconcile() {
     enqueueImageTiles(im);
   }
   pumpQueue();
+}
+
+// ------------------------------------------------------------- idle prefetch
+// After navigation settles and the queue drains, opportunistically warm the
+// pinned floor of images adjacent to the view so a fast flick over unseen pages
+// still shows a coarse overview instead of an empty cell. It only asks for
+// source decodes (the sourceReady handler already requests the pinned tiles) and
+// is throttled by MAX_SRC_LOADS, so it never competes with visible-image work.
+let prefetchTimer = null;
+function schedulePrefetch() {
+  if (prefetchTimer) return;
+  prefetchTimer = setTimeout(() => {
+    prefetchTimer = null;
+    prefetchPinned();
+  }, 300);
+}
+function prefetchPinned() {
+  if (!workerSupported || !workerReady || !stateHasImages || interacting) return;
+  const order = visibleImages();
+  if (!order.length) return;
+  const idxs = order.map((im) => images.indexOf(im)).filter((i) => i >= 0);
+  const lo = Math.max(0, Math.min(...idxs) - PREFETCH_NEIGHBORS);
+  const hi = Math.min(images.length - 1, Math.max(...idxs) + PREFETCH_NEIGHBORS);
+  for (let i = lo; i <= hi; i++) {
+    const im = images[i];
+    if (im.status !== "loaded") continue;
+    if (readySources.has(im.id) || hasPinnedTiles(im)) continue;
+    requestSourceLoad(im);
+  }
 }
 
 // ------------------------------------------------------------- render
