@@ -683,6 +683,9 @@ function cacheSet(k, img, id, L, quality) {
   if (prev && prev.img && prev.img.close && prev.img !== img) prev.img.close();
   cache.set(k, { img, id, L, quality, lastUsed: ++tileClock });
   if (!prev) cacheBytes += TILE_BYTES;
+  // Never evict while navigating: keep every already-rendered tile in place so
+  // the view stays stable mid-gesture; eviction resumes on the next settle.
+  if (interacting) return;
   while (cache.size > CACHE_MAX || cacheBytes > CACHE_MAX_BYTES) {
     let victimKey = null, victimTime = Infinity;
     for (const [key, val] of cache.entries()) {
@@ -735,12 +738,15 @@ function requestTile(id, L, tx, ty, quality) {
 const imgById = new Map();
 let nextId = 1;
 
-// level so a tile texel maps to <= 1 physical pixel once settled
+// level so a tile texel maps to <= 1 physical pixel once settled. Clamped to
+// the pinned level so we never target a level coarser than the pinned floor
+// (the floor is always good enough — no point generating coarser tiles).
 function levelForImage(im) {
   const s = view.scale; // scene px -> css px (image drawn at fitFactor*scale)
   const eff = s * im.fitFactor; // source px -> css px
-  if (interacting) return clamp(Math.round(-Math.log2(eff)), 0, im.maxLevel);
-  return clamp(Math.floor(-Math.log2(eff * dpr)), 0, im.maxLevel);
+  const max = pinnedLevelFor(im);
+  if (interacting) return clamp(Math.round(-Math.log2(eff)), 0, max);
+  return clamp(Math.floor(-Math.log2(eff * dpr)), 0, max);
 }
 
 // ------------------------------------------------------------- pinned tier
@@ -1159,6 +1165,8 @@ function enqueueImageTiles(im) {
 
 // Ensure the pinned coarse overview tiles exist for the image (low, then high)
 // so it always has a ready underlay no matter where or how far the view zooms.
+// The "high" upgrade is deferred while navigating so interaction only paints the
+// fast low-res floor; the crisp overview is generated on settle.
 function requestPinnedTiles(im) {
   const L = pinnedLevelFor(im);
   const ntx = Math.ceil(im.iw / (TILE * Math.pow(2, L)));
@@ -1168,8 +1176,20 @@ function requestPinnedTiles(im) {
       const k = tileKey(im.id, L, tx, ty);
       const e = cache.get(k);
       if (!e) requestTile(im.id, L, tx, ty, "low");
-      else if (e.quality !== "high") requestTile(im.id, L, tx, ty, "high");
+      else if (e.quality !== "high" && !interacting) requestTile(im.id, L, tx, ty, "high");
     }
+}
+
+// Whether the image already has all of its pinned coarse tiles cached (so a
+// source decode isn't needed just to produce the floor while navigating).
+function hasPinnedTiles(im) {
+  const L = pinnedLevelFor(im);
+  const ntx = Math.ceil(im.iw / (TILE * Math.pow(2, L)));
+  const nty = Math.ceil(im.ih / (TILE * Math.pow(2, L)));
+  for (let ty = 0; ty < nty; ty++)
+    for (let tx = 0; tx < ntx; tx++)
+      if (!cache.has(tileKey(im.id, L, tx, ty))) return false;
+  return true;
 }
 
 // Start decoding an image's source (from the cached blob) if it is missing and
@@ -1197,12 +1217,23 @@ function reconcile() {
   if (!workerSupported || !workerReady || !stateHasImages) return;
   queued.length = 0;
 
-  // Every visible image gets its base tile, then we tile its current target
-  // level. While interacting, levelForImage picks a coarser level (see the
-  // level selection) so tiles are fewer and finish fast — keeping the view
-  // legible during pan/zoom instead of showing an empty base underlay.
+  // Every visible image gets its pinned coarse tiles. Then, when *navigating*,
+  // we stop here: no target-level tile generation is allowed while interacting
+  // — only the pinned floor is produced (plus the source decodes it needs), so
+  // the main thread stays idle for drawing and navigation stays smooth. The
+  // full target-level pipeline runs on settle below.
   const order = visibleImages();
   for (const im of order) requestPinnedTiles(im);
+
+  if (interacting) {
+    for (const im of order) {
+      if (readySources.has(im.id)) continue;
+      if (hasPinnedTiles(im)) continue;
+      requestSourceLoad(im);
+    }
+    pumpQueue();
+    return;
+  }
 
   const win = activeWindowSize();
   let activated = 0;
