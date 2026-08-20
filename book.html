@@ -127,8 +127,7 @@ const CACHE_MAX = 1024;
 const MAX_ACTIVE = 12;      // upper bound on concurrently resident sources
 const MAX_SRC_LOADS = 2;    // max parallel source decodes
 const MAX_INFLIGHT = 6;
-const SETTLE_MS = 180;
-const DOWNLOAD_GAP_MS = 400;   // pause between sequential image downloads
+const SETTLE_MS = 500;
 const IMG_EXT = /\.(png|jpe?g|tiff?|bmp|webp|gif|avif)$/i;
 const NAME_RE = /^(\d+)_(\d+)-(.*)$/;
 
@@ -878,9 +877,8 @@ async function loadSequential(idx) {
     im.error = e.message;
     requestRender();
   }
-  // strictly sequential: next only after this finishes, with a small pause to
-  // let the (slow) server catch up before the next request
-  setTimeout(() => loadSequential(idx + 1), DOWNLOAD_GAP_MS);
+  // strictly sequential: next image starts as soon as this one finishes
+  loadSequential(idx + 1);
 }
 
 // Get the image blob: blob cache first, else download (with progress) and store.
@@ -1030,11 +1028,12 @@ function reconcile() {
   if (!workerSupported || !workerReady || !stateHasImages) return;
   queued.length = 0;
 
-  // Every visible image gets its base tile; while interacting we stop here so
-  // pan/zoom shows a low-quality background instead of chasing moving tiles.
+  // Every visible image gets its base tile, then we tile its current target
+  // level. While interacting, levelForImage picks a coarser level (see the
+  // level selection) so tiles are fewer and finish fast — keeping the view
+  // legible during pan/zoom instead of showing an empty base underlay.
   const order = visibleImages();
   for (const im of order) requestBaseTiles(im);
-  if (interacting) { pumpQueue(); return; }
 
   const win = activeWindowSize();
   let activated = 0;
