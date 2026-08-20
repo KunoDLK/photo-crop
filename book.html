@@ -874,6 +874,13 @@ function trackSourceSize(im) {
   avgSourceBytes = avgSourceBytes ? avgSourceBytes * 0.8 + bytes * 0.2 : bytes;
 }
 
+// Total megapixels across all loaded images (for the status readout).
+function totalMegapixels() {
+  let px = 0;
+  for (const im of images) if (im.status === "loaded") px += im.iw * im.ih;
+  return px / 1e6;
+}
+
 // ------------------------------------------------------------- view helpers
 function fitView() {
   const vpw = cv.clientWidth || els.left.clientWidth;
@@ -975,7 +982,7 @@ async function loadSequential(gen) {
       requestRender();
     }
   }
-  if (gen === loadGeneration) status(`Loaded ${images.length} image(s).`);
+  if (gen === loadGeneration) status(`Loaded ${images.length} image(s) — ${totalMegapixels().toFixed(1)} megapixels`);
 }
 
 // Get the image blob: blob cache first, else download (with progress) and store.
