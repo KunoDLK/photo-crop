@@ -753,24 +753,6 @@ function cacheSet(k, img, id, L, quality, tx, ty) {
 }
 function cacheHasHigh(k) { const v = cache.get(k); return !!(v && v.quality === "high"); }
 
-// Free cached tiles that are finer than their image's current target level.
-// Those tiles are never drawn (the target-level tiles now cover them), so after
-// zooming out they would otherwise linger in the cache forever — this swap-out
-// frees memory and stops stale high-res tiles from slowing down navigation.
-function evictFinerThanTarget() {
-  profMeasure("cache.swap", () => {
-    for (const [k, v] of cache) {
-      const im = imgById.get(v.id);
-      if (!im || im.status !== "loaded") continue;
-      if (v.L < levelForImage(im)) {
-        if (v.img && v.img.close) v.img.close();
-        cache.delete(k);
-        cacheBytes -= TILE_BYTES;
-      }
-    }
-  });
-}
-
 // ------------------------------------------------------------- tile queue
 function pumpQueue() {
   if (!workerSupported || !workerReady) return;
@@ -1318,9 +1300,9 @@ function reconcile() {
       return;
     }
 
-    // Settled: swap out any tiles finer than the current target level (stale
-    // high-res leftovers from a deeper zoom), then generate the target level.
-    evictFinerThanTarget();
+    // Settled: generate the target level. Finer-than-target tiles are *not*
+    // eagerly freed here — they are left in the cache so zooming back in is
+    // instant, and LRU eviction reclaims them only when the cache needs room.
 
     const win = activeWindowSize();
     let activated = 0;
@@ -1732,7 +1714,7 @@ function updateStats() {
   // real source of jank, not the canvas draw itself.
   const profNames = [
     "gap", "frame.total", "draw.images", "view.collect",
-    "worker.onmessage", "scheduler.reconcile", "cache.evict", "cache.swap",
+    "worker.onmessage", "scheduler.reconcile", "cache.evict",
     "src.blobGet", "src.decode",
   ];
   const profParts = [];
