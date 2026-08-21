@@ -1424,21 +1424,18 @@ function drawImageEntry(im, sc) {
 
   // Composite from the pinned floor (coarsest kept level) down to the target
   // level, coarse-first so finer tiles overpaint their parents and the image is
-  // never left with holes. Skip a coarse tile once every *on-screen* child (at
-  // the next-finer level, which is still >= the target and so will be drawn) is
-  // cached — off-screen children never generate, so they don't have to exist for
-  // the parent to be dropped.
+  // never left with holes. Skip a coarse tile once every *on-screen* descendant
+  // down to the target level is cached — this recurses through children, so
+  // multi-level jumps (intermediate levels never generated during zoom-in) still
+  // cull the parent once the target-level tiles fully cover it.
   const L = levelForImage(im);
   const pin = pinnedLevelFor(im);
   for (let lv = pin; lv >= L; lv--) {
     const r = tileRange(im, lv, sc, dx, dy, dw, dh);
     const twsc = TILE * Math.pow(2, lv) * im.fitFactor * sc;
-    // visible range one level finer: only children inside it need to be cached
-    // before the parent can be skipped
-    const rc = (lv > L && lv > 0) ? tileRange(im, lv - 1, sc, dx, dy, dw, dh) : null;
     for (let ty = r.ty0; ty <= r.ty1; ty++)
       for (let tx = r.tx0; tx <= r.tx1; tx++) {
-        if (allChildrenCached(im, lv, tx, ty, rc)) continue;
+        if (tileCovered(im, lv, tx, ty, L, sc, dx, dy, dw, dh)) continue;
         const entry = cacheGet(tileKey(im.id, lv, tx, ty));
         if (!entry) continue;
         ctx.drawImage(entry.img, dx + tx * twsc, dy + ty * twsc, twsc, twsc);
@@ -1486,19 +1483,21 @@ function drawImageEntry(im, sc) {
   ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
 }
 
-// Whether every *on-screen* child tile (one level finer) of a tile is cached, so
-// the parent can be skipped. `rc` is the visible tile range at the child level;
-// children outside it are off-screen (never generated), so they are not required.
-// When `rc` is null (the child level is finer than the target and not drawn), the
-// parent must not be skipped.
-function allChildrenCached(im, lv, tx, ty, rc) {
-  if (!rc) return false;
-  const c = lv - 1;
-  for (let dy = 0; dy < 2; dy++)
-    for (let dx = 0; dx < 2; dx++) {
-      const cx = tx * 2 + dx, cy = ty * 2 + dy;
+// Whether a tile is fully covered by cached tiles at finer levels (down to the
+// target L) and can therefore be skipped. Recurses through children, so a
+// multi-level jump — where intermediate levels were never generated — still
+// culls the parent once the target-level tiles cover it. Off-screen children
+// (never generated) are not required.
+function tileCovered(im, lv, tx, ty, L, sc, dx, dy, dw, dh) {
+  if (lv <= L) return false;
+  const rc = tileRange(im, lv - 1, sc, dx, dy, dw, dh);
+  for (let j = 0; j < 2; j++)
+    for (let i = 0; i < 2; i++) {
+      const cx = tx * 2 + i, cy = ty * 2 + j;
       if (cx < rc.tx0 || cx > rc.tx1 || cy < rc.ty0 || cy > rc.ty1) continue;
-      if (!cache.has(tileKey(im.id, c, cx, cy))) return false;
+      if (cache.has(tileKey(im.id, lv - 1, cx, cy))) continue;
+      if (tileCovered(im, lv - 1, cx, cy, L, sc, dx, dy, dw, dh)) continue;
+      return false;
     }
   return true;
 }
