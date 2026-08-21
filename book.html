@@ -85,6 +85,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   text-overflow: ellipsis;
   z-index: 5;
 }
+#prof { bottom: 18px; font-size: 10px; }
 #status {
   flex: 0 0 auto;
   padding: 5px 12px;
@@ -111,6 +112,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 <div class="left" id="left">
   <canvas id="view"></canvas>
+  <div class="stats" id="prof" hidden></div>
   <div class="stats" id="stats" hidden></div>
 </div>
 
@@ -161,6 +163,7 @@ const els = {
   fit: document.getElementById("btn-fit"),
   tiledbg: document.getElementById("btn-tiledbg"),
   stats: document.getElementById("stats"),
+  prof: document.getElementById("prof"),
 };
 
 const cv = els.view;
@@ -203,8 +206,10 @@ function queueLog(msg) { if (QUEUE_DEBUG) console.log("[queue] " + msg); }
 function cacheLog(msg) { if (CACHE_DEBUG) console.log("[cache] " + msg); }
 
 // ------------------------------------------------------------- frame timing
-// Duration of the most recent render frame, shown in the tile-debug stats bar.
-let lastFrameMs = 0;
+// Gap between consecutive render() calls. A big gap with a small "frame.total"
+// means the block is outside the draw pass, not the canvas work itself.
+let lastFrameGapMs = 0;
+let prevFrameTs = 0;
 
 // ------------------------------------------------- device / memory hints
 const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
@@ -353,11 +358,27 @@ async function blobCacheDelete(url) {
   } catch (e) {}
 }
 function profStart(name) { return { name, t: performance.now() }; }
+// lastProf holds the most recent duration per named section so the on-screen
+// stats bar can show a per-section breakdown of the latest frame.
+const lastProf = new Map();
 function profEnd(m) {
   const dt = performance.now() - m.t;
   let e = profAcc.get(m.name);
   if (!e) { e = { n: 0, sum: 0, max: 0 }; profAcc.set(m.name, e); }
   e.n++; e.sum += dt; if (dt > e.max) e.max = dt;
+  lastProf.set(m.name, dt);
+}
+// Measure the wall time of an arbitrary (possibly async-free) block and record
+// it under `name`. Returns the elapsed ms.
+function profMeasure(name, fn) {
+  const t = performance.now();
+  const r = fn();
+  const dt = performance.now() - t;
+  let e = profAcc.get(name);
+  if (!e) { e = { n: 0, sum: 0, max: 0 }; profAcc.set(name, e); }
+  e.n++; e.sum += dt; if (dt > e.max) e.max = dt;
+  lastProf.set(name, dt);
+  return r;
 }
 function profFrame() {
   if (++profFrames < PROFILE_EVERY) return;
@@ -588,6 +609,12 @@ function initWorker() {
   tileWorker.postMessage({ type: "cfg", TILE, srcBudget: SOURCE_BUDGET });
   workerReady = true;
   tileWorker.onmessage = (e) => {
+    profMeasure("worker.onmessage", () => handleWorkerMessage(e));
+  };
+}
+initWorker();
+
+function handleWorkerMessage(e) {
     const m = e.data;
     if (m.type === "sourceReady") {
       queueLog(`sourceReady ${m.id}`);
@@ -649,7 +676,6 @@ function initWorker() {
       requestRender();
       profEnd(tTile);
     }
-  };
 }
 initWorker();
 
@@ -670,9 +696,14 @@ async function ensureSource(im) {
   if (im.status !== "loaded") return false;
   redecoding.add(im.id);
   try {
+    const t = performance.now();
     const blob = await blobCacheGet(im.url);
+    const tBlob = performance.now() - t;
+    lastProf.set("src.blobGet", tBlob);
     if (!blob) return false;
+    const tDec = performance.now();
     const bmp = await createImageBitmap(blob);
+    lastProf.set("src.decode", performance.now() - tDec);
     im.bitmap = bmp;
     addSource(im);
     return true;
@@ -705,18 +736,20 @@ function cacheSet(k, img, id, L, quality, tx, ty) {
   // Never evict while navigating: keep every already-rendered tile in place so
   // the view stays stable mid-gesture; eviction resumes on the next settle.
   if (interacting) return;
-  while (cache.size > CACHE_MAX || cacheBytes > CACHE_MAX_BYTES) {
-    let victimKey = null, victimTime = Infinity;
-    for (const [key, val] of cache.entries()) {
-      if (isProtected(val)) continue;
-      if (val.lastUsed < victimTime) { victimTime = val.lastUsed; victimKey = key; }
+  profMeasure("cache.evict", () => {
+    while (cache.size > CACHE_MAX || cacheBytes > CACHE_MAX_BYTES) {
+      let victimKey = null, victimTime = Infinity;
+      for (const [key, val] of cache.entries()) {
+        if (isProtected(val)) continue;
+        if (val.lastUsed < victimTime) { victimTime = val.lastUsed; victimKey = key; }
+      }
+      if (victimKey === null) break;
+      const ev = cache.get(victimKey);
+      if (ev && ev.img && ev.img.close) ev.img.close();
+      cache.delete(victimKey);
+      cacheBytes -= TILE_BYTES;
     }
-    if (victimKey === null) break;
-    const ev = cache.get(victimKey);
-    if (ev && ev.img && ev.img.close) ev.img.close();
-    cache.delete(victimKey);
-    cacheBytes -= TILE_BYTES;
-  }
+  });
 }
 function cacheHasHigh(k) { const v = cache.get(k); return !!(v && v.quality === "high"); }
 
@@ -725,15 +758,17 @@ function cacheHasHigh(k) { const v = cache.get(k); return !!(v && v.quality === 
 // zooming out they would otherwise linger in the cache forever — this swap-out
 // frees memory and stops stale high-res tiles from slowing down navigation.
 function evictFinerThanTarget() {
-  for (const [k, v] of cache) {
-    const im = imgById.get(v.id);
-    if (!im || im.status !== "loaded") continue;
-    if (v.L < levelForImage(im)) {
-      if (v.img && v.img.close) v.img.close();
-      cache.delete(k);
-      cacheBytes -= TILE_BYTES;
+  profMeasure("cache.swap", () => {
+    for (const [k, v] of cache) {
+      const im = imgById.get(v.id);
+      if (!im || im.status !== "loaded") continue;
+      if (v.L < levelForImage(im)) {
+        if (v.img && v.img.close) v.img.close();
+        cache.delete(k);
+        cacheBytes -= TILE_BYTES;
+      }
     }
-  }
+  });
 }
 
 // ------------------------------------------------------------- tile queue
@@ -1262,40 +1297,42 @@ function requestSourceLoad(im) {
 // off-screen) requests and only tiles images inside the active window.
 function reconcile() {
   if (!workerSupported || !workerReady || !stateHasImages) return;
-  queued.length = 0;
+  profMeasure("scheduler.reconcile", () => {
+    queued.length = 0;
 
-  // Every visible image gets its pinned coarse tiles. Then, when *navigating*,
-  // we stop here: no target-level tile generation is allowed while interacting
-  // — only the pinned floor is produced (plus the source decodes it needs), so
-  // the main thread stays idle for drawing and navigation stays smooth. The
-  // full target-level pipeline runs on settle below.
-  const order = visibleImages();
-  for (const im of order) requestPinnedTiles(im);
+    // Every visible image gets its pinned coarse tiles. Then, when *navigating*,
+    // we stop here: no target-level tile generation is allowed while interacting
+    // — only the pinned floor is produced (plus the source decodes it needs), so
+    // the main thread stays idle for drawing and navigation stays smooth. The
+    // full target-level pipeline runs on settle below.
+    const order = visibleImages();
+    for (const im of order) requestPinnedTiles(im);
 
-  if (interacting) {
+    if (interacting) {
+      for (const im of order) {
+        if (readySources.has(im.id)) continue;
+        if (hasPinnedTiles(im)) continue;
+        requestSourceLoad(im);
+      }
+      pumpQueue();
+      return;
+    }
+
+    // Settled: swap out any tiles finer than the current target level (stale
+    // high-res leftovers from a deeper zoom), then generate the target level.
+    evictFinerThanTarget();
+
+    const win = activeWindowSize();
+    let activated = 0;
     for (const im of order) {
-      if (readySources.has(im.id)) continue;
-      if (hasPinnedTiles(im)) continue;
-      requestSourceLoad(im);
+      if (!imageNeedsHighTiles(im)) continue;
+      if (activated >= win) break;
+      activated++;
+      if (!readySources.has(im.id)) { requestSourceLoad(im); continue; }
+      enqueueImageTiles(im);
     }
     pumpQueue();
-    return;
-  }
-
-  // Settled: swap out any tiles finer than the current target level (stale
-  // high-res leftovers from a deeper zoom), then generate the target level.
-  evictFinerThanTarget();
-
-  const win = activeWindowSize();
-  let activated = 0;
-  for (const im of order) {
-    if (!imageNeedsHighTiles(im)) continue;
-    if (activated >= win) break;
-    activated++;
-    if (!readySources.has(im.id)) { requestSourceLoad(im); continue; }
-    enqueueImageTiles(im);
-  }
-  pumpQueue();
+  });
 }
 
 // ------------------------------------------------------------- idle prefetch
@@ -1331,6 +1368,9 @@ function prefetchPinned() {
 function render() {
   needRender = false;
   const frameTs = performance.now();
+  if (prevFrameTs) lastFrameGapMs = frameTs - prevFrameTs;
+  prevFrameTs = frameTs;
+  lastProf.set("gap", lastFrameGapMs);
   const tFrame = profStart("frame.total");
   const tView = profStart("view.collect");
   const vpw = cv.clientWidth, vph = cv.clientHeight;
@@ -1368,7 +1408,6 @@ function render() {
   if (tileDebug) updateStats();
   profEnd(tFrame);
   profFrame();
-  lastFrameMs = performance.now() - frameTs;
 }
 
 function sceneToDev(x, y) { return [view.vx + x * view.scale, view.vy + y * view.scale]; }
@@ -1639,6 +1678,7 @@ els.tiledbg.addEventListener("click", () => {
   tileDebug = !tileDebug;
   els.tiledbg.textContent = "Tile debug: " + (tileDebug ? "on" : "off");
   els.stats.hidden = !tileDebug;
+  els.prof.hidden = !tileDebug;
   requestRender();
 });
 window.addEventListener("keydown", (e) => {
@@ -1685,8 +1725,28 @@ function updateStats() {
       for (let tx = r.tx0; tx <= r.tx1; tx++)
         if (!cacheHasHigh(tileKey(im.id, L, tx, ty))) toProcess++;
   }
+  // Per-section profile of the latest frame + any main-thread work since it.
+  // The "gap" is the wall time between consecutive render() calls — if it is
+  // large while "frame.total" is small, the time is spent *outside* the draw
+  // (e.g. worker message handling, cache eviction, source decode), which is the
+  // real source of jank, not the canvas draw itself.
+  const profNames = [
+    "gap", "frame.total", "draw.images", "view.collect",
+    "worker.onmessage", "scheduler.reconcile", "cache.evict", "cache.swap",
+    "src.blobGet", "src.decode",
+  ];
+  const profParts = [];
+  for (const n of profNames) {
+    if (!lastProf.has(n)) continue;
+    const short = n
+      .replace("scheduler.reconcile", "reconcile")
+      .replace("worker.onmessage", "onmsg")
+      .replace("frame.total", "frame");
+    profParts.push(short + "=" + lastProf.get(n).toFixed(1));
+  }
+  els.prof.textContent = profParts.join("  ") || "(no profile yet)";
+
   els.stats.textContent =
-    `frame ${lastFrameMs.toFixed(1)}ms  ` +
     `img ${loadedImages}/${totalImages} (needTiles ${outstand})  ` +
     `tiles onScreen ${onScreen}  toProcess ${toProcess}  cached ${cached}  ` +
     `inflight ${inFlight}/${MAX_INFLIGHT}  queued ${queuedN}  ` +
