@@ -755,20 +755,23 @@ function levelForImage(im) {
 // ------------------------------------------------------------- pinned tier
 // The pinned tier is the coarse overview that is always kept in the cache so
 // every image can render *something* at any zoom/location, even during
-// navigation when no new tiles are generated. It is allocated a fixed slice of
-// the tile cache budget (PINNED_RESERVE_FRAC); each image pins the finest level
-// whose per-image footprint fits within its share of that reserve. A handful of
-// images therefore pin relatively fine tiles (high-quality navigation), while
-// hundreds of images pin only the single whole-image tile — the level adapts to
-// device memory and image count without any hardcoded pixel size.
+// navigation when no new tiles are generated. It is capped at a fixed slice
+// (PINNED_RESERVE_FRAC) of the cache's *tile capacity* — the binding constraint
+// (CACHE_MAX is often reached well before CACHE_MAX_BYTES). Each image pins the
+// finest level whose tile count fits within its share of that reserve, so a few
+// images pin relatively fine tiles while hundreds pin only the single
+// whole-image tile — the level adapts to memory, tile capacity and image count
+// without any hardcoded pixel size.
 function computePinnedLevel(im) {
-  const perImage = (CACHE_MAX_BYTES * PINNED_RESERVE_FRAC) / Math.max(1, images.length);
+  // Effective cache capacity in tiles: min of the count cap and the byte cap.
+  const cacheTiles = Math.min(CACHE_MAX, Math.floor(CACHE_MAX_BYTES / TILE_BYTES));
+  const perImage = Math.floor((cacheTiles * PINNED_RESERVE_FRAC) / Math.max(1, images.length));
   let L = im.maxLevel; // coarsest: one whole-image tile
   for (; L > 0; L--) {
     const nl = L - 1; // try one level finer (4x the tiles)
     const ntx = Math.ceil(im.iw / (TILE * Math.pow(2, nl)));
     const nty = Math.ceil(im.ih / (TILE * Math.pow(2, nl)));
-    if (ntx * nty * TILE_BYTES > perImage) break;
+    if (ntx * nty > perImage) break;
   }
   return L;
 }
