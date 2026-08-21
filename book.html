@@ -128,7 +128,6 @@ const MAX_ACTIVE = 12;      // upper bound on concurrently resident sources
 const MAX_SRC_LOADS = 2;    // max parallel source decodes
 const MAX_INFLIGHT = 6;
 const SETTLE_MS = 500;
-const REFINE_BUDGET_MS = 6;   // per-frame time budget for cache-only tile swaps
 const PREFETCH_NEIGHBORS = 4; // images before/after the view to warm while idle
 const IMG_EXT = /\.(png|jpe?g|tiff?|bmp|webp|gif|avif)$/i;
 const NAME_RE = /^(\d+)_(\d+)-(.*)$/;
@@ -704,6 +703,22 @@ function cacheSet(k, img, id, L, quality, tx, ty) {
 }
 function cacheHasHigh(k) { const v = cache.get(k); return !!(v && v.quality === "high"); }
 
+// Free cached tiles that are finer than their image's current target level.
+// Those tiles are never drawn (the target-level tiles now cover them), so after
+// zooming out they would otherwise linger in the cache forever — this swap-out
+// frees memory and stops stale high-res tiles from slowing down navigation.
+function evictFinerThanTarget() {
+  for (const [k, v] of cache) {
+    const im = imgById.get(v.id);
+    if (!im || im.status !== "loaded") continue;
+    if (v.L < levelForImage(im)) {
+      if (v.img && v.img.close) v.img.close();
+      cache.delete(k);
+      cacheBytes -= TILE_BYTES;
+    }
+  }
+}
+
 // ------------------------------------------------------------- tile queue
 function pumpQueue() {
   if (!workerSupported || !workerReady) return;
@@ -1249,6 +1264,10 @@ function reconcile() {
     return;
   }
 
+  // Settled: swap out any tiles finer than the current target level (stale
+  // high-res leftovers from a deeper zoom), then generate the target level.
+  evictFinerThanTarget();
+
   const win = activeWindowSize();
   let activated = 0;
   for (const im of order) {
@@ -1317,14 +1336,13 @@ function render() {
   }
   profEnd(tView);
 
-  // Pure cache read: pinned floor + generated tiles down to the target level,
-  // then any cached finer-than-target tiles that linger (budgeted). Drawing
-  // never enqueues requests — the event-driven scheduler handles all of that.
+  // Pure cache read: pinned floor + generated tiles down to the target level.
+  // Tiles finer than the target are never drawn (they are swapped out on
+  // settle), so zoom-out is cheap and never re-renders stale high-res tiles.
   const tDraw = profStart("draw.images");
   for (const im of visible) {
     drawImageEntry(im, sc);
   }
-  drawFineTiles(visible, sc);
   profEnd(tDraw);
 
   els.zoom.textContent = (view.scale * 100).toFixed(0) + "%";
@@ -1365,8 +1383,9 @@ function drawImageEntry(im, sc) {
 
   // Composite from the pinned floor (coarsest kept level) down to the target
   // level, coarse-first so finer tiles overpaint their parents and the image is
-  // never left with holes. Skip a coarse tile once its four children are all
-  // cached — they cover it, so the parent draw is redundant.
+  // never left with holes. Skip a coarse tile only when its four children (at a
+  // level that is still >= the target, and so will be drawn) are all cached —
+  // they cover it, so the parent draw is redundant.
   const L = levelForImage(im);
   const pin = pinnedLevelFor(im);
   for (let lv = pin; lv >= L; lv--) {
@@ -1374,7 +1393,7 @@ function drawImageEntry(im, sc) {
     const twsc = TILE * Math.pow(2, lv) * im.fitFactor * sc;
     for (let ty = r.ty0; ty <= r.ty1; ty++)
       for (let tx = r.tx0; tx <= r.tx1; tx++) {
-        if (allChildrenCached(im, lv, tx, ty)) continue;
+        if (allChildrenCached(im, lv, tx, ty, L)) continue;
         const entry = cacheGet(tileKey(im.id, lv, tx, ty));
         if (!entry) continue;
         ctx.drawImage(entry.img, dx + tx * twsc, dy + ty * twsc, twsc, twsc);
@@ -1389,10 +1408,11 @@ function drawImageEntry(im, sc) {
       ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
       ctx.lineWidth = 1;
     }
-    // Overlay every cached tile of this image that lies within the viewport, at
-    // its actual level, colored by quality (green=high, yellow=low). No red
-    // "queued" cells — so you can watch coarse tiles get chopped into finer
-    // tiles as quality improves, with lingering fine tiles floating on top.
+    // Overlay every cached tile of this image that is actually rendered (levels
+    // from the pinned floor down to the target), at its real level, colored by
+    // quality (green=high, yellow=low). No red "queued" cells, and no stale
+    // finer-than-target tiles — so coarse tiles are visibly chopped into finer
+    // tiles as quality improves.
     const vpw = cv.clientWidth, vph = cv.clientHeight;
     ctx.font = "600 10px system-ui, sans-serif";
     ctx.textBaseline = "top";
@@ -1409,7 +1429,7 @@ function drawImageEntry(im, sc) {
       ctx.fillText("L" + v.L + " " + v.tx + "," + v.ty, tdx + 3, tdy + 3);
     };
     for (const v of cache.values()) {
-      if (v.id !== im.id) continue;
+      if (v.id !== im.id || v.L < L) continue;
       drawBox(v);
     }
   }
@@ -1422,73 +1442,17 @@ function drawImageEntry(im, sc) {
   ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
 }
 
-// Whether all four child tiles (one level finer) of a tile are cached. Used to
-// skip drawing a coarse tile that its children already fully cover.
-function allChildrenCached(im, lv, tx, ty) {
-  if (lv <= 0) return false;
+// Whether all four child tiles (one level finer) of a tile are cached. Only
+// meaningful while the children's level is still >= the target level (L) — i.e.
+// they will actually be drawn on top of the parent. Children finer than the
+// target are not drawn, so the parent must not be skipped for them.
+function allChildrenCached(im, lv, tx, ty, L) {
+  if (lv <= L || lv <= 0) return false;
   const c = lv - 1;
   for (let dy = 0; dy < 2; dy++)
     for (let dx = 0; dx < 2; dx++)
       if (!cache.has(tileKey(im.id, c, tx * 2 + dx, ty * 2 + dy))) return false;
   return true;
-}
-
-// Cached tiles finer than the current target level linger on-screen during
-// zoom-out so dense detail stays visible until coarser tiles cover it. They are
-// drawn under a per-frame time budget, nearest-the-cursor first (a spiral), so
-// the most relevant tiles refine first and the rest catch up over later frames
-// rather than stalling the current one.
-function drawFineTiles(visible, sc) {
-  const vpw = cv.clientWidth, vph = cv.clientHeight;
-  if (!vpw || !vph) return;
-  const targetL = new Map();
-  for (const im of visible) {
-    if (im.status !== "loaded") continue;
-    targetL.set(im.id, levelForImage(im));
-  }
-  const fineByImage = new Map();
-  for (const v of cache.values()) {
-    const L = targetL.get(v.id);
-    if (L === undefined || v.L >= L) continue;
-    let arr = fineByImage.get(v.id);
-    if (!arr) { arr = []; fineByImage.set(v.id, arr); }
-    arr.push(v);
-  }
-  if (!fineByImage.size) return;
-
-  const ox = cursorX >= 0 ? cursorX : vpw / 2;
-  const oy = cursorY >= 0 ? cursorY : vph / 2;
-  const start = performance.now();
-  let budget = REFINE_BUDGET_MS;
-  let drawn = 0;
-
-  for (const im of visible) {
-    const list = fineByImage.get(im.id);
-    if (!list) continue;
-    const [dx, dy] = sceneToDev(im.drawX, im.drawY);
-    for (const t of list) {
-      const twsc = TILE * Math.pow(2, t.L) * im.fitFactor * sc;
-      const cx = dx + (t.tx + 0.5) * twsc;
-      const cy = dy + (t.ty + 0.5) * twsc;
-      t.d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
-    }
-    list.sort((a, b) => a.d2 - b.d2);
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(dx, dy, im.drawW * sc, im.drawH * sc);
-    ctx.clip();
-    for (const t of list) {
-      const twsc = TILE * Math.pow(2, t.L) * im.fitFactor * sc;
-      const tdx = dx + t.tx * twsc, tdy = dy + t.ty * twsc;
-      if (tdx + twsc < 0 || tdx > vpw || tdy + twsc < 0 || tdy > vph) continue;
-      ctx.drawImage(t.img, tdx, tdy, twsc, twsc);
-      if ((++drawn & 15) === 0 && performance.now() - start > REFINE_BUDGET_MS) {
-        ctx.restore();
-        return;
-      }
-    }
-    ctx.restore();
-  }
 }
 
 // visible tile range for an image level, clamped to image extent and viewport rect
