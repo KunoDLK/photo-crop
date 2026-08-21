@@ -1377,6 +1377,10 @@ function drawImageEntry(im, sc) {
   // cull the parent once the target-level tiles fully cover it.
   const L = levelForImage(im);
   const pin = im.maxLevel;
+  // Slight overlap (bleed) when drawing each tile so adjacent tiles never leave a
+  // sub-pixel seam. The overlap is clipped to the image rect, so it only fills
+  // the hairline gaps that would otherwise show the background through.
+  const BLEED = 0.5;
   for (let lv = pin; lv >= L; lv--) {
     const r = tileRange(im, lv, sc, dx, dy, dw, dh);
     const twsc = TILE * Math.pow(2, lv) * im.fitFactor * sc;
@@ -1385,7 +1389,7 @@ function drawImageEntry(im, sc) {
         if (tileCovered(im, lv, tx, ty, L, sc, dx, dy, dw, dh)) continue;
         const entry = cacheGet(tileKey(im.id, lv, tx, ty));
         if (!entry) continue;
-        ctx.drawImage(entry.img, dx + tx * twsc, dy + ty * twsc, twsc, twsc);
+        ctx.drawImage(entry.img, dx + tx * twsc - BLEED, dy + ty * twsc - BLEED, twsc + BLEED * 2, twsc + BLEED * 2);
       }
   }
 
