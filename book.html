@@ -772,11 +772,16 @@ function computePinnedLevel(im) {
   }
   return L;
 }
-// Cached per image; recomputed when the image set changes size.
+// Cached per image; recomputed when the image set changes size or the image's
+// dimensions change (a pre-load image has maxLevel 0, so its cached pinned level
+// must be invalidated once it decodes and real dimensions are known).
 function pinnedLevelFor(im) {
-  if (im.pinnedLevel === undefined || im.pinnedCount !== images.length) {
+  if (im.pinnedLevel === undefined ||
+      im.pinnedCount !== images.length ||
+      im.pinnedMaxLevel !== im.maxLevel) {
     im.pinnedLevel = computePinnedLevel(im);
     im.pinnedCount = images.length;
+    im.pinnedMaxLevel = im.maxLevel;
   }
   return im.pinnedLevel;
 }
@@ -1434,7 +1439,10 @@ function drawFineTiles(visible, sc) {
   const vpw = cv.clientWidth, vph = cv.clientHeight;
   if (!vpw || !vph) return;
   const targetL = new Map();
-  for (const im of visible) targetL.set(im.id, levelForImage(im));
+  for (const im of visible) {
+    if (im.status !== "loaded") continue;
+    targetL.set(im.id, levelForImage(im));
+  }
   const fineByImage = new Map();
   for (const v of cache.values()) {
     const L = targetL.get(v.id);
