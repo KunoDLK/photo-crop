@@ -221,9 +221,6 @@ const SOURCE_BUDGET = sourceBudgetMB * 1024 * 1024;
 // Tile cache byte budget, scaled by RAM (256KB/tile). Protects low-memory phones
 // from holding thousands of decoded tiles; protected base tiles are excluded.
 const CACHE_MAX_BYTES = Math.max(64 * 1024 * 1024, Math.round(deviceMemoryGB * 64 * 1024 * 1024));
-// Fraction of the tile cache budget reserved for the pinned (coarse) tier — the
-// overview tiles that guarantee every image always has *something* to render.
-const PINNED_RESERVE_FRAC = 0.5;
 // High-RAM devices keep blobs in RAM; low-RAM (phones) use IndexedDB.
 const USE_RAM_CACHE = deviceMemoryGB >= 8 || !isMobile;
 
@@ -628,7 +625,7 @@ function handleWorkerMessage(e) {
       readySources.add(m.id);
       sourceLoading.delete(m.id);
       sourceFailedAt.delete(m.id);
-      requestPinnedTiles(im);
+      requestRootTile(im);
       reconcile();
       requestRender();
       return;
@@ -720,7 +717,7 @@ function tileKey(id, L, tx, ty) { return id + ":" + L + ":" + tx + ":" + ty; }
 function isProtected(entry) {
   const im = imgById.get(entry.id);
   if (!im) return false;
-  return entry.L >= pinnedLevelFor(im); // pin the whole coarse "pinned tier"
+  return entry.L >= im.maxLevel; // the whole-image "root" tile is never evicted
 }
 function cacheGet(k) {
   const v = cache.get(k);
@@ -790,53 +787,14 @@ function requestTile(id, L, tx, ty, quality) {
 const imgById = new Map();
 let nextId = 1;
 
-// level so a tile texel maps to <= 1 physical pixel. Clamped to the pinned
-// level so we never target a level coarser than the pinned floor (the floor is
-// always good enough — no point generating coarser tiles). Navigation does not
-// reduce this level: resource usage is instead kept down by the cache swapping
-// (eviction) so cached tiles always render at their true quality.
+// level so a tile texel maps to <= 1 physical pixel. Clamped to the root level
+// (the single whole-image tile) so we never target anything coarser than that.
+// Navigation does not reduce this level: resource usage is kept down by the
+// cache eviction, so cached tiles always render at their true quality.
 function levelForImage(im) {
   const s = view.scale; // scene px -> css px (image drawn at fitFactor*scale)
   const eff = s * im.fitFactor; // source px -> css px
-  const max = pinnedLevelFor(im);
-  return clamp(Math.floor(-Math.log2(eff * dpr)), 0, max);
-}
-
-// ------------------------------------------------------------- pinned tier
-// The pinned tier is the coarse overview that is always kept in the cache so
-// every image can render *something* at any zoom/location, even during
-// navigation when no new tiles are generated. It is capped at a fixed slice
-// (PINNED_RESERVE_FRAC) of the cache's *tile capacity* — the binding constraint
-// (CACHE_MAX is often reached well before CACHE_MAX_BYTES). Each image pins the
-// finest level whose tile count fits within its share of that reserve, so a few
-// images pin relatively fine tiles while hundreds pin only the single
-// whole-image tile — the level adapts to memory, tile capacity and image count
-// without any hardcoded pixel size.
-function computePinnedLevel(im) {
-  // Effective cache capacity in tiles: min of the count cap and the byte cap.
-  const cacheTiles = Math.min(CACHE_MAX, Math.floor(CACHE_MAX_BYTES / TILE_BYTES));
-  const perImage = Math.floor((cacheTiles * PINNED_RESERVE_FRAC) / Math.max(1, images.length));
-  let L = im.maxLevel; // coarsest: one whole-image tile
-  for (; L > 0; L--) {
-    const nl = L - 1; // try one level finer (4x the tiles)
-    const ntx = Math.ceil(im.iw / (TILE * Math.pow(2, nl)));
-    const nty = Math.ceil(im.ih / (TILE * Math.pow(2, nl)));
-    if (ntx * nty > perImage) break;
-  }
-  return L;
-}
-// Cached per image; recomputed when the image set changes size or the image's
-// dimensions change (a pre-load image has maxLevel 0, so its cached pinned level
-// must be invalidated once it decodes and real dimensions are known).
-function pinnedLevelFor(im) {
-  if (im.pinnedLevel === undefined ||
-      im.pinnedCount !== images.length ||
-      im.pinnedMaxLevel !== im.maxLevel) {
-    im.pinnedLevel = computePinnedLevel(im);
-    im.pinnedCount = images.length;
-    im.pinnedMaxLevel = im.maxLevel;
-  }
-  return im.pinnedLevel;
+  return clamp(Math.floor(-Math.log2(eff * dpr)), 0, im.maxLevel);
 }
 
 function parseName(fname) {
@@ -1227,33 +1185,22 @@ function enqueueImageTiles(im) {
   for (const t of pend) requestTile(im.id, L, t.tx, t.ty, "high");
 }
 
-// Ensure the pinned coarse overview tiles exist for the image (low, then high)
-// so it always has a ready underlay no matter where or how far the view zooms.
-// The high-quality upgrade runs immediately (even while navigating): quality is
-// not reduced on navigation — resource usage is kept down by cache swapping.
-function requestPinnedTiles(im) {
-  const L = pinnedLevelFor(im);
-  const ntx = Math.ceil(im.iw / (TILE * Math.pow(2, L)));
-  const nty = Math.ceil(im.ih / (TILE * Math.pow(2, L)));
-  for (let ty = 0; ty < nty; ty++)
-    for (let tx = 0; tx < ntx; tx++) {
-      const k = tileKey(im.id, L, tx, ty);
-      const e = cache.get(k);
-      if (!e) requestTile(im.id, L, tx, ty, "low");
-      else if (e.quality !== "high") requestTile(im.id, L, tx, ty, "high");
-    }
+// Queue the single whole-image "root" tile for the image (low, then high). The
+// root tile covers the entire image at the coarsest level, so every image always
+// has a ready underlay no matter where or how far the view zooms; it is protected
+// (see isProtected) and therefore never evicted. The high-quality upgrade runs
+// immediately (even while navigating).
+function requestRootTile(im) {
+  const k = tileKey(im.id, im.maxLevel, 0, 0);
+  const e = cache.get(k);
+  if (!e) requestTile(im.id, im.maxLevel, 0, 0, "low");
+  else if (e.quality !== "high") requestTile(im.id, im.maxLevel, 0, 0, "high");
 }
 
-// Whether the image already has all of its pinned coarse tiles cached (so a
-// source decode isn't needed just to produce the floor while navigating).
-function hasPinnedTiles(im) {
-  const L = pinnedLevelFor(im);
-  const ntx = Math.ceil(im.iw / (TILE * Math.pow(2, L)));
-  const nty = Math.ceil(im.ih / (TILE * Math.pow(2, L)));
-  for (let ty = 0; ty < nty; ty++)
-    for (let tx = 0; tx < ntx; tx++)
-      if (!cache.has(tileKey(im.id, L, tx, ty))) return false;
-  return true;
+// Whether the image already has its root tile cached (so a source decode isn't
+// needed just to produce the floor while navigating).
+function hasRootTile(im) {
+  return cache.has(tileKey(im.id, im.maxLevel, 0, 0));
 }
 
 // Start decoding an image's source (from the cached blob) if it is missing and
@@ -1282,18 +1229,18 @@ function reconcile() {
   profMeasure("scheduler.reconcile", () => {
     queued.length = 0;
 
-    // Every visible image gets its pinned coarse tiles. Then, when *navigating*,
-    // we stop here: no target-level tile generation is allowed while interacting
-    // — only the pinned floor is produced (plus the source decodes it needs), so
-    // the main thread stays idle for drawing and navigation stays smooth. The
-    // full target-level pipeline runs on settle below.
+    // Every visible image gets its root tile. Then, when *navigating*, we stop
+    // here: no target-level tile generation is allowed while interacting — only
+    // the root floor is produced (plus the source decodes it needs), so the main
+    // thread stays idle for drawing and navigation stays smooth. The full
+    // target-level pipeline runs on settle below.
     const order = visibleImages();
-    for (const im of order) requestPinnedTiles(im);
+    for (const im of order) requestRootTile(im);
 
     if (interacting) {
       for (const im of order) {
         if (readySources.has(im.id)) continue;
-        if (hasPinnedTiles(im)) continue;
+        if (hasRootTile(im)) continue;
         requestSourceLoad(im);
       }
       pumpQueue();
@@ -1318,20 +1265,20 @@ function reconcile() {
 }
 
 // ------------------------------------------------------------- idle prefetch
-// After navigation settles and the queue drains, opportunistically warm the
-// pinned floor of images adjacent to the view so a fast flick over unseen pages
-// still shows a coarse overview instead of an empty cell. It only asks for
-// source decodes (the sourceReady handler already requests the pinned tiles) and
-// is throttled by MAX_SRC_LOADS, so it never competes with visible-image work.
+// After navigation settles and the queue drains, opportunistically warm the root
+// tile of images adjacent to the view so a fast flick over unseen pages still
+// shows a coarse overview instead of an empty cell. It only asks for source
+// decodes (the sourceReady handler already requests the root tile) and is
+// throttled by MAX_SRC_LOADS, so it never competes with visible-image work.
 let prefetchTimer = null;
 function schedulePrefetch() {
   if (prefetchTimer) return;
   prefetchTimer = setTimeout(() => {
     prefetchTimer = null;
-    prefetchPinned();
+    prefetchRootTile();
   }, 300);
 }
-function prefetchPinned() {
+function prefetchRootTile() {
   if (!workerSupported || !workerReady || !stateHasImages || interacting) return;
   const order = visibleImages();
   if (!order.length) return;
@@ -1341,7 +1288,7 @@ function prefetchPinned() {
   for (let i = lo; i <= hi; i++) {
     const im = images[i];
     if (im.status !== "loaded") continue;
-    if (readySources.has(im.id) || hasPinnedTiles(im)) continue;
+    if (readySources.has(im.id) || hasRootTile(im)) continue;
     requestSourceLoad(im);
   }
 }
@@ -1377,7 +1324,7 @@ function render() {
   }
   profEnd(tView);
 
-  // Pure cache read: pinned floor + generated tiles down to the target level.
+  // Pure cache read: root floor + generated tiles down to the target level.
   // Tiles finer than the target are never drawn (they are swapped out on
   // settle), so zoom-out is cheap and never re-renders stale high-res tiles.
   const tDraw = profStart("draw.images");
@@ -1422,14 +1369,14 @@ function drawImageEntry(im, sc) {
   ctx.rect(dx, dy, dw, dh);
   ctx.clip();
 
-  // Composite from the pinned floor (coarsest kept level) down to the target
+  // Composite from the root tile (coarsest whole-image level) down to the target
   // level, coarse-first so finer tiles overpaint their parents and the image is
   // never left with holes. Skip a coarse tile once every *on-screen* descendant
   // down to the target level is cached — this recurses through children, so
   // multi-level jumps (intermediate levels never generated during zoom-in) still
   // cull the parent once the target-level tiles fully cover it.
   const L = levelForImage(im);
-  const pin = pinnedLevelFor(im);
+  const pin = im.maxLevel;
   for (let lv = pin; lv >= L; lv--) {
     const r = tileRange(im, lv, sc, dx, dy, dw, dh);
     const twsc = TILE * Math.pow(2, lv) * im.fitFactor * sc;
@@ -1451,7 +1398,7 @@ function drawImageEntry(im, sc) {
       ctx.lineWidth = 1;
     }
     // Overlay every cached tile of this image that is actually rendered (levels
-    // from the pinned floor down to the target), colored by its *level* (see
+    // from the root tile down to the target), colored by its *level* (see
     // LEVEL_COLORS) so multiple levels stacked on top of each other are obvious.
     // The level label sits in each tile's top-left corner.
     const vpw = cv.clientWidth, vph = cv.clientHeight;
