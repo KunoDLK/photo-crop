@@ -202,6 +202,10 @@ const CACHE_DEBUG = false;
 function queueLog(msg) { if (QUEUE_DEBUG) console.log("[queue] " + msg); }
 function cacheLog(msg) { if (CACHE_DEBUG) console.log("[cache] " + msg); }
 
+// ------------------------------------------------------------- frame timing
+// Duration of the most recent render frame, shown in the tile-debug stats bar.
+let lastFrameMs = 0;
+
 // ------------------------------------------------- device / memory hints
 const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
 const deviceMemoryGB = navigator.deviceMemory || (isMobile ? 4 : 16);
@@ -1326,6 +1330,7 @@ function prefetchPinned() {
 // ------------------------------------------------------------- render
 function render() {
   needRender = false;
+  const frameTs = performance.now();
   const tFrame = profStart("frame.total");
   const tView = profStart("view.collect");
   const vpw = cv.clientWidth, vph = cv.clientHeight;
@@ -1363,6 +1368,7 @@ function render() {
   if (tileDebug) updateStats();
   profEnd(tFrame);
   profFrame();
+  lastFrameMs = performance.now() - frameTs;
 }
 
 function sceneToDev(x, y) { return [view.vx + x * view.scale, view.vy + y * view.scale]; }
@@ -1680,6 +1686,7 @@ function updateStats() {
         if (!cacheHasHigh(tileKey(im.id, L, tx, ty))) toProcess++;
   }
   els.stats.textContent =
+    `frame ${lastFrameMs.toFixed(1)}ms  ` +
     `img ${loadedImages}/${totalImages} (needTiles ${outstand})  ` +
     `tiles onScreen ${onScreen}  toProcess ${toProcess}  cached ${cached}  ` +
     `inflight ${inFlight}/${MAX_INFLIGHT}  queued ${queuedN}  ` +
