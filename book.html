@@ -756,14 +756,15 @@ function requestTile(id, L, tx, ty, quality) {
 const imgById = new Map();
 let nextId = 1;
 
-// level so a tile texel maps to <= 1 physical pixel once settled. Clamped to
-// the pinned level so we never target a level coarser than the pinned floor
-// (the floor is always good enough — no point generating coarser tiles).
+// level so a tile texel maps to <= 1 physical pixel. Clamped to the pinned
+// level so we never target a level coarser than the pinned floor (the floor is
+// always good enough — no point generating coarser tiles). Navigation does not
+// reduce this level: resource usage is instead kept down by the cache swapping
+// (eviction) so cached tiles always render at their true quality.
 function levelForImage(im) {
   const s = view.scale; // scene px -> css px (image drawn at fitFactor*scale)
   const eff = s * im.fitFactor; // source px -> css px
   const max = pinnedLevelFor(im);
-  if (interacting) return clamp(Math.round(-Math.log2(eff)), 0, max);
   return clamp(Math.floor(-Math.log2(eff * dpr)), 0, max);
 }
 
@@ -1194,8 +1195,8 @@ function enqueueImageTiles(im) {
 
 // Ensure the pinned coarse overview tiles exist for the image (low, then high)
 // so it always has a ready underlay no matter where or how far the view zooms.
-// The "high" upgrade is deferred while navigating so interaction only paints the
-// fast low-res floor; the crisp overview is generated on settle.
+// The high-quality upgrade runs immediately (even while navigating): quality is
+// not reduced on navigation — resource usage is kept down by cache swapping.
 function requestPinnedTiles(im) {
   const L = pinnedLevelFor(im);
   const ntx = Math.ceil(im.iw / (TILE * Math.pow(2, L)));
@@ -1205,7 +1206,7 @@ function requestPinnedTiles(im) {
       const k = tileKey(im.id, L, tx, ty);
       const e = cache.get(k);
       if (!e) requestTile(im.id, L, tx, ty, "low");
-      else if (e.quality !== "high" && !interacting) requestTile(im.id, L, tx, ty, "high");
+      else if (e.quality !== "high") requestTile(im.id, L, tx, ty, "high");
     }
 }
 
