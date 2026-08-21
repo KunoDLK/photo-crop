@@ -447,6 +447,7 @@ function requestRender() {
 function markInteracting() {
   interacting = true;
   if (settleTimer) clearTimeout(settleTimer);
+  cancelInflightTiles();
   settleTimer = setTimeout(() => {
     settleTimer = null;
     interacting = false;
@@ -455,6 +456,17 @@ function markInteracting() {
     schedulePrefetch();
   }, SETTLE_MS);
   reconcile();
+}
+
+// Abort every tile the worker is currently rendering (or has queued) and drop
+// the in-flight bookkeeping, so a navigation gesture is never delayed waiting
+// for stale deep-zoom tiles. The worker posts "genCancelled" for any it was
+// mid-way through; the entries have already been cleared here.
+function cancelInflightTiles() {
+  if (workerSupported && tileWorker && workerReady) {
+    tileWorker.postMessage({ type: "cancel" });
+  }
+  inflight.clear();
 }
 
 // ------------------------------------------------------------- canvas size
@@ -480,6 +492,17 @@ const sourceOrder = [];     // LRU order of source ids (most-recent at end)
 let TILE = 256;
 let srcBudget = 512 * 1024 * 1024; // total bytes of source bitmaps allowed
 let srcBytes = 0;                  // current sum of source bytes
+let cancelSeq = 0;                 // bumped by "cancel" so in-flight gens can abort
+
+function keyOf(m) { return m.id + ":" + m.L + ":" + m.tx + ":" + m.ty + ":" + m.quality; }
+
+// Yield to the worker's event loop so a pending "cancel" message can be
+// delivered between the (expensive) halving steps of a tile render. A macrotask
+// yield (not a microtask) is required so the message queue is drained first.
+function yieldLoop() {
+  if (typeof scheduler !== "undefined" && scheduler.yield) return scheduler.yield();
+  return new Promise((res) => setTimeout(res, 0));
+}
 
 function sourceUsed(id) {
   const i = sourceOrder.indexOf(id);
@@ -496,13 +519,14 @@ function evictSources() {
     self.postMessage({ type: "sourceEvicted", id });
   }
 }
-function downscaleHQ(src, sx, sy, sw, sh, dw, dh) {
+async function downscaleHQ(src, sx, sy, sw, sh, dw, dh, seq) {
   let cur = new OffscreenCanvas(Math.max(1, Math.round(sw)), Math.max(1, Math.round(sh)));
   let cg = cur.getContext("2d");
   cg.imageSmoothingEnabled = true; cg.imageSmoothingQuality = "high";
   cg.drawImage(src, sx, sy, sw, sh, 0, 0, cur.width, cur.height);
   let cw = cur.width, ch = cur.height;
   while (cw > dw * 2 || ch > dh * 2) {
+    if (seq !== cancelSeq) return null;
     const nw = Math.max(dw, Math.floor(cw / 2));
     const nh = Math.max(dh, Math.floor(ch / 2));
     const next = new OffscreenCanvas(nw, nh);
@@ -510,7 +534,9 @@ function downscaleHQ(src, sx, sy, sw, sh, dw, dh) {
     ng.imageSmoothingEnabled = true; ng.imageSmoothingQuality = "high";
     ng.drawImage(cur, 0, 0, cw, ch, 0, 0, nw, nh);
     cur = next; cw = nw; ch = nh;
+    await yieldLoop();
   }
+  if (seq !== cancelSeq) return null;
   const out = new OffscreenCanvas(dw, dh);
   const og = out.getContext("2d");
   og.imageSmoothingEnabled = true; og.imageSmoothingQuality = "high";
@@ -547,7 +573,24 @@ self.onmessage = (e) => {
     }
     return;
   }
+  if (m.type === "cancel") {
+    cancelSeq++;
+    return;
+  }
   if (m.type === "gen") {
+    genAsync(m);
+  }
+};
+
+async function genAsync(m) {
+  const key = keyOf(m);
+  // Yield first so a pending "cancel" (or other control) message is delivered
+  // before the expensive drawImage work begins; a request superseded by the
+  // user navigating away aborts here without rendering anything.
+  const seq = cancelSeq;
+  await yieldLoop();
+  if (seq !== cancelSeq) { self.postMessage({ type: "genCancelled", key }); return; }
+  try {
     const s = sources.get(m.id);
     if (!s) {
       // source was evicted; tell the main thread so it can drop the inflight
@@ -576,17 +619,23 @@ self.onmessage = (e) => {
       g.imageSmoothingEnabled = false;
       g.drawImage(s.img, sx, sy, sw, sh, 0, 0, dw, dh);
     } else {
-      const out = downscaleHQ(s.img, sx, sy, sw, sh, dw, dh);
+      const out = await downscaleHQ(s.img, sx, sy, sw, sh, dw, dh, seq);
+      if (out === null) { self.postMessage({ type: "genCancelled", key }); return; }
       g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
       g.drawImage(out, 0, 0, dw, dh, 0, 0, dw, dh);
     }
+    if (seq !== cancelSeq) { self.postMessage({ type: "genCancelled", key }); return; }
     const bmp = c.transferToImageBitmap();
     self.postMessage(
       { type: "tile", id: m.id, L, tx, ty, quality, bitmap: bmp, ms: performance.now() - t0 },
       [bmp]);
     if (DEBUG) console.log("[worker] tile done L" + L + (quality === "low" ? "-low" : "") + " " + m.id + ":" + tx + "," + ty + " " + (performance.now() - t0).toFixed(1) + "ms");
+  } catch (err) {
+    // Never let a render error stall the queue: report it as skipped so the
+    // main thread can drop the inflight entry and continue.
+    self.postMessage({ type: "genSkipped", id: m.id, L: m.L, tx: m.tx, ty: m.ty, quality: m.quality });
   }
-};
+}
 `;
 
 let tileWorker = null;
@@ -633,6 +682,13 @@ function handleWorkerMessage(e) {
     if (m.type === "sourceEvicted") {
       queueLog(`sourceEvicted ${m.id}`);
       readySources.delete(m.id);
+      return;
+    }
+    if (m.type === "genCancelled") {
+      // A tile was aborted mid-render (navigation started). Drop its inflight
+      // entry; the scheduler will have already re-queued what the new view needs.
+      inflight.delete(m.key);
+      queueLog(`genCancelled ${m.key}`);
       return;
     }
     if (m.type === "genSkipped") {
@@ -1026,6 +1082,7 @@ async function loadDirectory() {
   buildLayout(list);
   stateHasImages = images.length > 0;
   queued.length = 0;
+  cancelInflightTiles();
   if (!hadImages) fitView();
   reconcile();
   requestRender();
