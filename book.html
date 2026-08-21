@@ -139,6 +139,19 @@ const GROUP_GAP = 480;        // extra gap between groups
 const LABEL_H = 90;           // label region height above each cell
 const LABEL_FONT = 56;        // label font size
 
+// Distinct color per tile level for the tile-debug overlay, so overlapping
+// levels are easy to tell apart. L0 (finest) is first; extra levels wrap.
+const LEVEL_COLORS = [
+  "#ff4d4d", // L0 red
+  "#ff9f1c", // L1 orange
+  "#ffe135", // L2 yellow
+  "#3ddc3d", // L3 green
+  "#2ee6e6", // L4 cyan
+  "#4d94ff", // L5 blue
+  "#b06bff", // L6 purple
+  "#ff5ce1", // L7 magenta
+];
+
 const els = {
   view: document.getElementById("view"),
   left: document.getElementById("left"),
@@ -1414,10 +1427,9 @@ function drawImageEntry(im, sc) {
       ctx.lineWidth = 1;
     }
     // Overlay every cached tile of this image that is actually rendered (levels
-    // from the pinned floor down to the target), at its real level, colored by
-    // quality (green=high, yellow=low). No red "queued" cells, and no stale
-    // finer-than-target tiles — so coarse tiles are visibly chopped into finer
-    // tiles as quality improves.
+    // from the pinned floor down to the target), colored by its *level* (see
+    // LEVEL_COLORS) so multiple levels stacked on top of each other are obvious.
+    // The level label sits in each tile's top-left corner.
     const vpw = cv.clientWidth, vph = cv.clientHeight;
     ctx.font = "600 10px system-ui, sans-serif";
     ctx.textBaseline = "top";
@@ -1425,8 +1437,8 @@ function drawImageEntry(im, sc) {
       const twsc = TILE * Math.pow(2, v.L) * im.fitFactor * sc;
       const tdx = dx + v.tx * twsc, tdy = dy + v.ty * twsc;
       if (tdx + twsc < 0 || tdx > vpw || tdy + twsc < 0 || tdy > vph) return;
-      const col = v.quality === "high" ? "#00e000" : "#e0c000";
-      ctx.fillStyle = col + "22";
+      const col = LEVEL_COLORS[v.L % LEVEL_COLORS.length];
+      ctx.fillStyle = col + "2e";
       ctx.fillRect(tdx, tdy, twsc, twsc);
       ctx.strokeStyle = col;
       ctx.strokeRect(tdx + 0.5, tdy + 0.5, twsc - 1, twsc - 1);
