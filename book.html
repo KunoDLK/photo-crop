@@ -1591,6 +1591,7 @@ const activePointers = new Map();
 let pinch = null;
 
 cv.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
   try { cv.setPointerCapture(e.pointerId); } catch (err) {}
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
@@ -1599,7 +1600,7 @@ cv.addEventListener("pointerdown", (e) => {
     if (activePointers.size === 2) { beginPinch(); panning = null; return; }
     if (activePointers.size > 2) return;
   }
-  panning = { x: e.clientX, y: e.clientY, vx: view.vx, vy: view.vy };
+  panning = { wx: (mx - view.vx) / view.scale, wy: (my - view.vy) / view.scale };
 });
 cv.addEventListener("pointermove", (e) => {
   const rect = cv.getBoundingClientRect();
@@ -1610,8 +1611,8 @@ cv.addEventListener("pointermove", (e) => {
     if (pinch && activePointers.size >= 2) { updatePinch(); return; }
   }
   if (!panning) return;
-  view.vx = panning.vx + (e.clientX - panning.x);
-  view.vy = panning.vy + (e.clientY - panning.y);
+  view.vx = cursorX - panning.wx * view.scale;
+  view.vy = cursorY - panning.wy * view.scale;
   markInteracting();
   requestRender();
 });
@@ -1620,8 +1621,7 @@ function endPointer(e) {
     if (pinch) { activePointers.delete(e.pointerId); pinch = null;
       if (activePointers.size === 1) {
         const only = activePointers.values().next().value;
-        const rect = cv.getBoundingClientRect();
-        panning = { x: only.x + rect.left, y: only.y + rect.top, vx: view.vx, vy: view.vy };
+        panning = { wx: (only.x - view.vx) / view.scale, wy: (only.y - view.vy) / view.scale };
       }
       return;
     }
