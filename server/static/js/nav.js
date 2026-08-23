@@ -19,9 +19,10 @@ import { formatPixels, formatBytes, formatDuration } from "./util.js";
 
 let urlSyncSeq = 0;
 let bookLoadMs = 0;
+let currentSig = null;
 
 /** Load the root book list and show it. */
-export async function showBooks() {
+export async function showBooks(force = false, keepView = null) {
   state.setStatus("Loading books…");
   scheduler.cancelQueued();
   scheduler.resetLevels();
@@ -29,8 +30,15 @@ export async function showBooks() {
   state.location.book = null;
   state.setFocusedImage(null);
   try {
-    const books = await fetchBooks();
-    const items = books.map((b, i) => ({
+    const data = await fetchBooks(force);
+    if (force && data.signature === currentSig) {
+      state.setStatus("No changes");
+      scheduler.reconcile();
+      render.requestRender();
+      state.emit("location-changed");
+      return;
+    }
+    const items = data.books.map((b, i) => ({
       kind: "book",
       bookId: b.id,
       pageId: b.cover.page_id,
@@ -43,10 +51,17 @@ export async function showBooks() {
     }));
     buildLayout(items);
     updateChrome();
-    viewport.fitView(state.viewport.w, state.viewport.h);
+    if (keepView) {
+      state.view.scale = keepView.scale;
+      state.view.vx = keepView.vx;
+      state.view.vy = keepView.vy;
+    } else {
+      viewport.fitView(state.viewport.w, state.viewport.h);
+    }
     scheduler.reconcile();
     render.requestRender();
-    state.setStatus(books.length ? `${books.length} book(s)` : "No books found");
+    currentSig = data.signature;
+    state.setStatus(items.length ? `${items.length} book(s)` : "No books found");
     url.setHash(null);
     state.emit("location-changed");
   } catch (e) {
@@ -55,14 +70,20 @@ export async function showBooks() {
 }
 
 /** Load a book's pages; fit a specific page when given, else the default fit. */
-export async function enterBook(book, pageId = null) {
+export async function enterBook(book, pageId = null, force = false, keepView = null) {
   state.setStatus("Loading book…");
   const t0 = performance.now();
   scheduler.cancelQueued();
   scheduler.resetLevels();
   try {
-    const pages = await fetchPages(book.id);
-    const items = pages.map((p) => ({
+    const data = await fetchPages(book.id, force);
+    if (force && data.signature === currentSig) {
+      state.setStatus("No changes");
+      scheduler.reconcile();
+      render.requestRender();
+      return;
+    }
+    const items = data.pages.map((p) => ({
       kind: "page",
       bookId: book.id,
       pageId: p.page_id,
@@ -79,9 +100,16 @@ export async function enterBook(book, pageId = null) {
     buildLayout(items);
     updateChrome();
     bookLoadMs = performance.now() - t0;
+    currentSig = data.signature;
 
     const target = pageId ? state.images.find((im) => im.pageId === pageId) : null;
-    if (target) {
+    if (keepView) {
+      state.view.scale = keepView.scale;
+      state.view.vx = keepView.vx;
+      state.view.vy = keepView.vy;
+      state.setFocusedImage(target);
+      state.setStatus(bookStatus());
+    } else if (target) {
       state.setFocusedImage(target);
       viewport.fitViewToImage(target, state.viewport.w, state.viewport.h);
       showImageInfo(target);
@@ -109,13 +137,14 @@ export function goBack() {
   showBooks();
 }
 
-/** Reload the current location (preserving the focused page when in a book). */
+/** Reload the current location, forcing a server re-scan, without moving the view. */
 export function reload() {
+  const keep = { scale: state.view.scale, vx: state.view.vx, vy: state.view.vy };
   if (state.location.type === "book" && state.location.book) {
     const focused = state.focusedImage;
-    enterBook(state.location.book, focused ? focused.pageId : null);
+    enterBook(state.location.book, focused ? focused.pageId : null, true, keep);
   } else {
-    showBooks();
+    showBooks(true, keep);
   }
 }
 

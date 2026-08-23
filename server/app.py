@@ -14,6 +14,7 @@ from starlette.responses import Response
 
 from .books import router as books_router
 from .books.locations import LocationRegistry
+from .books.scanner import Catalog
 from .config import Settings
 from .errors import register_error_handlers
 from .tiles import router as tiles_router
@@ -45,6 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.tiles = TileService(settings)
     app.state.locations = LocationRegistry(settings.cache_dir / "locations.json")
+    app.state.catalog = Catalog(settings.archive_root, settings.tile_size)
 
     register_error_handlers(app)
     app.include_router(books_router.router)

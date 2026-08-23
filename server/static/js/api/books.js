@@ -6,20 +6,21 @@
  * exceptions so callers decide how to handle them.
  */
 
-/** Fetch the root listing of books (with cover metadata). */
-export async function fetchBooks() {
-  const res = await fetch("/api/books", { cache: "no-store" });
+/** Fetch the root listing of books (with cover metadata + change signature). */
+export async function fetchBooks(force) {
+  const res = await fetch("/api/books" + (force ? "?force=1" : ""), { cache: "no-store" });
   if (!res.ok) throw new Error("HTTP " + res.status);
-  const data = await res.json();
-  return data.books || [];
+  return res.json();
 }
 
-/** Fetch the page listing for a single book. */
-export async function fetchPages(bookId) {
-  const res = await fetch(`/api/books/${encodeURIComponent(bookId)}/pages`, { cache: "no-store" });
+/** Fetch the page listing for a single book (+ change signature). */
+export async function fetchPages(bookId, force) {
+  const res = await fetch(
+    `/api/books/${encodeURIComponent(bookId)}/pages` + (force ? "?force=1" : ""),
+    { cache: "no-store" },
+  );
   if (!res.ok) throw new Error("HTTP " + res.status);
-  const data = await res.json();
-  return data.pages || [];
+  return res.json();
 }
 
 /** Fetch detailed metadata (dims, file size, content hash) for one image. */

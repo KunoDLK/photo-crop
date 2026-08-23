@@ -42,6 +42,7 @@ class BooksResponse(BaseModel):
     """Response body for ``GET /api/books``."""
 
     books: list[BookSummary]
+    signature: str
 
 
 class PagesResponse(BaseModel):
@@ -49,6 +50,7 @@ class PagesResponse(BaseModel):
 
     book: str
     pages: list[PageInfo]
+    signature: str
 
 
 class ImageInfo(BaseModel):
