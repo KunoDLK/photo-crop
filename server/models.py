@@ -49,3 +49,14 @@ class PagesResponse(BaseModel):
 
     book: str
     pages: list[PageInfo]
+
+
+class ImageInfo(BaseModel):
+    """Detailed metadata for a single image, including a content hash."""
+
+    page_id: str
+    width: int
+    height: int
+    max_level: int
+    file_size: int
+    hash: str

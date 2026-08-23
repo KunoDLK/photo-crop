@@ -1,17 +1,24 @@
 /**
  * Navigation between the root book list and individual books.
  *
- * Owns the current location, the breadcrumb/back button, and the enter-book
- * affordance (overlay badge + double-click). On navigation it loads the listing,
- * rebuilds the layout, and re-fits the view.
+ * Owns the current location, the breadcrumb/back button, the enter-book
+ * affordance (overlay badge + double-click), and the URL hash (a short
+ * server-assigned id for the current book/page). On navigation it loads the
+ * listing, rebuilds the layout, and re-fits the view.
  */
 
 import * as state from "./state.js";
-import { fetchBooks, fetchPages } from "./api/books.js";
+import * as url from "./url.js";
+import { fetchBooks, fetchPages, fetchImageInfo } from "./api/books.js";
+import { getLocationId } from "./api/locations.js";
 import { buildLayout } from "./layout.js";
 import * as viewport from "./viewport.js";
 import * as render from "./render.js";
 import * as scheduler from "./tiles/scheduler.js";
+import { formatPixels, formatBytes, formatDuration } from "./util.js";
+
+let urlSyncSeq = 0;
+let bookLoadMs = 0;
 
 /** Load the root book list and show it. */
 export async function showBooks() {
@@ -40,15 +47,17 @@ export async function showBooks() {
     scheduler.reconcile();
     render.requestRender();
     state.setStatus(books.length ? `${books.length} book(s)` : "No books found");
+    url.setHash(null);
     state.emit("location-changed");
   } catch (e) {
     state.setStatus("Could not list books: " + e.message);
   }
 }
 
-/** Load a book's pages and show them. */
-export async function enterBook(book) {
+/** Load a book's pages; fit a specific page when given, else the default fit. */
+export async function enterBook(book, pageId = null) {
   state.setStatus("Loading book…");
+  const t0 = performance.now();
   scheduler.cancelQueued();
   scheduler.resetLevels();
   try {
@@ -69,14 +78,30 @@ export async function enterBook(book) {
     state.setFocusedImage(null);
     buildLayout(items);
     updateChrome();
-    viewport.fitView(state.viewport.w, state.viewport.h);
+    bookLoadMs = performance.now() - t0;
+
+    const target = pageId ? state.images.find((im) => im.pageId === pageId) : null;
+    if (target) {
+      state.setFocusedImage(target);
+      viewport.fitViewToImage(target, state.viewport.w, state.viewport.h);
+      showImageInfo(target);
+    } else {
+      viewport.fitView(state.viewport.w, state.viewport.h);
+      state.setStatus(bookStatus());
+    }
+
     scheduler.reconcile();
     render.requestRender();
-    state.setStatus(`${pages.length} page(s)`);
+    syncUrl(book.id, target ? pageId : null);
     state.emit("location-changed");
   } catch (e) {
     state.setStatus("Could not load book: " + e.message);
   }
+}
+
+/** Open a location parsed from the URL (book + optional page). */
+export function openFromURL(loc) {
+  return enterBook({ id: loc.book, name: loc.book }, loc.page || null);
 }
 
 /** Return to the root book list. */
@@ -84,10 +109,11 @@ export function goBack() {
   showBooks();
 }
 
-/** Reload the current location. */
+/** Reload the current location (preserving the focused page when in a book). */
 export function reload() {
   if (state.location.type === "book" && state.location.book) {
-    enterBook(state.location.book);
+    const focused = state.focusedImage;
+    enterBook(state.location.book, focused ? focused.pageId : null);
   } else {
     showBooks();
   }
@@ -99,15 +125,108 @@ export function handleCellActivate(im) {
     enterBook({ id: im.bookId, name: im.name });
     return;
   }
-  handleFitImage(im);
+  focusPage(im);
 }
 
 /** Fit a single image to the viewport and focus it (right-click / arrows). */
 export function handleFitImage(im) {
+  if (im.kind === "page") {
+    focusPage(im);
+    return;
+  }
+  // Book cover in the root view: fit/focus only, no navigation or URL change.
   state.setFocusedImage(im);
   viewport.fitViewToImage(im, state.viewport.w, state.viewport.h);
   scheduler.reconcile();
   render.requestRender();
+}
+
+/** Focus a page, fit it to the viewport, and reflect it in the URL. */
+export function focusPage(im) {
+  state.setFocusedImage(im);
+  viewport.fitViewToImage(im, state.viewport.w, state.viewport.h);
+  scheduler.reconcile();
+  render.requestRender();
+  syncUrl(im.bookId, im.pageId);
+  showImageInfo(im);
+}
+
+/**
+ * Called after navigation settles: promote the page under the viewport centre to
+ * the active location — but only when it dominates the screen (zoomed in enough).
+ * Zooming back out clears the active page and resets the URL + status message.
+ */
+export function updateActiveImage() {
+  if (state.location.type !== "book") return;
+  const im = imageAtViewportCenter();
+  if (im && im.kind === "page" && imageDominant(im)) {
+    if (im !== state.focusedImage) {
+      state.setFocusedImage(im);
+      syncUrl(im.bookId, im.pageId);
+      showImageInfo(im);
+    }
+  } else if (state.focusedImage) {
+    state.setFocusedImage(null);
+    syncUrl(state.location.book.id, null);
+    state.setStatus(bookStatus());
+  }
+}
+
+/** The book-level status message (total pixel count + load time). */
+function bookStatus() {
+  const base = `${state.images.length} page(s) — ${formatPixels(totalPixels())}`;
+  return `${base} — loaded in ${formatDuration(bookLoadMs)}`;
+}
+
+/** Sum of every image's pixel count in the current location. */
+function totalPixels() {
+  return state.images.reduce((s, im) => s + im.iw * im.ih, 0);
+}
+
+/** Show a page's pixel count, file size and content hash in the status bar. */
+async function showImageInfo(im) {
+  const px = `${im.name} — ${im.iw}×${im.ih} (${formatPixels(im.iw * im.ih)})`;
+  try {
+    const info = await fetchImageInfo(im.bookId, im.pageId);
+    state.setStatus(`${px} · ${formatBytes(info.file_size)} · ${info.hash}`);
+  } catch (e) {
+    state.setStatus(px);
+  }
+}
+
+/** The image whose cell contains the viewport centre, or null. */
+function imageAtViewportCenter() {
+  const vpw = state.viewport.w, vph = state.viewport.h;
+  const sx = (vpw / 2 - state.view.vx) / state.view.scale;
+  const sy = (vph / 2 - state.view.vy) / state.view.scale;
+  for (let i = state.images.length - 1; i >= 0; i--) {
+    const im = state.images[i];
+    if (sx >= im.cellX && sx <= im.cellX + im.cell &&
+        sy >= im.labelY && sy <= im.cellY + im.cell) return im;
+  }
+  return null;
+}
+
+/** True when the image's visible area covers most of the viewport. */
+function imageDominant(im) {
+  const vpw = state.viewport.w, vph = state.viewport.h;
+  const sc = state.view.scale;
+  const [dx, dy] = viewport.sceneToDev(im.drawX, im.drawY);
+  const dw = im.drawW * sc, dh = im.drawH * sc;
+  const w = Math.min(vpw, dx + dw) - Math.max(0, dx);
+  const h = Math.min(vph, dy + dh) - Math.max(0, dy);
+  return Math.max(0, w) * Math.max(0, h) >= vpw * vph * 0.5;
+}
+
+/** Update the URL hash to a short id for (book, page), latest-wins. */
+async function syncUrl(book, page) {
+  const seq = ++urlSyncSeq;
+  try {
+    const id = await getLocationId(book, page);
+    if (seq === urlSyncSeq) url.setHash(id);
+  } catch (e) {
+    /* offline / server error: leave the hash unchanged */
+  }
 }
 
 /** Update the title and back-button visibility for the current location. */

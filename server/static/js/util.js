@@ -15,6 +15,21 @@ export function formatPixels(px) {
   return px + " pixels";
 }
 
+/** Human-readable byte count (B/KB/MB/GB). */
+export function formatBytes(n) {
+  if (n >= 1 << 30) return (n / (1 << 30)).toFixed(2) + " GB";
+  if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + " MB";
+  if (n >= 1 << 10) return (n / (1 << 10)).toFixed(0) + " KB";
+  return n + " B";
+}
+
+/** Human-readable duration: "123ms" below a second, "1.2s" below ten, else "12s". */
+export function formatDuration(ms) {
+  if (ms < 1000) return Math.round(ms) + "ms";
+  if (ms < 10000) return (ms / 1000).toFixed(1) + "s";
+  return Math.round(ms / 1000) + "s";
+}
+
 /** Read a CSS custom property value from the document root. */
 export function getCss(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#000";

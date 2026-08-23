@@ -6,12 +6,36 @@ assembles the listing models consumed by the router.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from ..errors import BadRequest, NotFound
 from ..models import BookSummary, CoverInfo, PageInfo
 from ..tiles.geometry import max_level
 from . import dimensions, naming
+
+
+#: Cache of (size, mtime_ns) -> content hash, so re-requests don't re-read files.
+_hash_cache: dict[Path, tuple[int, int, str]] = {}
+
+
+def _content_hash(path: Path) -> str:
+    """Return a stable ``sha256:<hex>`` digest of a file's bytes.
+
+    Cached per path keyed on (size, mtime_ns), so a re-scanned page (same path,
+    new bytes) is re-hashed on the next request.
+    """
+    stat = path.stat()
+    cached = _hash_cache.get(path)
+    if cached is not None and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
+        return cached[2]
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    value = "sha256:" + digest.hexdigest()
+    _hash_cache[path] = (stat.st_size, stat.st_mtime_ns, value)
+    return value
 
 
 def book_dir(archive_root: Path, book_id: str) -> Path:
@@ -164,3 +188,28 @@ def list_pages(archive_root: Path, book_id: str, tile_size: int) -> list[PageInf
         group.
     """
     return _scan_pages(book_dir(archive_root, book_id), tile_size)
+
+
+def image_info(archive_root: Path, book_id: str, page_id: str, tile_size: int) -> dict:
+    """Return detailed metadata (dims, size, content hash) for one image.
+
+    Args:
+        archive_root: The library root.
+        book_id: The book directory name.
+        page_id: The page filename.
+        tile_size: Tile edge length, used to compute ``max_level``.
+
+    Returns:
+        A dict with ``page_id``, ``width``, ``height``, ``max_level``,
+        ``file_size`` and ``hash``.
+    """
+    path = page_path(archive_root, book_id, page_id)
+    width, height = dimensions.image_dims(path)
+    return {
+        "page_id": page_id,
+        "width": width,
+        "height": height,
+        "max_level": max_level(width, height, tile_size),
+        "file_size": path.stat().st_size,
+        "hash": _content_hash(path),
+    }

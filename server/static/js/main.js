@@ -12,6 +12,8 @@ import * as interaction from "./interaction.js";
 import * as keys from "./keys.js";
 import * as ui from "./ui.js";
 import * as nav from "./nav.js";
+import * as url from "./url.js";
+import { resolveLocation } from "./api/locations.js";
 import * as compositor from "./compositor.js";
 import * as scheduler from "./tiles/scheduler.js";
 import { TileCache } from "./tiles/tileCache.js";
@@ -81,7 +83,26 @@ async function bootstrap() {
   // Debug: expose live state for inspection (e.g. badge hit rects).
   window.__state = state;
 
-  await nav.showBooks();
+  // Navigate when the hash changes (share link opened, back/forward, manual edit).
+  async function navigateFromHash() {
+    const id = url.currentId();
+    if (!id) {
+      await nav.showBooks();
+      return;
+    }
+    try {
+      const loc = await resolveLocation(id);
+      if (loc && loc.book) await nav.openFromURL(loc);
+      else await nav.showBooks();
+    } catch (e) {
+      await nav.showBooks();
+    }
+  }
+
+  window.addEventListener("hashchange", navigateFromHash);
+
+  // Restore the location from the URL hash (short id) if present.
+  await navigateFromHash();
 }
 
 bootstrap();

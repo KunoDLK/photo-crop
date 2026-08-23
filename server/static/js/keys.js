@@ -30,10 +30,7 @@ export function installKeys() {
       idx += e.key === "ArrowRight" ? 1 : -1;
       if (idx < 0) idx = 0;
       if (idx >= state.images.length) idx = state.images.length - 1;
-      state.setFocusedImage(state.images[idx]);
-      viewport.fitViewToImage(state.images[idx], state.viewport.w, state.viewport.h);
-      scheduler.reconcile();
-      render.requestRender();
+      if (nav) nav.focusPage(state.images[idx]);
     } else if (e.key === "Escape" || e.key === "Backspace") {
       if (state.location.type === "book" && nav) nav.goBack();
     }

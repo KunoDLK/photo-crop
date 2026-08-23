@@ -35,6 +35,7 @@ export function markInteracting() {
     settleTimer = null;
     state.setInteracting(false);
     if (scheduler) scheduler.reconcile();
+    if (nav) nav.updateActiveImage();
     render.requestRender();
   }, SETTLE_MS);
   if (scheduler) scheduler.reconcile();

@@ -21,3 +21,13 @@ export async function fetchPages(bookId) {
   const data = await res.json();
   return data.pages || [];
 }
+
+/** Fetch detailed metadata (dims, file size, content hash) for one image. */
+export async function fetchImageInfo(bookId, pageId) {
+  const res = await fetch(
+    `/api/books/${encodeURIComponent(bookId)}/pages/${encodeURIComponent(pageId)}/info`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}

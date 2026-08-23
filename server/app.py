@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
 from .books import router as books_router
+from .books.locations import LocationRegistry
 from .config import Settings
 from .errors import register_error_handlers
 from .tiles import router as tiles_router
@@ -43,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Book viewer tile server", version="1.0.0")
     app.state.settings = settings
     app.state.tiles = TileService(settings)
+    app.state.locations = LocationRegistry(settings.cache_dir / "locations.json")
 
     register_error_handlers(app)
     app.include_router(books_router.router)
