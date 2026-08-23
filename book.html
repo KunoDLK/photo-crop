@@ -990,11 +990,18 @@ function trackSourceSize(im) {
   avgSourceBytes = avgSourceBytes ? avgSourceBytes * 0.8 + bytes * 0.2 : bytes;
 }
 
-// Total megapixels across all loaded images (for the status readout).
-function totalMegapixels() {
+// Total pixel count across all loaded images (for the status readout).
+function totalPixels() {
   let px = 0;
   for (const im of images) if (im.status === "loaded") px += im.iw * im.ih;
-  return px / 1e6;
+  return px;
+}
+// Human-readable pixel count: kilo/mega/giga, rounded to 2dp from 1000 up.
+function formatPixels(px) {
+  if (px >= 1e9) return (px / 1e9).toFixed(2) + " gigapixels";
+  if (px >= 1e6) return (px / 1e6).toFixed(2) + " megapixels";
+  if (px >= 1e3) return (px / 1e3).toFixed(2) + " kilopixels";
+  return px + " pixels";
 }
 
 // ------------------------------------------------------------- view helpers
@@ -1162,7 +1169,7 @@ function pumpDownloads(gen) {
   if (!target) {
     if (!pendingImages().length) {
       const loaded = images.filter((im) => im.status === "loaded").length;
-      status(`Loaded ${loaded} of ${images.length} image(s) — ${totalMegapixels().toFixed(1)} megapixels`);
+      status(`Loaded ${loaded} of ${images.length} image(s) — ${formatPixels(totalPixels())}`);
       schedulePrefetch();
     }
     return;
