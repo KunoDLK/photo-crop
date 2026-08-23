@@ -36,16 +36,17 @@ class TileService:
         self._page_locks: dict[str, threading.Lock] = {}
         self._page_locks_guard = threading.Lock()
 
-    def page_key(self, book: str, page: str) -> str:
-        """Cache key for a decoded page."""
-        return f"{book}/{page}"
+    def page_key(self, book: str, page: str, version: int) -> str:
+        """Cache key for a decoded page (versioned by the file mtime)."""
+        return f"{book}/{page}/{version}"
 
-    async def get_tile(self, book: str, page: str, level: int, tx: int, ty: int) -> bytes:
+    async def get_tile(self, book: str, page: str, version: int, level: int, tx: int, ty: int) -> bytes:
         """Return encoded JPEG bytes for a tile, caching along the way.
 
         Args:
             book: Book directory name.
             page: Page filename.
+            version: Page file mtime (content version).
             level: Pyramid level.
             tx: Tile column.
             ty: Tile row.
@@ -57,7 +58,7 @@ class TileService:
             errors.NotFound: If the page does not exist.
             errors.BadRequest: If the coordinates are out of range.
         """
-        key = self.tiles.key(book, page, level, tx, ty)
+        key = self.tiles.key(book, page, version, level, tx, ty)
         cached = self.tiles.get(key)
         if cached is not None:
             return cached
@@ -66,18 +67,18 @@ class TileService:
             cached = self.tiles.get(key)
             if cached is not None:
                 return cached
-            data = await asyncio.to_thread(self._render_tile, book, page, level, tx, ty)
+            data = await asyncio.to_thread(self._render_tile, book, page, version, level, tx, ty)
             self.tiles.put(key, data)
             return data
 
-    def _render_tile(self, book: str, page: str, level: int, tx: int, ty: int) -> bytes:
+    def _render_tile(self, book: str, page: str, version: int, level: int, tx: int, ty: int) -> bytes:
         """Decode/build the mipmap level, crop, resample, and encode one tile.
 
         Runs on a worker thread (called via ``asyncio.to_thread``); performs no
         encoded-tile caching itself — the caller stores the result.
         """
         path = page_path(self.settings.archive_root, book, page)
-        mip = self._get_mipmap(book, page, path)
+        mip = self._get_mipmap(book, page, version, path)
 
         level = int(level)
         if level < 0 or level > mip.max_level:
@@ -98,9 +99,9 @@ class TileService:
             canvas, self.settings.jpeg_quality, self.settings.jpeg_progressive
         )
 
-    def _get_mipmap(self, book: str, page: str, path) -> PageMipmap:
+    def _get_mipmap(self, book: str, page: str, version: int, path) -> PageMipmap:
         """Return the decoded page mipmap, decoding it once under a per-page lock."""
-        pkey = self.page_key(book, page)
+        pkey = self.page_key(book, page, version)
         mip = self.pages.get(pkey)
         if mip is not None:
             return mip

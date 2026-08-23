@@ -6,9 +6,6 @@
  */
 
 import * as state from "./state.js";
-import * as viewport from "./viewport.js";
-import * as render from "./render.js";
-import * as scheduler from "./tiles/scheduler.js";
 
 let nav = null;
 
@@ -21,9 +18,7 @@ export function init(deps) {
 export function installKeys() {
   window.addEventListener("keydown", (e) => {
     if (e.key === "f" || e.key === "F") {
-      viewport.fitView(state.viewport.w, state.viewport.h);
-      scheduler.reconcile();
-      render.requestRender();
+      if (nav) nav.fitOverview();
     } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
       if (!state.images.length) return;
       let idx = state.images.indexOf(state.focusedImage);

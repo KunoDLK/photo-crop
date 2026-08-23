@@ -36,11 +36,7 @@ function wireDOM() {
   if (back) back.addEventListener("click", () => nav.goBack());
   if (reload) reload.addEventListener("click", () => nav.reload());
   if (fit) {
-    fit.addEventListener("click", () => {
-      viewport.fitView(state.viewport.w, state.viewport.h);
-      scheduler.reconcile();
-      render.requestRender();
-    });
+    fit.addEventListener("click", () => nav.fitOverview());
   }
   if (tiledbg) {
     tiledbg.addEventListener("click", () => {

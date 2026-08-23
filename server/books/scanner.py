@@ -152,6 +152,7 @@ def _scan_pages(book_dir: Path, tile_size: int) -> tuple[str, list[PageInfo]]:
             width=r["width"],
             height=r["height"],
             max_level=r["max_level"],
+            mtime=r["_mtime"],
         )
         for r in matched + extra
     ]
@@ -182,6 +183,7 @@ def _scan_books(archive_root: Path, tile_size: int) -> tuple[str, list[BookSumma
                     width=cover.width,
                     height=cover.height,
                     max_level=cover.max_level,
+                    mtime=cover.mtime,
                 ),
             )
         )

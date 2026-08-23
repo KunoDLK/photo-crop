@@ -1,8 +1,9 @@
 """HTTP route for tile bytes.
 
-Serves ``GET /tiles/{book}/{page}/{level}/{tx}/{ty}.jpg``. Tiles are deterministic
-so responses carry immutable cache headers, letting browsers (and any CDN in
-front) satisfy repeat requests without hitting the server.
+Serves ``GET /tiles/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg``. The version
+is the page file's mtime, making tiles content-addressed so re-saved pages get
+fresh URLs. Tiles are deterministic per version, so responses carry immutable
+cache headers.
 """
 from __future__ import annotations
 
@@ -14,15 +15,16 @@ router = APIRouter(tags=["tiles"])
 _IMMUTABLE = "public, max-age=31536000, immutable"
 
 
-@router.get("/tiles/{book}/{page}/{level}/{tx}/{ty}.jpg")
+@router.get("/tiles/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg")
 async def tile_endpoint(
-    book: str, page: str, level: int, tx: int, ty: int, request: Request
+    book: str, page: str, version: int, level: int, tx: int, ty: int, request: Request
 ) -> Response:
     """Return a single progressive-JPEG tile.
 
     Args:
         book: Book directory name.
         page: Page filename (without extension; ``.jpg`` suffix is the route).
+        version: Page file mtime (content version) — namespaces the cache.
         level: Pyramid level.
         tx: Tile column.
         ty: Tile row.
@@ -32,5 +34,5 @@ async def tile_endpoint(
         A ``image/jpeg`` response with immutable cache headers.
     """
     service = request.app.state.tiles
-    data = await service.get_tile(book, page, level, tx, ty)
+    data = await service.get_tile(book, page, version, level, tx, ty)
     return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": _IMMUTABLE})

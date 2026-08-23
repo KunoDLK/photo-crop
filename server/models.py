@@ -16,6 +16,7 @@ class CoverInfo(BaseModel):
     width: int
     height: int
     max_level: int
+    mtime: int
 
 
 class BookSummary(BaseModel):
@@ -36,6 +37,7 @@ class PageInfo(BaseModel):
     width: int
     height: int
     max_level: int
+    mtime: int
 
 
 class BooksResponse(BaseModel):

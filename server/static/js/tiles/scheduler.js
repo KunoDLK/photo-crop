@@ -71,7 +71,7 @@ export function ensureRootTile(im) {
   if (queue.has(key)) return;
   queue.request({
     key,
-    url: tileUrl(im.bookId, im.pageId, L, 0, 0),
+    url: tileUrl(im.bookId, im.pageId, im.version, L, 0, 0),
     priority: 0,
     imId: im.id,
     L,
@@ -103,7 +103,7 @@ export function desiredTiles(im) {
       const cx = dx + (tx + 0.5) * twsc;
       const cy = dy + (ty + 0.5) * twsc;
       const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
-      list.push({ key, url: tileUrl(im.bookId, im.pageId, L, tx, ty), priority: d2, imId: im.id, L, tx, ty });
+      list.push({ key, url: tileUrl(im.bookId, im.pageId, im.version, L, tx, ty), priority: d2, imId: im.id, L, tx, ty });
     }
   }
   list.sort((a, b) => a.priority - b.priority);

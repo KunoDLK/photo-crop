@@ -19,12 +19,16 @@ class TileCache:
         self._cache = Cache(str(cache_dir), size_limit=size_limit_bytes)
 
     @staticmethod
-    def key(book: str, page: str, level: int, tx: int, ty: int) -> str:
+    def key(book: str, page: str, version: int, level: int, tx: int, ty: int) -> str:
         """Build a stable cache key for a tile.
+
+        The ``version`` (the page file's mtime) namespaces the cache, so a
+        re-saved page produces new keys and stale tiles are never served.
 
         Args:
             book: Book directory name.
             page: Page id (filename).
+            version: Page file mtime (content version).
             level: Pyramid level.
             tx: Tile column.
             ty: Tile row.
@@ -32,7 +36,7 @@ class TileCache:
         Returns:
             A string key safe for the cache backend.
         """
-        return f"{book}/{page}/{level}/{tx}/{ty}"
+        return f"{book}/{page}/{version}/{level}/{tx}/{ty}"
 
     def get(self, key: str) -> bytes | None:
         """Return cached tile bytes, or ``None`` on a miss.

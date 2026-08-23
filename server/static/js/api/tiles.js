@@ -6,9 +6,9 @@
  * (no manual IndexedDB here).
  */
 
-/** Build the absolute URL for a tile. */
-export function tileUrl(book, page, level, tx, ty) {
-  return `/tiles/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${level}/${tx}/${ty}.jpg`;
+/** Build the absolute URL for a tile (versioned by the page file's mtime). */
+export function tileUrl(book, page, version, level, tx, ty) {
+  return `/tiles/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${version}/${level}/${tx}/${ty}.jpg`;
 }
 
 /**

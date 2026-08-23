@@ -48,6 +48,7 @@ export async function showBooks(force = false, keepView = null) {
       iw: b.cover.width,
       ih: b.cover.height,
       maxLevel: b.cover.max_level,
+      version: b.cover.mtime,
     }));
     buildLayout(items);
     updateChrome();
@@ -93,6 +94,7 @@ export async function enterBook(book, pageId = null, force = false, keepView = n
       iw: p.width,
       ih: p.height,
       maxLevel: p.max_level,
+      version: p.mtime,
     }));
     state.location.type = "book";
     state.location.book = book;
@@ -178,6 +180,21 @@ export function focusPage(im) {
   render.requestRender();
   syncUrl(im.bookId, im.pageId);
   showImageInfo(im);
+}
+
+/** Fit the whole scene and reset the URL/status to the "no image" overview. */
+export function fitOverview() {
+  state.setFocusedImage(null);
+  viewport.fitView(state.viewport.w, state.viewport.h);
+  scheduler.reconcile();
+  render.requestRender();
+  if (state.location.type === "book" && state.location.book) {
+    syncUrl(state.location.book.id, null);
+    state.setStatus(bookStatus());
+  } else {
+    url.setHash(null);
+    state.setStatus(state.images.length ? `${state.images.length} book(s)` : "No books found");
+  }
 }
 
 /**

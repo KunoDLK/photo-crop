@@ -54,6 +54,13 @@ export function buildLayout(items) {
       const it = list[i];
       const key = stableKey(it);
       let im = existingByKey.get(key);
+      // Content changed (same name, new mtime): recreate so cached tiles are
+      // dropped and re-fetched under the new version. The old object falls out
+      // of `kept` and is cleaned up by the removed-images handling.
+      if (im && im.version !== it.version) {
+        existingByKey.delete(key);
+        im = null;
+      }
       if (im) {
         im.kind = it.kind;
         im.bookId = it.bookId;
@@ -64,6 +71,7 @@ export function buildLayout(items) {
         im.iw = it.iw;
         im.ih = it.ih;
         im.maxLevel = it.maxLevel;
+        im.version = it.version;
         im.cellX = ox;
         im.cellY = oy + LABEL_H;
         im.cell = CELL;
@@ -81,6 +89,7 @@ export function buildLayout(items) {
           iw: it.iw,
           ih: it.ih,
           maxLevel: it.maxLevel,
+          version: it.version,
           fitFactor: 1,
           cellX: ox,
           cellY: oy + LABEL_H,
