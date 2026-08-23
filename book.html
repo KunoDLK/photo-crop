@@ -182,6 +182,7 @@ let stateHasImages = false;
 let loadGeneration = 0;        // bumped on reload; invalidates stale decode callbacks
 let avgSourceBytes = 0;         // running estimate of a full-res source's size
 let sourceLoadCount = 0;        // in-flight source decodes
+let activeDownload = null;      // { im, ctrl } for the in-flight image download
 const sourceLoading = new Set(); // image ids awaiting a source decode/ack
 const sourceFailedAt = new Map(); // id -> timestamp of last failed decode
 // last known cursor position in canvas (device/CSS) coords; -1 = unknown/off
@@ -1036,6 +1037,7 @@ function imageAtPoint(mx, my) {
 async function loadDirectory() {
   status("Listing folder…");
   loadGeneration++;
+  if (activeDownload) { activeDownload.ctrl.abort(); activeDownload = null; }
   const gen = loadGeneration;
   const hadImages = images.length > 0;
   let data;
@@ -1087,50 +1089,132 @@ async function loadDirectory() {
   reconcile();
   requestRender();
   status(`Found ${images.length} image(s) in ${new Set(images.map(i=>i.group)).size} group(s). Loading…`);
-  loadSequential(gen);
+  pumpDownloads(gen);
 }
 
-async function loadSequential(gen) {
-  for (const im of images) {
-    if (gen !== loadGeneration) return;      // superseded by a newer reload
-    if (im.status === "loaded") continue;    // already have it (warm reload)
-    im.status = "downloading";
-    im.progress = 0;
-    requestRender();
-    try {
-      const tLoad = profStart("load.image");
-      const blob = await getImageBlob(im);
-      if (gen !== loadGeneration) return;
-      im.status = "decoding";
+// ------------------------------------------------------------- image download
+// View-driven download pump. Replaces the old fixed-order loadSequential: when
+// the whole scene fits on-screen it downloads in natural (group/order) sequence,
+// but once the user zooms into a subset the nearest-to-cursor visible image is
+// downloaded first. Re-runs from reconcile() on every navigation so the choice
+// is re-evaluated as the view changes.
+function pendingImages() {
+  return images.filter((im) => im.status === "pending");
+}
+// Is the entire scene currently within the viewport (i.e. all images on-screen)?
+function isOverview() {
+  const vpw = cv.clientWidth || els.left.clientWidth;
+  const vph = cv.clientHeight || els.left.clientHeight;
+  if (!vpw || !vph) return true;
+  return scene.w * view.scale <= vpw && scene.h * view.scale <= vph;
+}
+function isImageVisible(im) {
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  const sc = view.scale;
+  const sx0 = (0 - view.vx) / sc, sy0 = (0 - view.vy) / sc;
+  const sx1 = (vpw - view.vx) / sc, sy1 = (vph - view.vy) / sc;
+  const cx0 = im.cellX, cy0 = im.labelY, cx1 = im.cellX + im.cell, cy1 = im.cellY + im.cell;
+  return !(cx1 < sx0 || cx0 > sx1 || cy1 < sy0 || cy0 > sy1);
+}
+// Pending image nearest to the cursor (or viewport centre), or null if none are
+// currently visible.
+function nearestVisiblePending() {
+  const vpw = cv.clientWidth, vph = cv.clientHeight;
+  const sc = view.scale;
+  const sx0 = (0 - view.vx) / sc, sy0 = (0 - view.vy) / sc;
+  const sx1 = (vpw - view.vx) / sc, sy1 = (vph - view.vy) / sc;
+  const ox = cursorX >= 0 ? cursorX : vpw / 2;
+  const oy = cursorY >= 0 ? cursorY : vph / 2;
+  let best = null, bestD2 = Infinity;
+  for (const im of pendingImages()) {
+    const cx0 = im.cellX, cy0 = im.labelY, cx1 = im.cellX + im.cell, cy1 = im.cellY + im.cell;
+    if (cx1 < sx0 || cx0 > sx1 || cy1 < sy0 || cy0 > sy1) continue;
+    const [cx, cy] = sceneToDev(im.cellX + im.cell / 2, im.labelY + im.cell / 2);
+    const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
+    if (d2 < bestD2) { bestD2 = d2; best = im; }
+  }
+  return best;
+}
+function nextDownloadTarget() {
+  const pending = pendingImages();
+  if (!pending.length) return null;
+  if (isOverview()) return pending[0]; // natural order
+  return nearestVisiblePending() || pending[0];
+}
+function pumpDownloads(gen) {
+  if (gen !== loadGeneration) return;
+  if (activeDownload) {
+    const cur = activeDownload.im;
+    const vis = nearestVisiblePending();
+    // Only abort when the current download has scrolled/zoomed off-screen while a
+    // visible image is still waiting — avoids thrash while panning a visible grid.
+    if (vis && !isImageVisible(cur)) {
+      activeDownload.ctrl.abort();
+      activeDownload = null;
+      cur.status = "pending";
+      cur.progress = 0;
       requestRender();
-      const tDecode = profStart("load.decode");
-      const bitmap = await createImageBitmap(blob);
-      profEnd(tDecode);
-      if (gen !== loadGeneration) { if (bitmap.close) bitmap.close(); return; }
-      im.bitmap = bitmap;
-      im.iw = bitmap.width;
-      im.ih = bitmap.height;
-      fitImage(im);
-      im.status = "loaded";
-      trackSourceSize(im);
-      addSource(im);
-      requestRender();
-      profEnd(tLoad);
-    } catch (e) {
-      if (gen !== loadGeneration) return;
-      im.status = "error";
-      im.error = e.message;
-      requestRender();
+    } else {
+      return; // let the in-flight download finish
     }
   }
+  const target = nextDownloadTarget();
+  if (!target) {
+    if (!pendingImages().length) {
+      const loaded = images.filter((im) => im.status === "loaded").length;
+      status(`Loaded ${loaded} of ${images.length} image(s) — ${totalMegapixels().toFixed(1)} megapixels`);
+      schedulePrefetch();
+    }
+    return;
+  }
+  startDownload(target, gen);
+}
+async function startDownload(im, gen) {
+  const ctrl = new AbortController();
+  activeDownload = { im, ctrl };
+  im.status = "downloading";
+  im.progress = 0;
+  requestRender();
+  try {
+    const tLoad = profStart("load.image");
+    const blob = await getImageBlob(im, ctrl.signal);
+    if (gen !== loadGeneration || (activeDownload && activeDownload.im !== im)) return;
+    im.status = "decoding";
+    requestRender();
+    const tDecode = profStart("load.decode");
+    const bitmap = await createImageBitmap(blob);
+    profEnd(tDecode);
+    if (gen !== loadGeneration || (activeDownload && activeDownload.im !== im)) { if (bitmap.close) bitmap.close(); return; }
+    im.bitmap = bitmap;
+    im.iw = bitmap.width;
+    im.ih = bitmap.height;
+    fitImage(im);
+    im.status = "loaded";
+    trackSourceSize(im);
+    addSource(im);
+    requestRender();
+    profEnd(tLoad);
+  } catch (e) {
+    if (gen !== loadGeneration) return;
+    if (e.name === "AbortError") {
+      // Cancelled to reprioritise; pumpDownloads already reset it to pending.
+      requestRender();
+      return;
+    }
+    im.status = "error";
+    im.error = e.message;
+    requestRender();
+  } finally {
+    if (activeDownload && activeDownload.im === im) activeDownload = null;
+  }
   if (gen === loadGeneration) {
-    status(`Loaded ${images.length} image(s) — ${totalMegapixels().toFixed(1)} megapixels`);
-    schedulePrefetch();
+    reconcile();
+    pumpDownloads(gen);
   }
 }
 
 // Get the image blob: blob cache first, else download (with progress) and store.
-async function getImageBlob(im) {
+async function getImageBlob(im, signal) {
   const cached = await blobCacheGet(im.url);
   if (cached) {
     cacheLog(`hit  ${im.url} (${(cached.size / 1048576).toFixed(1)}MB)`);
@@ -1138,13 +1222,13 @@ async function getImageBlob(im) {
     return cached;
   }
   cacheLog(`miss ${im.url}`);
-  const blob = await downloadWithProgress(im);
+  const blob = await downloadWithProgress(im, signal);
   blobCachePut(im.url, blob);
   return blob;
 }
 
-async function downloadWithProgress(im) {
-  const res = await cpFetch(im.url, {});
+async function downloadWithProgress(im, signal) {
+  const res = await cpFetch(im.url, { signal });
   if (!res.ok) throw new Error("HTTP " + res.status);
   const total = parseInt(res.headers.get("content-length") || "0", 10);
   if (!res.body || !total) {
@@ -1282,6 +1366,7 @@ function requestSourceLoad(im) {
 // Rebuild the pending queue from the current desired set. Drops stale (now
 // off-screen) requests and only tiles images inside the active window.
 function reconcile() {
+  pumpDownloads(loadGeneration);
   if (!workerSupported || !workerReady || !stateHasImages) return;
   profMeasure("scheduler.reconcile", () => {
     queued.length = 0;
