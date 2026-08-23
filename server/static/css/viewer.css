@@ -1,0 +1,184 @@
+/* Book viewer — all styling. System colour-scheme driven (no manual toggle). */
+
+:root {
+  --bg: #f2f2f2;
+  --text: #1f1f1f;
+  --muted: #6b6b6b;
+  --border: #d4d4d4;
+  --accent: #1ca7e8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1b1f;
+    --text: #e8e8ea;
+    --muted: #9a9aa2;
+    --border: #3a3a42;
+    --accent: #4fb8ee;
+  }
+}
+* { box-sizing: border-box; }
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  position: relative;
+}
+.toolbar button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.toolbar button:hover { background: var(--border); }
+.title {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spacer { flex: 1; }
+.toolbar-spacer { display: none; }
+
+/* Desktop: controls flow inline as a single row; internal spacer right-aligns
+   the "Tiles" input before the zoom label. */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.menu-btn { display: none; }
+
+.tile-budget { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.tile-budget input {
+  width: 64px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.zoom-lbl { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.left {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  background: #808080;
+}
+#view {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+#view:active { cursor: grabbing; }
+
+/* Enter-book affordance overlay drawn per cell (shown on hover / always on touch). */
+.cell-enter {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.stats {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px 10px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 5;
+}
+#prof { bottom: 18px; font-size: 10px; }
+
+#status {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- mobile
+   On touch devices (phones/tablets, any orientation) or narrow windows the
+   toolbar controls collapse into a dropdown menu toggled by the ☰ button; the
+   back button, title and zoom label stay visible. Desktop (mouse) is unchanged. */
+@media (max-width: 900px), (hover: none) and (pointer: coarse) {
+  .toolbar { position: relative; }
+  .menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 40px;
+    min-height: 40px;
+    font-size: 18px;
+    padding: 6px 10px;
+  }
+  .toolbar-spacer { display: block; flex: 1; }
+
+  .controls {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 8px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 8px;
+    min-width: 200px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+    z-index: 30;
+  }
+  .toolbar.menu-open .controls { display: flex; }
+  .controls .spacer { display: none; }
+  .controls button {
+    width: 100%;
+    min-height: 40px;
+  }
+  .tile-budget { justify-content: space-between; }
+}

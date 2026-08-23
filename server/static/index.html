@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Book viewer</title>
+<link rel="stylesheet" href="css/viewer.css">
+</head>
+<body>
+
+<div class="toolbar" id="toolbar">
+  <button id="btn-back" class="nav-back" hidden>← Back</button>
+  <span class="title" id="title">Books</span>
+  <div class="controls" id="controls">
+    <button id="btn-reload">Reload</button>
+    <button id="btn-fit">Fit</button>
+    <button id="btn-tiledbg">Tile debug: off</button>
+    <div class="spacer"></div>
+    <label class="tile-budget">Tiles
+      <input id="tile-budget" type="number" min="4" max="1024" step="4" value="100">
+    </label>
+  </div>
+  <div class="spacer toolbar-spacer"></div>
+  <button id="btn-menu" class="menu-btn" hidden aria-label="Menu">☰</button>
+  <span class="zoom-lbl" id="zoom-lbl">—</span>
+</div>
+
+<div class="left" id="left">
+  <canvas id="view"></canvas>
+  <div class="stats" id="prof" hidden></div>
+  <div class="stats" id="stats" hidden></div>
+</div>
+
+<div id="status">Loading…</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
