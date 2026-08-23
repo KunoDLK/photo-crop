@@ -88,8 +88,13 @@ function render() {
 
 /** Draw a text label above an image cell. */
 function drawLabel(im, sc) {
-  const [lx, ly] = viewport.sceneToDev(im.cellX, im.labelY + LABEL_H);
   const fs = Math.max(10, Math.min(28, LABEL_FONT * sc));
+  // The label keeps a roughly constant on-screen size, so when zoomed out far
+  // enough its reserved band (LABEL_H) shrinks below the text height — hide it
+  // rather than letting it overflow/overlap the shrunken cell.
+  if (LABEL_H * sc < fs) return;
+
+  const [lx, ly] = viewport.sceneToDev(im.cellX, im.labelY + LABEL_H);
   ctx.font = "600 " + fs + "px system-ui, sans-serif";
   ctx.fillStyle = getCss("--text");
   ctx.textBaseline = "bottom";
