@@ -15,7 +15,7 @@ import { buildLayout } from "./layout.js";
 import * as viewport from "./viewport.js";
 import * as render from "./render.js";
 import * as scheduler from "./tiles/scheduler.js";
-import { formatPixels, formatBytes, formatDuration } from "./util.js";
+import { formatPixels, formatBytes, formatDuration, clamp } from "./util.js";
 
 let urlSyncSeq = 0;
 let bookLoadMs = 0;
@@ -190,6 +190,52 @@ export function focusPage(im) {
   showImageInfo(im);
 }
 
+/**
+ * Toggle between 1:1 (L0 pixel) zoom and fit-page-to-screen for the focused
+ * image. With nothing focused, the nearest image to the cursor is selected and
+ * fitted to the screen first (same as right-click); the next press then zooms
+ * to 1:1. Space bar.
+ */
+export function toggleZoomFit() {
+  let im = state.focusedImage;
+  if (!im) {
+    im = imageNearestCursor() || null;
+    if (im) {
+      focusPage(im); // select + fit page to screen (same as right-click)
+      return;
+    }
+  }
+  if (!im) return;
+
+  const oneToOne = 1 / (im.fitFactor * (window.devicePixelRatio || 1)); // 1 source px = 1 device px
+  const atOneToOne = Math.abs(state.view.scale - oneToOne) / oneToOne < 0.05;
+  if (atOneToOne) {
+    focusPage(im); // fit page to screen (same as right-click)
+    return;
+  }
+
+  // 1:1: keep the scene point under the cursor fixed when the cursor is over
+  // the page (same anchoring as wheel zoom), otherwise centre the image.
+  state.setFocusedImage(im);
+  const vpw = state.viewport.w, vph = state.viewport.h;
+  const oldScale = state.view.scale;
+  const sx = (state.cursor.x - state.view.vx) / oldScale;
+  const sy = (state.cursor.y - state.view.vy) / oldScale;
+  const onPage = state.cursor.x >= 0
+    && sx >= im.drawX && sx <= im.drawX + im.drawW
+    && sy >= im.drawY && sy <= im.drawY + im.drawH;
+  state.view.scale = clamp(oneToOne, 0.00005, 64);
+  if (onPage) {
+    state.view.vx = state.cursor.x - sx * state.view.scale;
+    state.view.vy = state.cursor.y - sy * state.view.scale;
+  } else {
+    state.view.vx = vpw / 2 - (im.drawX + im.drawW / 2) * state.view.scale;
+    state.view.vy = vph / 2 - (im.drawY + im.drawH / 2) * state.view.scale;
+  }
+  scheduler.reconcile();
+  render.requestRender();
+}
+
 /** Fit the whole scene and reset the URL/status to the "no image" overview. */
 export function fitOverview() {
   state.setFocusedImage(null);
@@ -271,6 +317,29 @@ function imageAtViewportCenter() {
         sy >= im.labelY && sy <= im.cellY + im.cell) return im;
   }
   return null;
+}
+
+/**
+ * The image whose on-screen rect is closest to the cursor (0 distance when the
+ * cursor is over it); the viewport centre stands in when the cursor is off the
+ * canvas. Used as the target for the Space toggle when nothing is focused.
+ */
+function imageNearestCursor() {
+  const vpw = state.viewport.w, vph = state.viewport.h;
+  const ox = state.cursor.x >= 0 ? state.cursor.x : vpw / 2;
+  const oy = state.cursor.y >= 0 ? state.cursor.y : vph / 2;
+  const sc = state.view.scale;
+  let best = null, bestD = Infinity;
+  for (const im of state.images) {
+    if (im.status === "error") continue;
+    const [dx, dy] = viewport.sceneToDev(im.drawX, im.drawY);
+    const dw = im.drawW * sc, dh = im.drawH * sc;
+    const cx = clamp(ox, dx, dx + dw);
+    const cy = clamp(oy, dy, dy + dh);
+    const d = (ox - cx) * (ox - cx) + (oy - cy) * (oy - cy);
+    if (d < bestD) { bestD = d; best = im; }
+  }
+  return best;
 }
 
 /** True when the image's visible area covers most of the viewport. */

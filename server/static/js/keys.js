@@ -1,13 +1,15 @@
 /**
  * Keyboard shortcuts.
  *
- * F = fit, arrow keys navigate between images, Backspace/Escape returns to the
- * root book list when inside a book.
+ * F = fit overview, R = reload, D = toggle tile debug, Space = toggle
+ * 1:1 / fit-page, arrow keys navigate between images, Backspace/Escape returns
+ * to the root book list when inside a book.
  */
 
 import * as state from "./state.js";
 import { clearSearch } from "./ocr/search.js";
 import { clearNameFilter } from "./nameFilter.js";
+import { toggleTileDebug } from "./ui.js";
 
 let nav = null;
 
@@ -25,6 +27,13 @@ export function installKeys() {
 
     if (e.key === "f" || e.key === "F") {
       if (nav) nav.fitOverview();
+    } else if (e.key === "r" || e.key === "R") {
+      if (nav) nav.reload();
+    } else if (e.key === "d" || e.key === "D") {
+      toggleTileDebug();
+    } else if (e.key === " ") {
+      e.preventDefault();
+      if (nav) nav.toggleZoomFit();
     } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
       if (!state.images.length) return;
       let idx = state.images.indexOf(state.focusedImage);

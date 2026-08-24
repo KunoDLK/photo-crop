@@ -174,6 +174,50 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   line-height: 1;
 }
 
+/* ------------------------------------------------ first-run user tip overlay
+   Shows on first load and fades out on the first interaction. Never blocks
+   input (pointer-events: none) so the first click/wheel passes straight through. */
+
+.user-tip {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 50;
+  max-width: 380px;
+  padding: 12px 14px;
+  background: rgba(24, 24, 28, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  transition: opacity 0.8s ease;
+}
+.user-tip.fading { opacity: 0; }
+.user-tip-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: #fff;
+}
+.user-tip-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  align-items: baseline;
+}
+.user-tip-grid span { color: var(--muted); }
+.user-tip kbd {
+  padding: 0 5px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  font: inherit;
+  white-space: nowrap;
+}
+
 #ocr-overlay {
   position: absolute;
   inset: 0;

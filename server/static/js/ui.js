@@ -39,15 +39,7 @@ function wireDOM() {
     fit.addEventListener("click", () => nav.fitOverview());
   }
   if (tiledbg) {
-    tiledbg.addEventListener("click", () => {
-      state.setTileDebug(!state.tileDebug);
-      tiledbg.textContent = "Tile debug: " + (state.tileDebug ? "on" : "off");
-      const stats = document.getElementById("stats");
-      const prof = document.getElementById("prof");
-      if (stats) stats.hidden = !state.tileDebug;
-      if (prof) prof.hidden = !state.tileDebug;
-      render.requestRender();
-    });
+    tiledbg.addEventListener("click", toggleTileDebug);
   }
 
   const budget = document.getElementById("tile-budget");
@@ -60,6 +52,18 @@ function wireDOM() {
   }
 
   wireMobileMenu();
+}
+
+/** Toggle the tile-debug overlay and its stats bar (toolbar button / D key). */
+export function toggleTileDebug() {
+  state.setTileDebug(!state.tileDebug);
+  const tiledbg = document.getElementById("btn-tiledbg");
+  if (tiledbg) tiledbg.textContent = "Tile debug: " + (state.tileDebug ? "on" : "off");
+  const stats = document.getElementById("stats");
+  const prof = document.getElementById("prof");
+  if (stats) stats.hidden = !state.tileDebug;
+  if (prof) prof.hidden = !state.tileDebug;
+  render.requestRender();
 }
 
 /** Mobile dropdown: toggle the ☰ menu and close it after a choice / outside tap. */

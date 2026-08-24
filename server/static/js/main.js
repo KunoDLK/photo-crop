@@ -21,6 +21,7 @@ import { TileQueue } from "./tiles/queue.js";
 import * as ocrOverlay from "./ocr/overlay.js";
 import * as search from "./ocr/search.js";
 import * as nameFilter from "./nameFilter.js";
+import * as help from "./help.js";
 
 async function bootstrap() {
   const viewEl = document.getElementById("view");
@@ -42,6 +43,7 @@ async function bootstrap() {
   ocrOverlay.init({ viewEl });
   search.init({ nav });
   nameFilter.init({ nav });
+  help.init();
 
   state.on("images-removed", (removed) => {
     for (const im of removed) cache.dropImage(im.id);
