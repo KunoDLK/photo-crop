@@ -141,6 +141,63 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   text-overflow: ellipsis;
 }
 
+/* ------------------------------------------------------- search + OCR overlay
+   Search box in the toolbar, and the invisible OCR text layer above the canvas. */
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.search-box input[type="text"] {
+  width: 180px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.search-box input[type="text"]::placeholder { color: var(--muted); }
+.search-regex {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.search-box button {
+  padding: 2px 8px;
+  line-height: 1;
+}
+
+#ocr-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 10;
+}
+#ocr-scene {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+.ocr-line {
+  position: absolute;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background: transparent;
+  white-space: pre;
+  line-height: 1;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
 /* ---------------------------------------------------------------- mobile
    On touch devices (phones/tablets, any orientation) or narrow windows the
    toolbar controls collapse into a dropdown menu toggled by the ☰ button; the
@@ -181,4 +238,6 @@ body { display: flex; flex-direction: column; overflow: hidden; }
     min-height: 40px;
   }
   .tile-budget { justify-content: space-between; }
+  .search-box { width: 100%; }
+  .search-box input[type="text"] { flex: 1; width: auto; }
 }

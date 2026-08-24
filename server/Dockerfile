@@ -16,6 +16,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ocl-icd-libopencl1 \
+        tesseract-ocr \
+        tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /etc/OpenCL/vendors \
     && printf 'libnvidia-opencl.so.1\n' > /etc/OpenCL/vendors/nvidia.icd

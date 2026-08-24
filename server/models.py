@@ -64,3 +64,52 @@ class ImageInfo(BaseModel):
     max_level: int
     file_size: int
     hash: str
+
+
+class OCRWord(BaseModel):
+    """A single recognized word with its bounding box in source-pixel coords."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+    text: str
+    conf: float
+
+
+class OCRLine(BaseModel):
+    """A reconstructed line (words grouped by Tesseract line id)."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+    text: str
+
+
+class OCRPage(BaseModel):
+    """OCR result for one page (word + line boxes in source-pixel coords)."""
+
+    page_id: str
+    width: int
+    height: int
+    version: int
+    lines: list[OCRLine]
+    words: list[OCRWord]
+
+
+class SearchHit(BaseModel):
+    """A page whose OCR text matched the query, with the matching words."""
+
+    page_id: str
+    hits: list[OCRWord]
+
+
+class SearchResponse(BaseModel):
+    """Response body for ``GET /api/search``."""
+
+    book: str
+    query: str
+    regex: bool
+    matches: list[SearchHit]
+    pending: int = 0

@@ -37,6 +37,17 @@ export function setHasImages(v) { hasImages = v; }
 export let tileDebug = false;
 export function setTileDebug(v) { tileDebug = v; }
 
+/** True while Ctrl is held, gating text selection on the OCR overlay. */
+export let textSelect = false;
+export function setTextSelect(v) { textSelect = v; }
+
+/** True while a text search is active (canvas dims to matched text). */
+export let searchActive = false;
+export function setSearchActive(v) { searchActive = v; }
+
+/** Cached OCR page data keyed by image id -> { lines, words, ... }. */
+export const ocrCache = new Map();
+
 /** Image currently focused by arrow-key navigation / double-click. */
 export let focusedImage = null;
 export function setFocusedImage(im) { focusedImage = im; }
@@ -73,3 +84,5 @@ export function emit(event, payload) {
 //   "location-changed" — navigated between root and a book
 //   "status"           — status-bar text changed (arg: string)
 //   "interacting"      — pan/zoom gesture state changed
+//   "search-changed"   — search mode applied or cleared
+//   "text-select"      — Ctrl held/released (arg: boolean)

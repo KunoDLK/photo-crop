@@ -18,6 +18,8 @@ import * as compositor from "./compositor.js";
 import * as scheduler from "./tiles/scheduler.js";
 import { TileCache } from "./tiles/tileCache.js";
 import { TileQueue } from "./tiles/queue.js";
+import * as ocrOverlay from "./ocr/overlay.js";
+import * as search from "./ocr/search.js";
 
 async function bootstrap() {
   const viewEl = document.getElementById("view");
@@ -36,6 +38,8 @@ async function bootstrap() {
   keys.init({ nav });
   keys.installKeys();
   ui.init({ cache, queue, nav });
+  ocrOverlay.init({ viewEl });
+  search.init({ nav });
 
   state.on("images-removed", (removed) => {
     for (const im of removed) cache.dropImage(im.id);

@@ -15,6 +15,13 @@
     <button id="btn-reload">Reload</button>
     <button id="btn-fit">Fit</button>
     <button id="btn-tiledbg">Tile debug: off</button>
+    <div class="search-box">
+      <input id="search-input" type="text" placeholder="Search…" autocomplete="off" spellcheck="false">
+      <label class="search-regex" title="Treat query as regex">.*
+        <input id="search-regex" type="checkbox">
+      </label>
+      <button id="search-clear" hidden aria-label="Clear search">✕</button>
+    </div>
     <div class="spacer"></div>
     <label class="tile-budget">Tiles
       <input id="tile-budget" type="number" min="4" max="1024" step="4" value="100">
@@ -27,6 +34,7 @@
 
 <div class="left" id="left">
   <canvas id="view"></canvas>
+  <div id="ocr-overlay"><div id="ocr-scene"></div></div>
   <div class="stats" id="prof" hidden></div>
   <div class="stats" id="stats" hidden></div>
 </div>

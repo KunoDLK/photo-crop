@@ -25,6 +25,11 @@ class Settings(BaseSettings):
         jpeg_quality: JPEG quality (0-100) used for tile encoding.
         jpeg_progressive: Emit progressive (SOF2) JPEGs.
         opencl: Whether to attempt OpenCL-accelerated resampling.
+        ocr_cache_dir: Directory backing the on-disk OCR result cache (JSON).
+        ocr_max_dim: Long-edge pixel target OCR downscales pages to before
+            Tesseract (scans are huge; full-res OCR is needlessly slow).
+        ocr_lang: Tesseract language code(s), e.g. "eng".
+        ocr_conf_threshold: Minimum word confidence (0-100) to keep a word.
         host: Bind address.
         port: Bind port.
     """
@@ -40,6 +45,10 @@ class Settings(BaseSettings):
     jpeg_quality: int = 82
     jpeg_progressive: bool = True
     opencl: bool = True
+    ocr_cache_dir: Path = Path("/archive/cache/ocr")
+    ocr_max_dim: int = 3000
+    ocr_lang: str = "eng"
+    ocr_conf_threshold: int = 40
     host: str = "0.0.0.0"
     port: int = 8000
 

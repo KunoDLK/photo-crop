@@ -27,6 +27,13 @@ export const MAX_INFLIGHT = 6;
 /** Quiet period after the last input before the scheduler "settles". */
 export const SETTLE_MS = 500;
 
+/**
+ * Progressive refinement: freshly revealed areas are filled in coarse-to-fine,
+ * requesting tiles at most this many levels finer than the finest tile already
+ * cached for their area (1 = one level at a time: L6 -> L5 -> L4 -> target).
+ */
+export const PROGRESSIVE_STEP = 1;
+
 /** Decoded-tile cache byte budget (RAM), protected root tiles excluded. */
 export const CACHE_MAX_BYTES = 256 * 1024 * 1024;
 
@@ -48,3 +55,18 @@ export const LEVEL_COLORS = [
   "#ff4d4d", "#ff9f1c", "#ffe135", "#3ddc3d",
   "#2ee6e6", "#4d94ff", "#b06bff", "#ff5ce1",
 ];
+
+/**
+ * OCR overlay: an image's OCR is fetched once its on-screen width exceeds this
+ * (device px) — at overview zoom the text is too small to select, so we defer.
+ */
+export const OCR_LOAD_MIN_PX = 300;
+
+/** Minimum on-screen line height (device px) at which overlay text shows. */
+export const OCR_MIN_FONT = 5;
+
+/** Search-mode dim strength (0-1) over non-matching areas. */
+export const SEARCH_DIM_ALPHA = 0.62;
+
+/** Accent color outlining matched text in search mode. */
+export const SEARCH_HIT_COLOR = "#1ca7e8";

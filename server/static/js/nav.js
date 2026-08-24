@@ -20,6 +20,12 @@ import { formatPixels, formatBytes, formatDuration } from "./util.js";
 let urlSyncSeq = 0;
 let bookLoadMs = 0;
 let currentSig = null;
+let currentItems = [];
+
+/** The normalized items of the current (full, unfiltered) listing. */
+export function getCurrentItems() {
+  return currentItems;
+}
 
 /** Load the root book list and show it. */
 export async function showBooks(force = false, keepView = null) {
@@ -50,6 +56,7 @@ export async function showBooks(force = false, keepView = null) {
       maxLevel: b.cover.max_level,
       version: b.cover.mtime,
     }));
+    currentItems = items;
     buildLayout(items);
     updateChrome();
     if (keepView) {
@@ -99,6 +106,7 @@ export async function enterBook(book, pageId = null, force = false, keepView = n
     state.location.type = "book";
     state.location.book = book;
     state.setFocusedImage(null);
+    currentItems = items;
     buildLayout(items);
     updateChrome();
     bookLoadMs = performance.now() - t0;

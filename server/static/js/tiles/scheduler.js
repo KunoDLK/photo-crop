@@ -9,10 +9,15 @@
  *   - limits zoom-in requests so requested + rendered tiles stay within
  *     MAX_DISPLAYED_TILES (coarse zoom-out tiles are fetched freely since each
  *     arrival frees its fine descendants);
- *   - prioritizes tiles nearest the cursor/centre.
+ *   - refines each area progressively: only tiles at most one step finer than
+ *     the finest cached ancestor are requested, so freshly revealed areas fill
+ *     in coarse-to-fine (e.g. L6 -> L5 -> L4 -> ... -> target) instead of
+ *     waiting on the full target sweep;
+ *   - prioritizes the areas showing the coarsest tile first (worst visible
+ *     quality wins), then nearest the cursor/centre.
  */
 
-import { TILE, MAX_DISPLAYED_TILES, PREFETCH_NEIGHBORS } from "../config.js";
+import { TILE, MAX_DISPLAYED_TILES, PREFETCH_NEIGHBORS, PROGRESSIVE_STEP } from "../config.js";
 import * as state from "../state.js";
 import * as viewport from "../viewport.js";
 import { tileRange, tileCovered } from "../compositor.js";
@@ -80,34 +85,60 @@ export function ensureRootTile(im) {
   });
 }
 
-/** Compute the desired target-level tiles for an image, priority-sorted. */
-export function desiredTiles(im) {
+/**
+ * The tiles to request for an image: for every level from one below the root
+ * down to the target, request the visible tiles that are the next refinement
+ * step for their area (finest cached ancestor at most PROGRESSIVE_STEP levels
+ * coarser) and are not yet covered by finer cached tiles. Each request records
+ * the coarseness `A` of the tile currently covering its area so the caller can
+ * prioritize the areas showing the lowest-quality tile first.
+ */
+export function nextStepTiles(im) {
   const L = im.targetLevel == null ? im.maxLevel : im.targetLevel;
+  if (L >= im.maxLevel || imageComplete(im)) return [];
   const vpw = state.viewport.w, vph = state.viewport.h;
   const sc = state.view.scale;
   const [dx, dy] = viewport.sceneToDev(im.drawX, im.drawY);
   const dw = im.drawW * sc, dh = im.drawH * sc;
-  const r = tileRange(im, L, sc, dx, dy, dw, dh, vpw, vph);
-  if (r.tx0 > r.tx1 || r.ty0 > r.ty1) return [];
-
   const ox = state.cursor.x >= 0 ? state.cursor.x : vpw / 2;
   const oy = state.cursor.y >= 0 ? state.cursor.y : vph / 2;
-  const twsc = TILE * Math.pow(2, L) * im.fitFactor * sc;
 
   const list = [];
-  for (let ty = r.ty0; ty <= r.ty1; ty++) {
-    for (let tx = r.tx0; tx <= r.tx1; tx++) {
-      const key = tileKey(im.id, L, tx, ty);
-      if (cache.has(key)) continue;
-      if (queue.has(key)) continue;
-      const cx = dx + (tx + 0.5) * twsc;
-      const cy = dy + (ty + 0.5) * twsc;
-      const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
-      list.push({ key, url: tileUrl(im.bookId, im.pageId, im.version, L, tx, ty), priority: d2, imId: im.id, L, tx, ty });
+  for (let M = im.maxLevel - 1; M >= L; M -= PROGRESSIVE_STEP) {
+    const r = tileRange(im, M, sc, dx, dy, dw, dh, vpw, vph);
+    if (r.tx0 > r.tx1 || r.ty0 > r.ty1) continue;
+    const twsc = TILE * Math.pow(2, M) * im.fitFactor * sc;
+    for (let ty = r.ty0; ty <= r.ty1; ty++) {
+      for (let tx = r.tx0; tx <= r.tx1; tx++) {
+        const key = tileKey(im.id, M, tx, ty);
+        if (cache.has(key)) continue;
+        if (queue.has(key)) continue;
+        if (tileCovered(im, M, tx, ty, L, sc, dx, dy, dw, dh)) continue;
+        const A = finestCachedAncestor(im, M, tx, ty);
+        if (A > M + PROGRESSIVE_STEP) continue; // deeper step; wait for the parent
+        const cx = dx + (tx + 0.5) * twsc;
+        const cy = dy + (ty + 0.5) * twsc;
+        const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
+        list.push({ key, url: tileUrl(im.bookId, im.pageId, im.version, M, tx, ty), priority: d2, A, imId: im.id, L: M, tx, ty });
+      }
     }
   }
-  list.sort((a, b) => a.priority - b.priority);
   return list;
+}
+
+/**
+ * Coarseness of the finest cached tile covering (tx, ty) at `level`: walk up
+ * the ancestors until one is cached. The root is always cached for a ready
+ * image, so the walk terminates; a still-loading image falls back to the root.
+ */
+function finestCachedAncestor(im, level, tx, ty) {
+  let cx = tx, cy = ty;
+  for (let lv = level + 1; lv <= im.maxLevel; lv++) {
+    cx = Math.floor(cx / 2);
+    cy = Math.floor(cy / 2);
+    if (cache.has(tileKey(im.id, lv, cx, cy))) return lv;
+  }
+  return im.maxLevel;
 }
 
 /** Count cached tiles the compositor would draw right now (all visible levels). */
@@ -173,12 +204,13 @@ export function reconcile() {
     if (imageComplete(im)) cache.pruneToLevel(im, im.targetLevel);
   }
 
-  // Build one priority-ordered list across all visible images (nearest-first).
+  // Build one priority-ordered list across all visible images: areas showing
+  // the coarsest tile first (worst visible quality), then nearest-first.
   const desired = [];
   for (const im of visible) {
-    for (const req of desiredTiles(im)) desired.push(req);
+    for (const req of nextStepTiles(im)) desired.push(req);
   }
-  desired.sort((a, b) => a.priority - b.priority);
+  desired.sort((a, b) => (b.A - a.A) || (a.priority - b.priority));
 
   // Lazy: only count on-screen cached tiles when zoom-in actually needs the
   // budget check (during pan/zoom-out it is unnecessary and would just cost CPU).

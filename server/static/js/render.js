@@ -10,13 +10,18 @@ import { TILE, LABEL_FONT, LABEL_H, LEVEL_COLORS } from "./config.js";
 import * as state from "./state.js";
 import * as viewport from "./viewport.js";
 import * as compositor from "./compositor.js";
+import * as ocrOverlay from "./ocr/overlay.js";
+import { drawHighlights } from "./ocr/search.js";
 import { getCss } from "./util.js";
+import { tileKey } from "./tiles/tileCache.js";
 
 let canvas = null;
 let ctx = null;
 let dpr = 1;
 let needRender = false;
 let cache = null;
+let debugLayer = null; // offscreen tint layer for the tile-debug overlay
+let debugCtx = null;
 
 /** Provide the decoded-tile cache so the debug overlay can enumerate tiles. */
 export function initDebug(deps) {
@@ -80,10 +85,14 @@ function render() {
 
   if (state.tileDebug) drawDebugOverlay(sc);
 
+  if (state.searchActive) drawHighlights(ctx, sc);
+
   const lbl = document.getElementById("zoom-lbl");
   if (lbl) lbl.textContent = Math.round(state.view.scale * 100) + "%";
 
   if (state.frameHook) state.frameHook();
+
+  ocrOverlay.update();
 }
 
 /** Draw a text label above an image cell. */
@@ -111,41 +120,78 @@ function drawFrame(im, sc) {
 }
 
 /**
- * Tile-debug overlay: color every cached tile by its level so overlapping levels
- * (coarse underlays vs fine tiles) are easy to tell apart. Each tile gets a
- * tinted fill, a colored border, and a "L<level> <tx>,<ty>" label.
+ * Tile-debug overlay: color cached tiles by level so the level active at each
+ * position is clear. Tiles are drawn coarse-to-fine onto a dedicated tint layer,
+ * and each tile first punches its own rect out of that layer, so a fine tile
+ * fully replaces any coarser tint/border underneath (no stacked colors). Each
+ * tile gets a translucent fill, a black outline inset inside its edge, a colored
+ * border just inside that, and a "L<level> <tx>,<ty>" label when large enough.
  */
 function drawDebugOverlay(sc) {
   if (!cache) return;
   const vpw = state.viewport.w, vph = state.viewport.h;
-  const byId = new Map(state.images.map((im) => [im.id, im]));
+  if (!vpw || !vph) return;
 
-  ctx.font = "600 10px system-ui, sans-serif";
-  ctx.textBaseline = "top";
-
-  for (const key of cache.map.keys()) {
-    const parts = key.split(":");
-    const id = Number(parts[0]);
-    const level = Number(parts[1]);
-    const tx = Number(parts[2]);
-    const ty = Number(parts[3]);
-    const im = byId.get(id);
-    if (!im) continue;
-
-    const [dx, dy] = viewport.sceneToDev(im.drawX, im.drawY);
-    const twsc = TILE * Math.pow(2, level) * im.fitFactor * sc;
-    const tdx = dx + tx * twsc, tdy = dy + ty * twsc;
-    if (tdx + twsc < 0 || tdx > vpw || tdy + twsc < 0 || tdy > vph) continue;
-
-    const col = LEVEL_COLORS[level % LEVEL_COLORS.length];
-    ctx.fillStyle = col + "2e";
-    ctx.fillRect(tdx, tdy, twsc, twsc);
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(tdx + 0.5, tdy + 0.5, twsc - 1, twsc - 1);
-    ctx.fillStyle = col;
-    ctx.fillText("L" + level + " " + tx + "," + ty, tdx + 3, tdy + 3);
+  if (!debugLayer) {
+    debugLayer = document.createElement("canvas");
+    debugCtx = debugLayer.getContext("2d");
   }
+  if (debugLayer.width !== canvas.width || debugLayer.height !== canvas.height) {
+    debugLayer.width = canvas.width;
+    debugLayer.height = canvas.height;
+  }
+  debugCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  debugCtx.clearRect(0, 0, vpw, vph);
+  debugCtx.font = "600 10px system-ui, sans-serif";
+  debugCtx.textBaseline = "top";
+
+  for (const im of state.images) {
+    if (!viewport.isImageVisible(im, vpw, vph)) continue;
+    const [dx, dy] = viewport.sceneToDev(im.drawX, im.drawY);
+    const dw = im.drawW * sc, dh = im.drawH * sc;
+
+    for (let lv = im.maxLevel; lv >= 0; lv--) {
+      const r = compositor.tileRange(im, lv, sc, dx, dy, dw, dh, vpw, vph);
+      if (r.tx0 > r.tx1 || r.ty0 > r.ty1) continue;
+      const twsc = TILE * Math.pow(2, lv) * im.fitFactor * sc;
+      for (let ty = r.ty0; ty <= r.ty1; ty++) {
+        for (let tx = r.tx0; tx <= r.tx1; tx++) {
+          if (!cache.has(tileKey(im.id, lv, tx, ty))) continue;
+          const tdx = dx + tx * twsc, tdy = dy + ty * twsc;
+          if (tdx + twsc < 0 || tdx > vpw || tdy + twsc < 0 || tdy > vph) continue;
+
+          // Punch this tile out of the tint layer first so any coarser
+          // tint/border underneath it disappears: the finest cached tile wins
+          // at every pixel, even with partial coverage.
+          debugCtx.globalCompositeOperation = "destination-out";
+          debugCtx.fillRect(tdx, tdy, twsc, twsc);
+          debugCtx.globalCompositeOperation = "source-over";
+
+          const col = LEVEL_COLORS[lv % LEVEL_COLORS.length];
+          debugCtx.fillStyle = col + "2e";
+          debugCtx.fillRect(tdx, tdy, twsc, twsc);
+
+          // Black outline inset inside the tile, colored border just inside it,
+          // so the active level reads clearly when several levels overlap.
+          const inset = Math.min(3, Math.max(1, twsc * 0.08));
+          const bw = Math.max(1, Math.min(2, twsc * 0.02));
+          debugCtx.strokeStyle = "rgba(0,0,0,0.85)";
+          debugCtx.lineWidth = bw;
+          debugCtx.strokeRect(tdx + inset + 0.5, tdy + inset + 0.5, twsc - 2 * inset - 1, twsc - 2 * inset - 1);
+          debugCtx.strokeStyle = col;
+          debugCtx.lineWidth = 1;
+          debugCtx.strokeRect(tdx + inset + bw + 0.5, tdy + inset + bw + 0.5, twsc - 2 * (inset + bw) - 1, twsc - 2 * (inset + bw) - 1);
+
+          if (twsc >= 40) {
+            debugCtx.fillStyle = col;
+            debugCtx.fillText("L" + lv + " " + tx + "," + ty, tdx + inset + bw + 3, tdy + inset + bw + 3);
+          }
+        }
+      }
+    }
+  }
+
+  ctx.drawImage(debugLayer, 0, 0, vpw, vph);
 }
 
 /** Draw the "enter book" affordance and record its (padded) hit rect. */
