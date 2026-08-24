@@ -206,12 +206,24 @@ export function fitOverview() {
 }
 
 /**
- * Called after navigation settles: promote the page under the viewport centre to
- * the active location — but only when it dominates the screen (zoomed in enough).
- * Zooming back out clears the active page and resets the URL + status message.
+ * Called after navigation settles or a search narrows the listing: promote the
+ * page under the viewport centre to the active location when it dominates the
+ * screen, or select the page outright when the listing is a single image. Zooming
+ * back out clears the active page and resets the URL + status message.
  */
 export function updateActiveImage() {
   if (state.location.type !== "book") return;
+  // A search (or a one-page book) narrowed the listing to a single image:
+  // select it outright, regardless of how much of the viewport it covers.
+  if (state.images.length === 1) {
+    const only = state.images[0];
+    if (only.kind === "page" && only !== state.focusedImage) {
+      state.setFocusedImage(only);
+      syncUrl(only.bookId, only.pageId);
+      showImageInfo(only);
+    }
+    return;
+  }
   const im = imageAtViewportCenter();
   if (im && im.kind === "page" && imageDominant(im)) {
     if (im !== state.focusedImage) {

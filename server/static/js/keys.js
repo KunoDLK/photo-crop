@@ -7,6 +7,7 @@
 
 import * as state from "./state.js";
 import { clearSearch } from "./ocr/search.js";
+import { clearNameFilter } from "./nameFilter.js";
 
 let nav = null;
 
@@ -32,6 +33,7 @@ export function installKeys() {
       if (idx >= state.images.length) idx = state.images.length - 1;
       if (nav) nav.focusPage(state.images[idx]);
     } else if (e.key === "Escape") {
+      if (clearNameFilter()) return; // consumed: image-name filter cleared
       if (state.searchActive) {
         clearSearch();
       } else if (state.location.type === "book" && nav) {

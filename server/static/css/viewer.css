@@ -159,6 +159,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   font-size: 13px;
 }
 .search-box input[type="text"]::placeholder { color: var(--muted); }
+.search-box.name-search input[type="text"] { width: 150px; }
 .search-regex {
   display: flex;
   align-items: center;

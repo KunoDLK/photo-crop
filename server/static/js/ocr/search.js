@@ -13,6 +13,7 @@ import * as render from "../render.js";
 import * as scheduler from "../tiles/scheduler.js";
 import { searchBook } from "../api/ocr.js";
 import { buildLayout } from "../layout.js";
+import { clearNameFilter } from "../nameFilter.js";
 import { SEARCH_DIM_ALPHA, SEARCH_HIT_COLOR } from "../config.js";
 
 let nav = null;
@@ -69,6 +70,7 @@ function focusBox() {
 async function runSearch() {
   const q = box.value.trim();
   if (!q) { clearSearch(); return; }
+  clearNameFilter(); // text search and name filter are mutually exclusive
   if (state.location.type !== "book" || !state.location.book) {
     state.setStatus("Search is only available inside a book");
     return;
@@ -103,6 +105,7 @@ function applyResults(matches, pending, fit) {
   if (fit) viewport.fitView(state.viewport.w, state.viewport.h);
   scheduler.reconcile();
   render.requestRender();
+  if (nav) nav.updateActiveImage(); // auto-select when the search leaves one page
 
   let totalHits = 0;
   for (const m of matches) totalHits += m.hits.length;
