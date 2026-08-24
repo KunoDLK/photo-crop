@@ -59,7 +59,11 @@ function onWheel(e) {
   e.preventDefault();
   const rect = e.currentTarget.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-  const f = Math.exp(-e.deltaY * 0.0012);
+  // Trackpad pinches arrive as ctrlKey wheel events with tiny per-event deltas
+  // (macOS: ~1-3 px), so they need a much stronger factor than mouse-wheel
+  // notches. Clamp the per-event factor so a ctrl+wheel notch can't jump wildly.
+  const k = e.ctrlKey ? 0.036 : 0.0012;
+  const f = clamp(Math.exp(-e.deltaY * k), 0.5, 2);
   const ns = clamp(state.view.scale * f, 0.00005, 64);
   const wx = (mx - state.view.vx) / state.view.scale;
   const wy = (my - state.view.vy) / state.view.scale;
