@@ -365,7 +365,10 @@ async function syncUrl(book, page) {
   }
 }
 
-/** Update the title and back-button visibility for the current location. */
+/** Site name shown in the browser tab when no book is open. */
+const SITE_TITLE = "Hyper.K Archive";
+
+/** Update the toolbar title, back-button visibility, and tab title. */
 function updateChrome() {
   const title = document.getElementById("title");
   const back = document.getElementById("btn-back");
@@ -376,4 +379,22 @@ function updateChrome() {
     if (title) title.textContent = "Books";
     if (back) back.hidden = true;
   }
+  updateDocumentTitle();
 }
+
+/** Mirror the current location into the browser tab title. */
+function updateDocumentTitle() {
+  if (state.location.type !== "book" || !state.location.book) {
+    document.title = SITE_TITLE;
+    return;
+  }
+  const bookName = state.location.book.name;
+  const im = state.focusedImage;
+  document.title = im && im.kind === "page"
+    ? `${bookName} • Page ${im.order}`
+    : bookName;
+}
+
+// Focusing/unfocusing a page (double-click, arrows, zoom overview) changes the
+// tab title without a navigation, so keep the chrome in sync via the event bus.
+state.on("focus-changed", () => updateDocumentTitle());

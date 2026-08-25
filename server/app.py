@@ -25,11 +25,18 @@ from .tiles.manager import TileService
 
 class NoCacheStaticFiles(StaticFiles):
     """StaticFiles that sends ``no-cache`` so the viewer HTML/JS/CSS is always
-    revalidated during development (tiles are served separately and stay immutable)."""
+    revalidated during development (tiles are served separately and stay immutable).
+    Favicons are exempt and cached long-term so browser favicon services can
+    store them (Chrome drops tab icons that are not cacheable)."""
+
+    IMMUTABLE = {"favicon-16.png", "favicon-32.png"}
 
     async def get_response(self, path: str, scope) -> Response:
         response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "no-cache"
+        if path in self.IMMUTABLE:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
 
