@@ -231,6 +231,13 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   top: 0;
   transform-origin: 0 0;
 }
+#ocr-marquee {
+  position: absolute;
+  border: 1px solid #1ca7e8;
+  background: rgba(28, 167, 232, 0.15);
+  pointer-events: none;
+  z-index: 11;
+}
 .ocr-line {
   position: absolute;
   color: transparent;
@@ -238,15 +245,19 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   background: transparent;
   white-space: pre;
   line-height: 1;
-  user-select: text;
-  -webkit-user-select: text;
-  cursor: text;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.ocr-line.selected {
+  background: rgba(28, 167, 232, 0.45);
 }
 .ocr-line.ocr-debug {
   color: #fff;
   -webkit-text-fill-color: #fff;
   background: rgba(0, 0, 0, 0.6);
-  cursor: default;
+}
+.ocr-line.ocr-debug.selected {
+  background: rgba(28, 167, 232, 0.6);
 }
 
 /* ---------------------------------------------------------------- mobile
