@@ -268,15 +268,31 @@ function rebuildSpans() {
         el.textContent = line.text;
         el.style.left = (im.drawX + line.x * im.fitFactor) + "px";
         el.style.top = (im.drawY + line.y * im.fitFactor) + "px";
+        el.style.width = (line.w * im.fitFactor) + "px";
         el.style.fontSize = (line.h * im.fitFactor) + "px";
         spans.push({ im, line, el });
         sceneEl.appendChild(el);
+        fitSpanToBox(el, line.w * im.fitFactor);
       }
     }
   }
   dirtySpans = false;
   applySelectionHighlight();
   updateVisibility();
+}
+
+/**
+ * Stretch or squash a span horizontally so its text exactly fills the OCR
+ * bounding box. Tesseract's boxes only approximate the glyph run, so the text
+ * can come out narrower or wider than the printed line; a scaleX on the span
+ * (in scene space, so pan/zoom still applies) lines it up with the image.
+ * Measured via scrollWidth right after append, so layout is fresh.
+ */
+function fitSpanToBox(el, boxW) {
+  const naturalW = el.scrollWidth;
+  if (!(naturalW > 0) || !(boxW > 0) || naturalW === boxW) return;
+  el.style.transform = `scaleX(${boxW / naturalW})`;
+  el.style.transformOrigin = "left top";
 }
 
 /** Hide spans too small to select (avoids tiny/overlapping hit targets). */

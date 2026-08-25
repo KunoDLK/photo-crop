@@ -244,6 +244,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   -webkit-text-fill-color: transparent;
   background: transparent;
   white-space: pre;
+  overflow: hidden;
   line-height: 1;
   user-select: none;
   -webkit-user-select: none;
