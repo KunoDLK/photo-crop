@@ -242,6 +242,12 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   -webkit-user-select: text;
   cursor: text;
 }
+.ocr-line.ocr-debug {
+  color: #fff;
+  -webkit-text-fill-color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  cursor: default;
+}
 
 /* ---------------------------------------------------------------- mobile
    On touch devices (phones/tablets, any orientation) or narrow windows the

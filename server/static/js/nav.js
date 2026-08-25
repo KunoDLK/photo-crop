@@ -254,8 +254,9 @@ export function fitOverview() {
 /**
  * Called after navigation settles or a search narrows the listing: promote the
  * page under the viewport centre to the active location when it dominates the
- * screen, or select the page outright when the listing is a single image. Zooming
- * back out clears the active page and resets the URL + status message.
+ * screen (which also pulls in its OCR overlay text), or select the page outright
+ * when the listing is a single image. Zooming back out clears the active page
+ * and resets the URL + status message.
  */
 export function updateActiveImage() {
   if (state.location.type !== "book") return;

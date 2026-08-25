@@ -11,6 +11,7 @@
 
 import * as state from "../state.js";
 import * as viewport from "../viewport.js";
+import * as render from "../render.js";
 import { fetchPageOcr } from "../api/ocr.js";
 import { OCR_LOAD_MIN_PX, OCR_MIN_FONT } from "../config.js";
 
@@ -23,6 +24,7 @@ let spans = []; // { im, line, el }
 let dirtySpans = false;
 let lastTransform = "";
 let lastScale = -1;
+let lastDebug = false;
 
 /** Wire the overlay to the canvas and its DOM containers. Call once. */
 export function init(deps) {
@@ -36,6 +38,9 @@ export function init(deps) {
   });
   state.on("images-removed", (removed) => {
     for (const im of removed) loaded.delete(im.id);
+    dirtySpans = true;
+  });
+  state.on("focus-changed", () => {
     dirtySpans = true;
   });
 }
@@ -72,6 +77,10 @@ export function update() {
 
   ensureLoaded();
 
+  if (state.tileDebug !== lastDebug) {
+    lastDebug = state.tileDebug;
+    dirtySpans = true;
+  }
   if (dirtySpans) rebuildSpans();
   if (scale !== lastScale) {
     lastScale = scale;
@@ -79,46 +88,71 @@ export function update() {
   }
 }
 
-/** Fetch OCR for visible images that are large enough (or focused) to matter. */
+/**
+ * Fetch OCR lazily, and only where it matters: the selected image (once it is
+ * large enough to read), or visible matched pages during a search. Pushing to
+ * the screen happens on arrival: the fetch stores the data and marks the spans
+ * dirty, so the next frame rebuilds them for the focused image.
+ */
 function ensureLoaded() {
-  const vpw = state.viewport.w, vph = state.viewport.h;
-  for (const im of state.images) {
-    if (!viewport.isImageVisible(im, vpw, vph)) continue;
-    if (im.status !== "ready") continue;
-    const large = im.drawW * state.view.scale >= OCR_LOAD_MIN_PX;
-    if (!large && im !== state.focusedImage) continue;
-    if (loaded.has(im.id) || pending.has(im.id)) continue;
-    pending.add(im.id);
-    fetchPageOcr(im.bookId, im.pageId)
-      .then((data) => {
-        pending.delete(im.id);
-        loaded.set(im.id, data);
-        dirtySpans = true;
-      })
-      .catch(() => {
-        pending.delete(im.id);
-      });
+  if (state.searchActive) {
+    // Search mode: warm OCR for visible matched pages so their text overlay is
+    // ready as soon as one of them is focused (a single-result search is
+    // auto-selected immediately). Bounded by what is actually on screen.
+    const vpw = state.viewport.w, vph = state.viewport.h;
+    for (const im of state.images) {
+      if (!im.searchHits) continue;
+      if (im.status !== "ready") continue;
+      if (!viewport.isImageVisible(im, vpw, vph)) continue;
+      requestOcr(im);
+    }
+    return;
   }
+  const im = state.focusedImage;
+  if (!im || im.status !== "ready") return;
+  if (im.drawW * state.view.scale < OCR_LOAD_MIN_PX) return;
+  requestOcr(im);
 }
 
-/** Rebuild all spans from the currently loaded OCR (positions in scene px). */
+/** Fetch one page's OCR once (deduped); push to screen when it arrives. */
+function requestOcr(im) {
+  if (loaded.has(im.id) || pending.has(im.id)) return;
+  pending.add(im.id);
+  fetchPageOcr(im.bookId, im.pageId)
+    .then((data) => {
+      pending.delete(im.id);
+      loaded.set(im.id, data);
+      // Ensure a frame renders the new spans even if tiles are quiet (e.g. the
+      // page was already cached): otherwise the text waits for the next input.
+      if (state.focusedImage && state.focusedImage.id === im.id) {
+        dirtySpans = true;
+        render.requestRender();
+      }
+    })
+    .catch(() => {
+      pending.delete(im.id);
+    });
+}
+
+/** Rebuild the spans for the focused image only (bounds the DOM to one page). */
 function rebuildSpans() {
   if (!sceneEl) return;
   sceneEl.textContent = "";
   spans = [];
-  const byId = new Map(state.images.map((im) => [im.id, im]));
-  for (const [id, data] of loaded) {
-    const im = byId.get(id);
-    if (!im) continue;
-    for (const line of data.lines || []) {
-      const el = document.createElement("span");
-      el.className = "ocr-line";
-      el.textContent = line.text;
-      el.style.left = (im.drawX + line.x * im.fitFactor) + "px";
-      el.style.top = (im.drawY + line.y * im.fitFactor) + "px";
-      el.style.fontSize = (line.h * im.fitFactor) + "px";
-      spans.push({ im, line, el });
-      sceneEl.appendChild(el);
+  const im = state.focusedImage;
+  if (im) {
+    const data = loaded.get(im.id);
+    if (data) {
+      for (const line of data.lines || []) {
+        const el = document.createElement("span");
+        el.className = state.tileDebug ? "ocr-line ocr-debug" : "ocr-line";
+        el.textContent = line.text;
+        el.style.left = (im.drawX + line.x * im.fitFactor) + "px";
+        el.style.top = (im.drawY + line.y * im.fitFactor) + "px";
+        el.style.fontSize = (line.h * im.fitFactor) + "px";
+        spans.push({ im, line, el });
+        sceneEl.appendChild(el);
+      }
     }
   }
   dirtySpans = false;

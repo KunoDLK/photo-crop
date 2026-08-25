@@ -50,7 +50,10 @@ export const ocrCache = new Map();
 
 /** Image currently focused by arrow-key navigation / double-click. */
 export let focusedImage = null;
-export function setFocusedImage(im) { focusedImage = im; }
+export function setFocusedImage(im) {
+  focusedImage = im;
+  emit("focus-changed", im);
+}
 
 /** Per-frame hook invoked after each render (used for the stats overlay). */
 export let frameHook = null;
@@ -86,3 +89,4 @@ export function emit(event, payload) {
 //   "interacting"      — pan/zoom gesture state changed
 //   "search-changed"   — search mode applied or cleared
 //   "text-select"      — Ctrl held/released (arg: boolean)
+//   "focus-changed"    — the focused image changed (arg: image or null)
