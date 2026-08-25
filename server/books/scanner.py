@@ -119,7 +119,7 @@ def _scan_pages(book_dir: Path, tile_size: int) -> tuple[str, list[PageInfo]]:
             "page_id": entry.name,
             "name": entry.name,
             "group": 0,
-            "order": 0,
+            "order": "",
             "width": w,
             "height": h,
             "max_level": max_level(w, h, tile_size),
@@ -141,7 +141,7 @@ def _scan_pages(book_dir: Path, tile_size: int) -> tuple[str, list[PageInfo]]:
         max_group = matched[-1]["group"] if matched else 0
         for i, record in enumerate(extra, start=1):
             record["group"] = max_group + 1
-            record["order"] = i
+            record["order"] = str(i)
 
     pages = [
         PageInfo(

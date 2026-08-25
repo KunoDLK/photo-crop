@@ -43,7 +43,7 @@ export function buildLayout(items) {
   const kept = new Set();
 
   for (const gk of gkeys) {
-    const list = groups.get(gk).sort((a, b) => a.order - b.order);
+    const list = groups.get(gk).sort(compareOrder);
     const cols = Math.max(1, Math.ceil(Math.sqrt(list.length)));
     const rows = Math.ceil(list.length / cols);
     for (let i = 0; i < list.length; i++) {
@@ -121,6 +121,19 @@ export function buildLayout(items) {
   state.emit("images-changed");
   if (removed.length) state.emit("images-removed", removed);
   return next;
+}
+
+/**
+ * Compare page orders like the server's lexicographic convention. Orders are
+ * zero-padded and may carry a letter suffix ("064", "064A"), so "064A" sorts
+ * right after "064"; comparing the leading digits first also keeps unpadded
+ * synthetic orders (book indices "1".."12") in numeric sequence.
+ */
+function compareOrder(a, b) {
+  const an = parseInt(a.order, 10) || 0;
+  const bn = parseInt(b.order, 10) || 0;
+  if (an !== bn) return an - bn;
+  return a.order < b.order ? -1 : a.order > b.order ? 1 : 0;
 }
 
 /** Fit a decoded image inside its square cell, preserving aspect. */

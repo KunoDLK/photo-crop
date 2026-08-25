@@ -33,7 +33,7 @@ class PageInfo(BaseModel):
     page_id: str
     name: str
     group: int
-    order: int
+    order: str
     width: int
     height: int
     max_level: int
