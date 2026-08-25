@@ -77,13 +77,42 @@ class LocationRegistry:
         with self._lock:
             if key in self._by_key:
                 return self._by_key[key]
-            val = int.from_bytes(hashlib.sha256(key.encode()).digest()[:5], "big")
-            while True:
-                ident = _b62(val)
-                if ident not in self._by_id or self._by_id[ident] == key:
-                    break
-                val += 1
-            self._by_id[ident] = key
-            self._by_key[key] = ident
+            ident = self._assign(key)
             self._save()
             return ident
+
+    def get_ids(self, locations: list[tuple[str, str | None]]) -> list[str]:
+        """Return ids for many locations, creating missing ones and saving once.
+
+        Avoids a JSON rewrite per location (the sitemap enumerates every page),
+        so a large archive is not penalised on first generation.
+
+        Args:
+            locations: ``(book, page)`` pairs to resolve.
+
+        Returns:
+            One id per input pair, in order.
+        """
+        keys = [self._key(book, page) for book, page in locations]
+        with self._lock:
+            out = [self._by_key.get(key) for key in keys]
+            changed = False
+            for i, key in enumerate(keys):
+                if out[i] is None:
+                    out[i] = self._assign(key)
+                    changed = True
+            if changed:
+                self._save()
+            return out
+
+    def _assign(self, key: str) -> str:
+        """Insert a new key into the maps and return its id (caller holds lock)."""
+        val = int.from_bytes(hashlib.sha256(key.encode()).digest()[:5], "big")
+        while True:
+            ident = _b62(val)
+            if ident not in self._by_id or self._by_id[ident] == key:
+                break
+            val += 1
+        self._by_id[ident] = key
+        self._by_key[key] = ident
+        return ident

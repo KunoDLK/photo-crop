@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import html as html_mod
 import math
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -40,6 +42,11 @@ PREVIEW_H = 630
 
 _index_html: str | None = None
 _preview_cache: dict[tuple[str, str, int], bytes] = {}
+
+#: Sitemap cache: (monotonic timestamp, rendered bytes). Rebuilt when the
+#: catalog TTL elapses so re-scans (new books/pages) eventually appear.
+_SITEMAP_TTL = 600.0
+_sitemap_cache: tuple[float, bytes] | None = None
 
 
 def _esc(text: str) -> str:
@@ -251,4 +258,78 @@ async def preview_image_endpoint(
         content=data,
         media_type="image/jpeg",
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+def _iso_date(mtime_ns: int) -> str:
+    """Format a page mtime (ns since epoch) as a sitemap ``YYYY-MM-DD`` date."""
+    return datetime.fromtimestamp(mtime_ns / 1e9, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+@router.get("/sitemap.xml")
+async def sitemap_endpoint(request: Request) -> Response:
+    """Return an XML sitemap of every book and page for search engines.
+
+    URLs use the persisted short-id share links (``/{id}``), which are stable
+    across restarts, so indexed pages keep working. Rendered once per catalog
+    TTL and served with matching cache headers.
+
+    Args:
+        request: FastAPI request (to reach ``app.state`` services).
+
+    Returns:
+        A ``application/xml`` urlset listing the root, each book, and each page.
+    """
+    now = time.monotonic()
+    global _sitemap_cache
+    if _sitemap_cache is not None and now - _sitemap_cache[0] < _SITEMAP_TTL:
+        return Response(
+            content=_sitemap_cache[1],
+            media_type="application/xml",
+            headers={"Cache-Control": f"public, max-age={int(_SITEMAP_TTL)}"},
+        )
+
+    catalog = request.app.state.catalog
+    locations = request.app.state.locations
+    base = str(request.base_url).rstrip("/")
+
+    entries = [f"  <url><loc>{base}/</loc><priority>1.0</priority></url>"]
+    try:
+        _, books = catalog.books()
+    except Exception:  # noqa: BLE001 — an unavailable archive yields an empty sitemap
+        books = []
+
+    pairs: list[tuple[str, str | None]] = []
+    meta: list[tuple[str, str | None]] = []  # (mtime_ns, priority) per pair
+    for book in books:
+        pairs.append((book.id, None))
+        meta.append((book.cover.mtime, "0.9"))
+        try:
+            _, pages = catalog.pages(book.id)
+        except Exception:  # noqa: BLE001 — skip books that fail to re-scan
+            pages = []
+        for page in pages:
+            pairs.append((book.id, page.page_id))
+            meta.append((page.mtime, "0.6"))
+
+    for ident, (mtime_ns, priority) in zip(locations.get_ids(pairs), meta):
+        if mtime_ns:
+            entries.append(
+                f'  <url><loc>{base}/{quote(ident)}</loc>'
+                f"<lastmod>{_iso_date(mtime_ns)}</lastmod><priority>{priority}</priority></url>"
+            )
+        else:
+            entries.append(f"  <url><loc>{base}/{quote(ident)}</loc><priority>{priority}</priority></url>")
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(entries)
+        + "\n</urlset>\n"
+    ).encode("utf-8")
+    _sitemap_cache = (now, xml)
+    return Response(
+        content=xml,
+        media_type="application/xml",
+        headers={"Cache-Control": f"public, max-age={int(_SITEMAP_TTL)}"},
     )
