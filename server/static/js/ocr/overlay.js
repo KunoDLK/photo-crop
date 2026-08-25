@@ -6,15 +6,16 @@
  * device coordinates, so pan/zoom only updates one style property rather than
  * every span. Text selection is gated behind Ctrl: while held, the overlay
  * captures pointers and the canvas yields them. Dragging draws a marquee box
- * and releases select every OCR line whose box intersects it, copying their
- * text to the clipboard and highlighting the lines.
+ * and releases select every OCR line of the image the drag started on whose
+ * box intersects it, copying their text to the clipboard and highlighting the
+ * lines.
  */
 
 import * as state from "../state.js";
 import * as viewport from "../viewport.js";
 import * as render from "../render.js";
 import { fetchPageOcr } from "../api/ocr.js";
-import { OCR_LOAD_MIN_PX, OCR_MIN_FONT } from "../config.js";
+import { OCR_MIN_FONT } from "../config.js";
 
 let viewEl = null;
 let overlayEl = null;
@@ -22,13 +23,15 @@ let sceneEl = null;
 let marqueeEl = null;
 const loaded = new Map(); // image id -> OCR page data
 const pending = new Set(); // image ids being fetched
+const suppressed = new Set(); // ids a drag unloaded; stale in-flight results drop
 let spans = []; // { im, line, el }
 let dirtySpans = false;
 let lastTransform = "";
 let lastScale = -1;
 let lastDebug = false;
 let marquee = null; // { x0, y0, x1, y1 } in scene coords
-let selectedLines = []; // OCR line objects of the focused image
+let marqueeImage = null; // the image the drag started on (selection source)
+let selectedLines = []; // OCR line objects of the selection source image
 
 /** Wire the overlay to the canvas and its DOM containers. Call once. */
 export function init(deps) {
@@ -53,6 +56,12 @@ export function init(deps) {
     selectedLines = [];
     dirtySpans = true;
   });
+  // Keep OCR lifetime in lockstep with the tile cache: when an image's tiles
+  // are pruned (it scrolled off-screen), its text unloads too.
+  state.on("tiles-pruned", (ids) => {
+    for (const id of ids) loaded.delete(id);
+    dirtySpans = true;
+  });
 }
 
 function installCtrlHandling() {
@@ -73,6 +82,23 @@ function installMarquee() {
     try { overlayEl.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
     const [sx, sy] = overlayPoint(e);
     marquee = { x0: sx, y0: sy, x1: sx, y1: sy };
+    // The selection reads from the image the drag started on (falling back to
+    // the focused one). Selecting text on a page makes it the current one, and
+    // loading its OCR unloads every other page's text; in-flight results for
+    // those pages are suppressed so they can't resurrect.
+    marqueeImage = imageAtPoint(sx, sy);
+    if (marqueeImage && marqueeImage.kind === "page") {
+      state.setFocusedImage(marqueeImage);
+      // Drop every other page's text, loaded or merely in flight: suppress all
+      // other current images so stale arrivals can't resurrect them.
+      for (const other of state.images) {
+        if (other.id === marqueeImage.id) continue;
+        loaded.delete(other.id);
+        suppressed.add(other.id);
+      }
+      pending.delete(marqueeImage.id); // a stale fetch must not block the new load
+      requestOcr(marqueeImage);
+    }
     selectedLines = [];
     applySelectionHighlight();
     drawMarquee();
@@ -123,19 +149,24 @@ function drawMarquee() {
 function endMarquee() {
   if (!marquee) return;
   const m = marquee;
+  const src = marqueeImage || state.focusedImage;
   marquee = null;
+  marqueeImage = null;
   if (marqueeEl) marqueeEl.hidden = true;
   // A click (no real drag) just clears the previous selection.
   if (Math.abs(m.x1 - m.x0) < 1 && Math.abs(m.y1 - m.y0) < 1) return;
   selectLinesInRect({
     x0: Math.min(m.x0, m.x1), y0: Math.min(m.y0, m.y1),
     x1: Math.max(m.x0, m.x1), y1: Math.max(m.y0, m.y1),
-  });
+  }, src);
 }
 
-/** Select every line of the focused image whose box intersects the rect. */
-function selectLinesInRect(r) {
-  const im = state.focusedImage;
+/**
+ * Select every line of ``im`` whose box intersects the rect, then copy. The
+ * drag may have started over a different page than the focused one, so the
+ * source image is passed in rather than read from focus.
+ */
+function selectLinesInRect(r, im) {
   selectedLines = [];
   if (!im) return;
   const data = loaded.get(im.id);
@@ -150,6 +181,16 @@ function selectLinesInRect(r) {
   }
   applySelectionHighlight();
   copySelection(selectedLines);
+}
+
+/** The image whose cell contains the scene point, or null. */
+function imageAtPoint(sx, sy) {
+  for (let i = state.images.length - 1; i >= 0; i--) {
+    const im = state.images[i];
+    if (sx >= im.cellX && sx <= im.cellX + im.cell &&
+        sy >= im.labelY && sy <= im.cellY + im.cell) return im;
+  }
+  return null;
 }
 
 /** Copy the selected lines' text (joined by newlines) to the clipboard. */
@@ -208,10 +249,11 @@ export function update() {
 }
 
 /**
- * Fetch OCR lazily, and only where it matters: the selected image (once it is
- * large enough to read), or visible matched pages during a search. Pushing to
- * the screen happens on arrival: the fetch stores the data and marks the spans
- * dirty, so the next frame rebuilds them for the focused image.
+ * Fetch OCR lazily, and only when the text is actually needed: while Ctrl is
+ * held (the user is about to select), in debug mode (lines are visible), or
+ * for visible matched pages during a search. Pushing to the screen happens on
+ * arrival: the fetch stores the data and marks the spans dirty, so the next
+ * frame rebuilds them.
  */
 function ensureLoaded() {
   if (state.searchActive) {
@@ -229,21 +271,24 @@ function ensureLoaded() {
   }
   const im = state.focusedImage;
   if (!im || im.status !== "ready") return;
-  if (im.drawW * state.view.scale < OCR_LOAD_MIN_PX) return;
-  requestOcr(im);
+  if (state.tileDebug || state.textSelect) requestOcr(im);
 }
 
 /** Fetch one page's OCR once (deduped); push to screen when it arrives. */
 function requestOcr(im) {
   if (loaded.has(im.id) || pending.has(im.id)) return;
+  suppressed.delete(im.id); // an explicit fetch is wanted: lift any stale suppression
   pending.add(im.id);
   fetchPageOcr(im.bookId, im.pageId)
     .then((data) => {
       pending.delete(im.id);
-      loaded.set(im.id, data);
-      // Ensure a frame renders the new spans even if tiles are quiet (e.g. the
-      // page was already cached): otherwise the text waits for the next input.
-      if (state.focusedImage && state.focusedImage.id === im.id) {
+      // Drop results for pages a drag unloaded mid-flight, and keep data only
+      // while the page is still current and on screen: a fetch racing a
+      // scroll-away must not resurrect text whose tiles were already pruned.
+      if (suppressed.delete(im.id)) return;
+      if (state.images.some((i) => i.id === im.id)
+          && viewport.isImageVisible(im, state.viewport.w, state.viewport.h)) {
+        loaded.set(im.id, data);
         dirtySpans = true;
         render.requestRender();
       }
@@ -253,27 +298,30 @@ function requestOcr(im) {
     });
 }
 
-/** Rebuild the spans for the focused image only (bounds the DOM to one page). */
+/**
+ * Rebuild the spans for every image with loaded OCR — the focused page plus
+ * any page a selection drag fetched. Bounding the DOM to one page would hide
+ * text the user already paid to load (debug view, selection highlight); the
+ * loaded data itself survives until navigation empties the layout.
+ */
 function rebuildSpans() {
   if (!sceneEl) return;
   sceneEl.textContent = "";
   spans = [];
-  const im = state.focusedImage;
-  if (im) {
+  for (const im of state.images) {
     const data = loaded.get(im.id);
-    if (data) {
-      for (const line of data.lines || []) {
-        const el = document.createElement("span");
-        el.className = state.tileDebug ? "ocr-line ocr-debug" : "ocr-line";
-        el.textContent = line.text;
-        el.style.left = (im.drawX + line.x * im.fitFactor) + "px";
-        el.style.top = (im.drawY + line.y * im.fitFactor) + "px";
-        el.style.width = (line.w * im.fitFactor) + "px";
-        el.style.fontSize = (line.h * im.fitFactor) + "px";
-        spans.push({ im, line, el });
-        sceneEl.appendChild(el);
-        fitSpanToBox(el, line.w * im.fitFactor);
-      }
+    if (!data) continue;
+    for (const line of data.lines || []) {
+      const el = document.createElement("span");
+      el.className = state.tileDebug ? "ocr-line ocr-debug" : "ocr-line";
+      el.textContent = line.text;
+      el.style.left = (im.drawX + line.x * im.fitFactor) + "px";
+      el.style.top = (im.drawY + line.y * im.fitFactor) + "px";
+      el.style.width = (line.w * im.fitFactor) + "px";
+      el.style.fontSize = (line.h * im.fitFactor) + "px";
+      spans.push({ im, line, el });
+      sceneEl.appendChild(el);
+      fitSpanToBox(el, line.w * im.fitFactor);
     }
   }
   dirtySpans = false;

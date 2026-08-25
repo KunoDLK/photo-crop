@@ -48,9 +48,6 @@ export function setTextSelect(v) { textSelect = v; }
 export let searchActive = false;
 export function setSearchActive(v) { searchActive = v; }
 
-/** Cached OCR page data keyed by image id -> { lines, words, ... }. */
-export const ocrCache = new Map();
-
 /** Image currently focused by arrow-key navigation / double-click. */
 export let focusedImage = null;
 export function setFocusedImage(im) {
@@ -85,6 +82,7 @@ export function emit(event, payload) {
 // Event names (documented so publishers/subscribers agree):
 //   "images-changed"   — layout rebuilt after a listing load
 //   "images-removed"   — images dropped from the layout (arg: array of images)
+//   "tiles-pruned"     — off-screen images' fine tiles pruned (arg: array of image ids)
 //   "view-changed"     — view transform changed (render + scheduler should run)
 //   "tile-cached"      — a tile arrived and is now renderable
 //   "location-changed" — navigated between root and a book

@@ -68,12 +68,6 @@ export const LEVEL_COLORS = [
   "#2ee6e6", "#4d94ff", "#b06bff", "#ff5ce1",
 ];
 
-/**
- * OCR overlay: an image's OCR is fetched once its on-screen width exceeds this
- * (device px) — at overview zoom the text is too small to select, so we defer.
- */
-export const OCR_LOAD_MIN_PX = 300;
-
 /** Minimum on-screen line height (device px) at which overlay text shows. */
 export const OCR_MIN_FONT = 5;
 

@@ -29,6 +29,7 @@ let cache = null;
 let queue = null;
 let requestRender = null;
 let prevK = null; // global coarsening offset from the previous settle (for zoom dir)
+const prunedIds = new Set(); // off-screen images whose fine tiles were pruned
 
 /** Provide the dependencies the scheduler drives. Call once at startup. */
 export function init(deps) {
@@ -40,6 +41,7 @@ export function init(deps) {
 /** Forget the previous budget offset (called when the location changes). */
 export function resetLevels() {
   prevK = null;
+  prunedIds.clear();
 }
 
 function findImage(id) {
@@ -182,11 +184,20 @@ export function reconcile() {
 
   // Prune tiles of images that scrolled off-screen: keep only their pinned root
   // (the always-viewable coarse tile) so fine detail is freed and reloaded when
-  // the image returns.
+  // the image returns. Emits once per off-screen transition so consumers (the
+  // OCR overlay) can drop per-image state in lockstep with the tile cache.
   const visibleIds = new Set(visible.map((im) => im.id));
+  const newlyPruned = [];
   for (const im of state.images) {
-    if (!visibleIds.has(im.id)) cache.pruneImage(im.id);
+    if (visibleIds.has(im.id)) {
+      prunedIds.delete(im.id);
+    } else if (!prunedIds.has(im.id)) {
+      cache.pruneImage(im.id);
+      prunedIds.add(im.id);
+      newlyPruned.push(im.id);
+    }
   }
+  if (newlyPruned.length) state.emit("tiles-pruned", newlyPruned);
 
   // Rule 7: every visible image always has its root tile requested.
   for (const im of visible) ensureRootTile(im);
