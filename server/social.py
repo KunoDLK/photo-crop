@@ -1,0 +1,254 @@
+"""Social-media (Open Graph) previews and the SPA fallback page.
+
+Share links are plain path segments at the site root (``/93050a0``) so crawlers
+(iMessage, Discord, Reddit), which never run JavaScript or see URL hashes, get an
+HTML page with Open Graph tags pointing at a rendered preview image. The same
+viewer page is served for every path (the client re-reads it client-side); only
+the injected title/image tags vary. The description is fixed: it describes what
+the site is.
+
+Preview images are stitched from the finest cached tile level via
+:class:`~tiles.manager.TileService`, so already-viewed pages render from the
+encoded disk cache and pages never share a second decode path with the viewer.
+The preview URL is content-addressed by the page mtime and cached immutably.
+"""
+from __future__ import annotations
+
+import asyncio
+import html as html_mod
+import math
+from pathlib import Path
+from urllib.parse import quote
+
+import numpy as np
+from fastapi import APIRouter, Request
+from starlette.responses import HTMLResponse, Response
+
+from .books import dimensions, scanner
+from .errors import NotFound
+from .tiles import decoder, encoder, geometry, resampler
+
+router = APIRouter(tags=["social"])
+
+SITE_TITLE = "Hyper.K Archive"
+DESCRIPTION = (
+    "Hyper.K Archive is a speed-optimised archive viewer that displays hundreds "
+    "of high-detail scans without slowdown, using dynamic quality tiling."
+)
+PREVIEW_W = 1200
+PREVIEW_H = 630
+
+_index_html: str | None = None
+_preview_cache: dict[tuple[str, str, int], bytes] = {}
+
+
+def _esc(text: str) -> str:
+    """Escape text for use inside an HTML attribute."""
+    return html_mod.escape(str(text), quote=True)
+
+
+def _viewer_html() -> str:
+    """Return the raw viewer page HTML (cached after the first read)."""
+    global _index_html
+    if _index_html is None:
+        path = Path(__file__).resolve().parent / "static" / "index.html"
+        _index_html = path.read_text(encoding="utf-8")
+    return _index_html
+
+
+def _inject_og(html: str, meta: dict) -> str:
+    """Insert Open Graph meta tags into the viewer page's ``<head>``."""
+    title = meta.get("title") or SITE_TITLE
+    image = meta.get("image")
+    tags = [
+        f'<meta property="og:site_name" content="{_esc(SITE_TITLE)}">',
+        f'<meta property="og:title" content="{_esc(title)}">',
+        f'<meta property="og:description" content="{_esc(DESCRIPTION)}">',
+        '<meta property="og:type" content="website">',
+    ]
+    if image:
+        tags.append(f'<meta property="og:image" content="{_esc(image)}">')
+        tags.append('<meta name="twitter:card" content="summary_large_image">')
+        tags.append(f'<meta name="twitter:title" content="{_esc(title)}">')
+        tags.append(f'<meta name="twitter:image" content="{_esc(image)}">')
+    block = "\n".join("    " + t for t in tags)
+    return html.replace("</head>", block + "\n</head>", 1)
+
+
+def _og_image_url(request: Request, book: str, page: str, mtime: int) -> str:
+    """Absolute URL for the preview image of one page (content-addressed)."""
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/og/{quote(book)}/{quote(page)}/{mtime}.jpg"
+
+
+def _page_meta(request: Request, book_id: str, page) -> dict:
+    """OG metadata for a single page."""
+    return {
+        "title": f"{book_id} • Page {page.order}",
+        "image": _og_image_url(request, book_id, page.page_id, page.mtime),
+    }
+
+
+def _book_meta(request: Request, book_id: str, pages) -> dict:
+    """OG metadata for a book: preview its first page."""
+    page = pages[0]
+    return {
+        "title": book_id,
+        "image": _og_image_url(request, book_id, page.page_id, page.mtime),
+    }
+
+
+def _root_meta(request: Request) -> dict:
+    """OG metadata for the root: preview the first book's cover."""
+    catalog = request.app.state.catalog
+    try:
+        _, books = catalog.books()
+    except Exception:  # noqa: BLE001 — archive unavailable is handled as empty
+        books = []
+    if not books:
+        return {"title": SITE_TITLE, "image": None}
+    cover = books[0].cover
+    return {
+        "title": SITE_TITLE,
+        "image": _og_image_url(request, books[0].id, cover.page_id, cover.mtime),
+    }
+
+
+def _location_meta(request: Request, book_id: str, page_id: str | None) -> dict:
+    """OG metadata for a resolved location (book with optional page)."""
+    catalog = request.app.state.catalog
+    _, pages = catalog.pages(book_id)  # raises errors.NotFound if the book is gone
+    if page_id is None:
+        return _book_meta(request, book_id, pages)
+    page = next((p for p in pages if p.page_id == page_id), None)
+    if page is None:
+        raise NotFound(f"page not found: {page_id}")
+    return _page_meta(request, book_id, page)
+
+
+def spa_response(request: Request) -> HTMLResponse:
+    """Serve the viewer page, injecting OG tags for the request path.
+
+    The root gets the first book's cover; a bare root segment (``/93050a0``) is
+    treated as a location id and previews that book/page. Every other path gets
+    the plain page (the client re-reads it at startup).
+    """
+    path = request.url.path.rstrip("/")
+    meta: dict | None = None
+    if path in ("", "/index.html"):
+        meta = _root_meta(request)
+    elif path and "/" not in path.lstrip("/"):
+        loc = request.app.state.locations.resolve(path.lstrip("/"))
+        if loc:
+            try:
+                meta = _location_meta(request, loc["book"], loc["page"])
+            except NotFound:
+                meta = None
+    if meta is None:
+        meta = {"title": SITE_TITLE, "image": None}
+    html = _inject_og(_viewer_html(), meta)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+def _stitch_preview(
+    tiles: list[bytes], cols: int, rows: int, tile_size: int, lw: int, lh: int,
+    nw: int, nh: int, quality: int,
+) -> bytes:
+    """Assemble encoded tiles into the 1200×630 preview JPEG.
+
+    Args:
+        tiles: Encoded JPEG tiles in row-major order covering the level image.
+        cols: Tile columns.
+        rows: Tile rows.
+        tile_size: Tile edge length (edge tiles are padded to this size).
+        lw: True level-image width (unpadded).
+        lh: True level-image height (unpadded).
+        nw: Target content width after downscaling.
+        nh: Target content height after downscaling.
+        quality: JPEG quality for the final encode.
+
+    Returns:
+        A progressive JPEG, 1200×630, content centered on white.
+    """
+    canvas = np.empty((rows * tile_size, cols * tile_size, 3), dtype=np.uint8)
+    for i, data in enumerate(tiles):
+        ty, tx = divmod(i, cols)
+        tile = decoder.decode_bytes(data)
+        canvas[
+            ty * tile_size : (ty + 1) * tile_size, tx * tile_size : (tx + 1) * tile_size
+        ] = tile
+    img = canvas[:lh, :lw]
+    if (nw, nh) != (lw, lh):
+        img = resampler.resize_area(img, nw, nh)
+    out = np.full((PREVIEW_H, PREVIEW_W, 3), 255, dtype=np.uint8)
+    x = (PREVIEW_W - nw) // 2
+    y = (PREVIEW_H - nh) // 2
+    out[y : y + nh, x : x + nw] = img
+    return encoder.encode_progressive_jpeg(out, quality)
+
+
+async def _render_preview(
+    service, settings, book_id: str, page_id: str, version: int, path: Path,
+) -> bytes:
+    """Render a preview from the finest tile level that still covers the target.
+
+    Picks the smallest pyramid level whose image is at least the target content
+    size, so the stitch uses few tiles while staying above preview resolution;
+    every tile goes through :meth:`tiles.manager.TileService.get_tile`, reusing
+    the encoded disk cache, the decoded-page cache, and the mipmaps.
+    """
+    width, height = dimensions.image_dims(path)
+    scale = min(PREVIEW_W / width, PREVIEW_H / height, 1.0)
+    nw = max(1, round(width * scale))
+    nh = max(1, round(height * scale))
+    tile_size = settings.tile_size
+    top = geometry.max_level(width, height, tile_size)
+    ratio = min(width / nw, height / nh)
+    level = max(0, min(top, math.floor(math.log2(ratio))))
+    cols, rows = geometry.grid_extent(width, height, tile_size, level)
+    lw, lh = geometry.level_size(width, height, level)
+
+    jobs = [
+        service.get_tile(book_id, page_id, version, level, tx, ty)
+        for ty in range(rows)
+        for tx in range(cols)
+    ]
+    results = await asyncio.gather(*jobs)
+    tiles = [data for data, _ in results]
+    return await asyncio.to_thread(
+        _stitch_preview, tiles, cols, rows, tile_size, lw, lh, nw, nh,
+        settings.jpeg_quality,
+    )
+
+
+@router.get("/og/{book_id}/{page_id}/{version}.jpg")
+async def preview_image_endpoint(
+    book_id: str, page_id: str, version: int, request: Request
+) -> Response:
+    """Return the social preview JPEG for a page.
+
+    Args:
+        book_id: Book directory name.
+        page_id: Page filename.
+        version: Page file mtime (content version) — makes the URL immutable.
+        request: FastAPI request (to reach ``app.state`` services).
+
+    Returns:
+        A 1200×630 progressive JPEG with long-lived cache headers.
+    """
+    settings = request.app.state.settings
+    path = scanner.page_path(settings.archive_root, book_id, page_id)
+    key = (book_id, page_id, version)
+    data = _preview_cache.get(key)
+    if data is None:
+        data = await _render_preview(
+            request.app.state.tiles, settings, book_id, page_id, version, path
+        )
+        if len(_preview_cache) >= 32:
+            _preview_cache.clear()
+        _preview_cache[key] = data
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )

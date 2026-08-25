@@ -1,18 +1,19 @@
 /**
- * URL hash handling.
+ * Share-link URL handling.
  *
- * The hash holds a short server-assigned location id (see api/locations.js).
- * Writing it uses ``history.replaceState`` so navigation never spams history.
+ * Location links are plain path segments at the site root (`/93050a0`), which
+ * lets social crawlers (which never run JS or see URL hashes) render server-side
+ * previews from the path. Written with history.replaceState so navigation never
+ * spams history. The hash scheme was removed; no legacy links are supported.
  */
 
-/** Write a short location id into the hash (null clears it). */
-export function setHash(id) {
-  const target = id ? "#" + id : location.pathname + location.search;
-  history.replaceState(null, "", target);
+/** Write a location id into the path (null clears back to the root). */
+export function setPath(id) {
+  history.replaceState(null, "", id ? "/" + id : "/");
 }
 
-/** Read the current location id from the hash (null when empty). */
+/** The location id from a bare root path segment (`/93050a0`), or null. */
 export function currentId() {
-  const h = location.hash.replace(/^#/, "");
-  return h || null;
+  const m = location.pathname.match(/^\/([^/]+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
 }

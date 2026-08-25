@@ -2,7 +2,7 @@
  * Location short-ID API.
  *
  * A location (book + optional page) maps to a compact server-assigned base62 id
- * used in the URL hash. The mapping is cached client-side so panning over pages
+ * used in the URL path. The mapping is cached client-side so panning over pages
  * only requests each id once.
  */
 

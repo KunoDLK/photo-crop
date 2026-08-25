@@ -7,11 +7,14 @@ static viewer, and runs startup/shutdown lifecycle hooks.
 from __future__ import annotations
 
 from pathlib import Path
+from stat import S_ISREG
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import Request
 from starlette.responses import Response
 
+from . import social
 from .books import router as books_router
 from .books.locations import LocationRegistry
 from .books.scanner import Catalog
@@ -24,20 +27,30 @@ from .tiles.manager import TileService
 
 
 class NoCacheStaticFiles(StaticFiles):
-    """StaticFiles that sends ``no-cache`` so the viewer HTML/JS/CSS is always
-    revalidated during development (tiles are served separately and stay immutable).
-    Favicons are exempt and cached long-term so browser favicon services can
-    store them (Chrome drops tab icons that are not cacheable)."""
+    """StaticFiles with viewer-friendly caching and an SPA fallback.
+
+    Assets (``js/``, ``css/``, favicons) are served as files — ``no-cache`` so
+    the viewer revalidates during development, favicons cached long-term so
+    browsers keep them — while every other path (the root and any share link
+    like ``/93050a0``) serves the viewer page with Open Graph tags injected by
+    :mod:`social` so link crawlers get a preview. Tiles are separate and
+    immutable."""
 
     IMMUTABLE = {"favicon-16.png", "favicon-32.png"}
 
     async def get_response(self, path: str, scope) -> Response:
-        response = await super().get_response(path, scope)
-        if path in self.IMMUTABLE:
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        else:
-            response.headers["Cache-Control"] = "no-cache"
-        return response
+        full_path, stat_result = self.lookup_path(path)
+        if full_path and stat_result is not None and S_ISREG(stat_result.st_mode):
+            response = await super().get_response(path, scope)
+            if path in self.IMMUTABLE:
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            else:
+                response.headers["Cache-Control"] = "no-cache"
+            return response
+        # Root directory (index.html) and every unknown path serve the viewer
+        # page (the client re-reads the launch path at startup); OG tags are
+        # injected for the root and bare share-link segments.
+        return social.spa_response(Request(scope))
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -62,6 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(books_router.router)
     app.include_router(tiles_router.router)
     app.include_router(ocr_router.router)
+    app.include_router(social.router)
 
     app.mount("/", NoCacheStaticFiles(directory=str(_static_dir()), html=True), name="static")
     return app

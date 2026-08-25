@@ -97,8 +97,8 @@ async function bootstrap() {
   // Debug: expose live state for inspection (e.g. badge hit rects).
   window.__state = state;
 
-  // Navigate when the hash changes (share link opened, back/forward, manual edit).
-  async function navigateFromHash() {
+  // Navigate from the launch path: a bare root segment is a share-link id.
+  async function navigateFromPath() {
     const id = url.currentId();
     if (!id) {
       await nav.showBooks();
@@ -113,10 +113,10 @@ async function bootstrap() {
     }
   }
 
-  window.addEventListener("hashchange", navigateFromHash);
+  window.addEventListener("popstate", navigateFromPath);
 
-  // Restore the location from the URL hash (short id) if present.
-  await navigateFromHash();
+  // Restore the location from the launch path (short id) if present.
+  await navigateFromPath();
 }
 
 bootstrap();

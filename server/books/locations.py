@@ -1,7 +1,7 @@
 """Persistent short-ID registry for shareable locations.
 
 A "location" is a (book, page) pair. Each location is assigned a short base62 ID
-so the viewer's URL hash can stay compact (like a share link) instead of encoding
+so the viewer's share URL can stay compact (like ``/93050a0``) instead of encoding
 the full book/page names. IDs are derived from the location key; on a collision
 the value is incremented until an unused ID is found. The mapping is persisted so
 IDs stay stable across restarts.

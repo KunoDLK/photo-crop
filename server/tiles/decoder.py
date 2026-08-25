@@ -33,9 +33,23 @@ def decode(path: Path) -> np.ndarray:
         data = path.read_bytes()
     except OSError as exc:
         raise NotFound(f"page not readable: {path.name}") from exc
+    return decode_bytes(data)
 
+
+def decode_bytes(data: bytes) -> np.ndarray:
+    """Decode raw image bytes (e.g. a cached tile) into a BGR ndarray.
+
+    Args:
+        data: Encoded image bytes (JPEG/PNG/...).
+
+    Returns:
+        The decoded image as a ``(H, W, 3)`` uint8 ndarray (BGR order).
+
+    Raises:
+        errors.BadRequest: If the bytes cannot be decoded.
+    """
     buf = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     if img is None:
-        raise BadRequest(f"cannot decode image: {path.name}")
+        raise BadRequest("cannot decode image bytes")
     return img

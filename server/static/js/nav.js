@@ -2,7 +2,7 @@
  * Navigation between the root book list and individual books.
  *
  * Owns the current location, the breadcrumb/back button, the enter-book
- * affordance (overlay badge + double-click), and the URL hash (a short
+ * affordance (overlay badge + double-click), and the share-link path (a short
  * server-assigned id for the current book/page). On navigation it loads the
  * listing, rebuilds the layout, and re-fits the view.
  */
@@ -70,7 +70,7 @@ export async function showBooks(force = false, keepView = null) {
     render.requestRender();
     currentSig = data.signature;
     state.setStatus(items.length ? `${items.length} book(s)` : "No books found");
-    url.setHash(null);
+    url.setPath(null);
     state.emit("location-changed");
   } catch (e) {
     state.setStatus("Could not list books: " + e.message);
@@ -246,7 +246,7 @@ export function fitOverview() {
     syncUrl(state.location.book.id, null);
     state.setStatus(bookStatus());
   } else {
-    url.setHash(null);
+    url.setPath(null);
     state.setStatus(state.images.length ? `${state.images.length} book(s)` : "No books found");
   }
 }
@@ -354,14 +354,14 @@ function imageDominant(im) {
   return Math.max(0, w) * Math.max(0, h) >= vpw * vph * 0.5;
 }
 
-/** Update the URL hash to a short id for (book, page), latest-wins. */
+/** Update the URL path to a short id for (book, page), latest-wins. */
 async function syncUrl(book, page) {
   const seq = ++urlSyncSeq;
   try {
     const id = await getLocationId(book, page);
-    if (seq === urlSyncSeq) url.setHash(id);
+    if (seq === urlSyncSeq) url.setPath(id);
   } catch (e) {
-    /* offline / server error: leave the hash unchanged */
+    /* offline / server error: leave the path unchanged */
   }
 }
 
