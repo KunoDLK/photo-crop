@@ -34,5 +34,12 @@ async def tile_endpoint(
         A ``image/jpeg`` response with immutable cache headers.
     """
     service = request.app.state.tiles
-    data = await service.get_tile(book, page, version, level, tx, ty)
-    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": _IMMUTABLE})
+    data, from_cache = await service.get_tile(book, page, version, level, tx, ty)
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": _IMMUTABLE,
+            "X-Tile-Cache": "hit" if from_cache else "miss",
+        },
+    )

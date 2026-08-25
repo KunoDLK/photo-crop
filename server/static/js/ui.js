@@ -9,11 +9,18 @@ import * as state from "./state.js";
 import * as viewport from "./viewport.js";
 import * as render from "./render.js";
 import * as scheduler from "./tiles/scheduler.js";
-import { MAX_DISPLAYED_TILES, setMaxDisplayedTiles } from "./config.js";
+import { MAX_DISPLAYED_TILES, MAX_INFLIGHT, setMaxDisplayedTiles, setMaxInflight } from "./config.js";
 
 let cache = null;
 let queue = null;
 let nav = null;
+
+// Load stopwatch: starts from zero whenever tiles are being fetched (queued +
+// in-flight > 0) and pauses, freezing the value, once everything has arrived.
+let loadT0 = 0;
+let loadElapsed = 0;
+let loadRunning = false;
+let wasLoading = false;
 
 /** Wire toolbar buttons and subscribe to status. Call once at startup. */
 export function init(deps) {
@@ -48,6 +55,15 @@ function wireDOM() {
       setMaxDisplayedTiles(parseInt(budget.value, 10) || 100);
       scheduler.reconcile();
       render.requestRender();
+    });
+  }
+
+  const inflight = document.getElementById("tile-inflight");
+  if (inflight) {
+    // Reflect the auto-raised value (main.js bumps it on HTTP/2/3).
+    inflight.value = String(MAX_INFLIGHT);
+    inflight.addEventListener("change", () => {
+      setMaxInflight(parseInt(inflight.value, 10) || 6);
     });
   }
 
@@ -94,11 +110,28 @@ function wireMobileMenu() {
 export function updateStats() {
   const el = document.getElementById("stats");
   if (!el) return;
+  if (loadRunning) loadElapsed = performance.now() - loadT0;
+  const loading = queue.queuedCount + queue.inflightCount > 0;
+  if (loading && !wasLoading) {
+    // A new fetch burst began: restart the clock and the cache-hit tally.
+    loadT0 = performance.now();
+    loadElapsed = 0;
+    loadRunning = true;
+    queue.resetStats();
+  } else if (!loading && wasLoading) {
+    // Burst finished: pause and freeze the elapsed time.
+    loadElapsed = performance.now() - loadT0;
+    loadRunning = false;
+  }
+  wasLoading = loading;
   const ready = state.images.filter((im) => im.status === "ready").length;
   const onScreen = scheduler.onScreenCachedCount();
   const committed = scheduler.committedCount();
+  const { total, hits } = queue.stats;
+  const hitPct = total ? Math.round((hits / total) * 100) : 0;
   el.textContent =
     `img ready ${ready}/${state.images.length}  tiles onScreen ${onScreen}  ` +
     `committed ${committed}/${MAX_DISPLAYED_TILES}  inflight ${queue.inflightCount}  ` +
-    `queued ${queue.queuedCount}  cached ${cache.map.size}`;
+    `queued ${queue.queuedCount}  cache ${hitPct}% (${hits}/${total})  ` +
+    `load ${(loadElapsed / 1000).toFixed(2)}s`;
 }

@@ -21,8 +21,20 @@ export function setMaxDisplayedTiles(v) {
   MAX_DISPLAYED_TILES = Math.max(4, Math.floor(v) || 4);
 }
 
-/** Max concurrent tile HTTP requests. */
-export const MAX_INFLIGHT = 6;
+/**
+ * Max concurrent tile HTTP requests. The queue drains up to this many at once.
+ * It is the client-side counterpart of the browser's per-origin connection
+ * budget: over HTTP/1.1 the browser caps ~6 anyway (excess is FIFO-queued and
+ * priority ordering is lost), while over HTTP/2 ~100 streams are available, so
+ * raising it widens each refinement wave. That pays off most when tiles return
+ * fast (Cloudflare edge hits) and is a live binding so the toolbar can tune it.
+ */
+export let MAX_INFLIGHT = 16;
+
+/** Update the tile-fetch concurrency at runtime (used by the Fetch control). */
+export function setMaxInflight(v) {
+  MAX_INFLIGHT = Math.max(1, Math.floor(v) || 1);
+}
 
 /** Quiet period after the last input before the scheduler "settles". */
 export const SETTLE_MS = 500;

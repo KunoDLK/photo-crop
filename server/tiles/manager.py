@@ -40,7 +40,9 @@ class TileService:
         """Cache key for a decoded page (versioned by the file mtime)."""
         return f"{book}/{page}/{version}"
 
-    async def get_tile(self, book: str, page: str, version: int, level: int, tx: int, ty: int) -> bytes:
+    async def get_tile(
+        self, book: str, page: str, version: int, level: int, tx: int, ty: int
+    ) -> tuple[bytes, bool]:
         """Return encoded JPEG bytes for a tile, caching along the way.
 
         Args:
@@ -52,7 +54,9 @@ class TileService:
             ty: Tile row.
 
         Returns:
-            Progressive JPEG bytes for a ``tile_size`` square (edge tiles padded).
+            A ``(bytes, from_cache)`` tuple: progressive JPEG bytes for a
+            ``tile_size`` square (edge tiles padded) and whether the bytes came
+            from the encoded disk cache (i.e. no render was needed).
 
         Raises:
             errors.NotFound: If the page does not exist.
@@ -61,15 +65,15 @@ class TileService:
         key = self.tiles.key(book, page, version, level, tx, ty)
         cached = self.tiles.get(key)
         if cached is not None:
-            return cached
+            return cached, True
 
         async with self.locks.acquire(key):
             cached = self.tiles.get(key)
             if cached is not None:
-                return cached
+                return cached, True
             data = await asyncio.to_thread(self._render_tile, book, page, version, level, tx, ty)
             self.tiles.put(key, data)
-            return data
+            return data, False
 
     def _render_tile(self, book: str, page: str, version: int, level: int, tx: int, ty: int) -> bytes:
         """Decode/build the mipmap level, crop, resample, and encode one tile.

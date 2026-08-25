@@ -14,6 +14,13 @@ export class TileQueue {
     this.onTile = onTile; // (req, bitmap | null) callback
     this.inflight = new Set(); // keys currently being fetched
     this.queued = []; // { key, url, priority, imId, L, tx, ty }
+    this.stats = { total: 0, hits: 0 }; // cache-hit tally for the debug bar
+  }
+
+  /** Reset the cache-hit tally (called when a fetch burst begins). */
+  resetStats() {
+    this.stats.total = 0;
+    this.stats.hits = 0;
   }
 
   /** True if a key is already queued or in flight. */
@@ -55,13 +62,16 @@ export class TileQueue {
       const req = this.queued.splice(best, 1)[0];
       this.inflight.add(req.key);
       fetchTile(req.url)
-        .then((bitmap) => {
+        .then(({ bitmap, hit }) => {
           this.inflight.delete(req.key);
+          this.stats.total++;
+          if (hit) this.stats.hits++;
           this.onTile(req, bitmap);
           this._pump();
         })
         .catch(() => {
           this.inflight.delete(req.key);
+          this.stats.total++;
           this.onTile(req, null);
           this._pump();
         });

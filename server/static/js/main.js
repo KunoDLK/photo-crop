@@ -27,6 +27,12 @@ async function bootstrap() {
   const viewEl = document.getElementById("view");
   const leftEl = document.getElementById("left");
 
+  // Keep tile resource-timing entries long enough for the cache-hit readout to
+  // find each one (browser-cache hits are detected via transferSize === 0).
+  if (performance.setResourceTimingBufferSize) {
+    performance.setResourceTimingBufferSize(100000);
+  }
+
   const cache = new TileCache();
   compositor.init({ cache });
   render.initDebug({ cache });

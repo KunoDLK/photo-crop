@@ -27,7 +27,10 @@ export const cursor = { x: -1, y: -1 };
 
 /** True while the user is actively navigating (pan/zoom). */
 export let interacting = false;
-export function setInteracting(v) { interacting = v; }
+export function setInteracting(v) {
+  interacting = v;
+  emit("interacting", v);
+}
 
 /** Whether the current location has any images. */
 export let hasImages = false;
