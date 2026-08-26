@@ -122,9 +122,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
   z-index: 5;
 }
 #prof { bottom: 18px; font-size: 10px; }
