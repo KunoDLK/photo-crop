@@ -3,9 +3,10 @@
 Share links are plain path segments at the site root (``/93050a0``) so crawlers
 (iMessage, Discord, Reddit), which never run JavaScript or see URL hashes, get an
 HTML page with Open Graph tags pointing at a rendered preview image. The same
-viewer page is served for every path (the client re-reads it client-side); only
-the injected title/image tags vary. The description is fixed: it describes what
-the site is.
+viewer page is served for every path; :func:`~pages.render_fragment` supplies
+the per-path body content (book list / page grid / page OCR) and the OG meta,
+which this module injects into the shell. The description is fixed: it describes
+what the site is.
 
 Preview images are stitched from the finest cached tile level via
 :class:`~tiles.manager.TileService`, so already-viewed pages render from the
@@ -15,7 +16,6 @@ The preview URL is content-addressed by the page mtime and cached immutably.
 from __future__ import annotations
 
 import asyncio
-import html as html_mod
 import math
 import time
 from datetime import datetime, timezone
@@ -27,16 +27,11 @@ from fastapi import APIRouter, Request
 from starlette.responses import HTMLResponse, Response
 
 from .books import dimensions, scanner
-from .errors import NotFound
+from .pages import DESCRIPTION, SITE_TITLE, esc, render_fragment
 from .tiles import decoder, encoder, geometry, resampler
 
 router = APIRouter(tags=["social"])
 
-SITE_TITLE = "Hyper.K Archive"
-DESCRIPTION = (
-    "Hyper.K Archive is a speed-optimised archive viewer that displays hundreds "
-    "of high-detail scans without slowdown, using dynamic quality tiling."
-)
 PREVIEW_W = 1200
 PREVIEW_H = 630
 
@@ -49,11 +44,6 @@ _SITEMAP_TTL = 600.0
 _sitemap_cache: tuple[float, bytes] | None = None
 
 
-def _esc(text: str) -> str:
-    """Escape text for use inside an HTML attribute."""
-    return html_mod.escape(str(text), quote=True)
-
-
 def _viewer_html() -> str:
     """Return the raw viewer page HTML (cached after the first read)."""
     global _index_html
@@ -64,96 +54,60 @@ def _viewer_html() -> str:
 
 
 def _inject_og(html: str, meta: dict) -> str:
-    """Insert Open Graph meta tags into the viewer page's ``<head>``."""
+    """Insert Open Graph/meta tags into the viewer page's ``<head>``."""
     title = meta.get("title") or SITE_TITLE
     image = meta.get("image")
+    canonical = meta.get("canonical")
     tags = [
-        f'<meta property="og:site_name" content="{_esc(SITE_TITLE)}">',
-        f'<meta property="og:title" content="{_esc(title)}">',
-        f'<meta property="og:description" content="{_esc(DESCRIPTION)}">',
+        f'<meta name="description" content="{esc(DESCRIPTION)}">',
+        f'<meta property="og:site_name" content="{esc(SITE_TITLE)}">',
+        f'<meta property="og:title" content="{esc(title)}">',
+        f'<meta property="og:description" content="{esc(DESCRIPTION)}">',
         '<meta property="og:type" content="website">',
     ]
+    if canonical:
+        tags.append(f'<link rel="canonical" href="{esc(canonical)}">')
     if image:
-        tags.append(f'<meta property="og:image" content="{_esc(image)}">')
+        tags.append(f'<meta property="og:image" content="{esc(image)}">')
         tags.append('<meta name="twitter:card" content="summary_large_image">')
-        tags.append(f'<meta name="twitter:title" content="{_esc(title)}">')
-        tags.append(f'<meta name="twitter:image" content="{_esc(image)}">')
+        tags.append(f'<meta name="twitter:title" content="{esc(title)}">')
+        tags.append(f'<meta name="twitter:image" content="{esc(image)}">')
     block = "\n".join("    " + t for t in tags)
     return html.replace("</head>", block + "\n</head>", 1)
 
 
-def _og_image_url(request: Request, book: str, page: str, mtime: int) -> str:
-    """Absolute URL for the preview image of one page (content-addressed)."""
-    base = str(request.base_url).rstrip("/")
-    return f"{base}/og/{quote(book)}/{quote(page)}/{mtime}.jpg"
+def _inject_title(html: str, meta: dict) -> str:
+    """Replace the static page title with the per-path one (mirrors the client)."""
+    title = esc(meta.get("title") or SITE_TITLE)
+    return html.replace("<title>Hyper.K Archive</title>", f"<title>{title}</title>", 1)
 
 
-def _page_meta(request: Request, book_id: str, page) -> dict:
-    """OG metadata for a single page."""
-    return {
-        "title": f"{book_id} • Page {page.order}",
-        "image": _og_image_url(request, book_id, page.page_id, page.mtime),
-    }
-
-
-def _book_meta(request: Request, book_id: str, pages) -> dict:
-    """OG metadata for a book: preview its first page."""
-    page = pages[0]
-    return {
-        "title": book_id,
-        "image": _og_image_url(request, book_id, page.page_id, page.mtime),
-    }
-
-
-def _root_meta(request: Request) -> dict:
-    """OG metadata for the root: preview the first book's cover."""
-    catalog = request.app.state.catalog
-    try:
-        _, books = catalog.books()
-    except Exception:  # noqa: BLE001 — archive unavailable is handled as empty
-        books = []
-    if not books:
-        return {"title": SITE_TITLE, "image": None}
-    cover = books[0].cover
-    return {
-        "title": SITE_TITLE,
-        "image": _og_image_url(request, books[0].id, cover.page_id, cover.mtime),
-    }
-
-
-def _location_meta(request: Request, book_id: str, page_id: str | None) -> dict:
-    """OG metadata for a resolved location (book with optional page)."""
-    catalog = request.app.state.catalog
-    _, pages = catalog.pages(book_id)  # raises errors.NotFound if the book is gone
-    if page_id is None:
-        return _book_meta(request, book_id, pages)
-    page = next((p for p in pages if p.page_id == page_id), None)
-    if page is None:
-        raise NotFound(f"page not found: {page_id}")
-    return _page_meta(request, book_id, page)
+def _inject_content(html: str, content: str) -> str:
+    """Insert the crawler-facing body fragment into the shell's ``#seo-content``."""
+    if not content:
+        return html
+    return html.replace(
+        '<div id="seo-content"></div>',
+        f'<div id="seo-content">{content}</div>',
+        1,
+    )
 
 
 def spa_response(request: Request) -> HTMLResponse:
-    """Serve the viewer page, injecting OG tags for the request path.
+    """Serve the viewer page, injecting content and OG tags for the request path.
 
-    The root gets the first book's cover; a bare root segment (``/93050a0``) is
-    treated as a location id and previews that book/page. Every other path gets
-    the plain page (the client re-reads it at startup).
+    The root renders a link to every book; a bare root segment (``/93050a0``) is
+    a location id and renders that book's page grid or a page's OCR text with
+    prev/next links. Every other path gets the plain shell (the client re-reads
+    it at startup).
     """
-    path = request.url.path.rstrip("/")
-    meta: dict | None = None
-    if path in ("", "/index.html"):
-        meta = _root_meta(request)
-    elif path and "/" not in path.lstrip("/"):
-        loc = request.app.state.locations.resolve(path.lstrip("/"))
-        if loc:
-            try:
-                meta = _location_meta(request, loc["book"], loc["page"])
-            except NotFound:
-                meta = None
-    if meta is None:
-        meta = {"title": SITE_TITLE, "image": None}
+    try:
+        content, meta = render_fragment(request)
+    except Exception:  # noqa: BLE001 — a gone location yields the plain shell
+        content, meta = "", {"title": SITE_TITLE, "image": None}
     html = _inject_og(_viewer_html(), meta)
+    html = _inject_title(html, meta)
+    html = _inject_content(html, content)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 

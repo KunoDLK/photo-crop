@@ -304,3 +304,25 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   .search-box { width: 100%; }
   .search-box input[type="text"] { flex: 1; width: auto; }
 }
+
+/* ------------------------------------------------------- crawler content
+   Server-rendered fragment for crawlers/no-JS visitors (see server/pages.py).
+   Hidden once the viewer JS boots; the same markup is served to everyone. */
+
+#seo-content { display: none; }
+html.no-js .left { display: none; }
+html.no-js #seo-content {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px;
+  max-width: 960px;
+}
+#seo-content a { color: var(--accent); text-decoration: none; }
+#seo-content a:hover { text-decoration: underline; }
+#seo-content h1 { font-size: 20px; margin: 0 0 12px; }
+#seo-content ul { padding-left: 20px; line-height: 1.7; }
+#seo-content .seo-breadcrumb { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+#seo-content .seo-pager { display: flex; gap: 16px; margin-top: 16px; }
+#seo-content .seo-page p { margin: 0.4em 0; line-height: 1.5; }

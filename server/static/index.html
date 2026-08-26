@@ -1,7 +1,8 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="no-js">
 <head>
 <meta charset="utf-8">
+<script>document.documentElement.classList.remove("no-js")</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Hyper.K Archive</title>
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
@@ -47,6 +48,10 @@
   <div class="stats" id="prof" hidden></div>
   <div class="stats" id="stats" hidden></div>
 </div>
+
+<!-- Server-rendered content for crawlers/no-JS (see server/pages.py); replaced
+     by the interactive canvas once the viewer boots. -->
+<div id="seo-content"></div>
 
 <div id="status">Loading…</div>
 

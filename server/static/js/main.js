@@ -13,7 +13,6 @@ import * as keys from "./keys.js";
 import * as ui from "./ui.js";
 import * as nav from "./nav.js";
 import * as url from "./url.js";
-import { resolveLocation } from "./api/locations.js";
 import * as compositor from "./compositor.js";
 import * as scheduler from "./tiles/scheduler.js";
 import { TileCache } from "./tiles/tileCache.js";
@@ -97,23 +96,29 @@ async function bootstrap() {
   // Debug: expose live state for inspection (e.g. badge hit rects).
   window.__state = state;
 
-  // Navigate from the launch path: a bare root segment is a share-link id.
-  async function navigateFromPath() {
-    const id = url.currentId();
-    if (!id) {
-      await nav.showBooks();
-      return;
-    }
-    try {
-      const loc = await resolveLocation(id);
-      if (loc && loc.book) await nav.openFromURL(loc);
-      else await nav.showBooks();
-    } catch (e) {
-      await nav.showBooks();
-    }
+  // Navigate from the current path: a bare root segment is a share-link id.
+  function navigateFromPath() {
+    nav.navigateToPath(location.pathname);
   }
 
   window.addEventListener("popstate", navigateFromPath);
+
+  // Intercept clicks on real <a href> links to bare root paths (the crawler
+  // links rendered into #seo-content) and route them through the SPA, so users
+  // never see a full page load. Modifier clicks, middle clicks, and
+  // target="_blank" fall through to a normal page load, which the server also
+  // serves with injected content.
+  document.addEventListener("click", (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey
+        || e.shiftKey || e.altKey || !(e.target instanceof Element)) return;
+    const a = e.target.closest("a[href]");
+    if (!a || (a.target && a.target !== "_self")) return;
+    const path = (a.getAttribute("href") || "").split("#")[0];
+    if (!path.startsWith("/") || path.startsWith("//")) return;
+    if (path !== "/" && url.idFromPath(path) === null) return;
+    e.preventDefault();
+    nav.navigateToPath(path);
+  });
 
   // Restore the location from the launch path (short id) if present.
   await navigateFromPath();

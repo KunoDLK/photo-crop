@@ -153,6 +153,20 @@ class OCRService:
             return OCRPage(**cached)
         return self._ocr_and_store(book, page, version)  # worker failed: do it inline
 
+    def get_page_ocr_cached(self, book: str, page: str) -> OCRPage | None:
+        """Return a page's cached OCR, or None without triggering any work.
+
+        Used by the crawler-facing HTML renderer (see :mod:`pages`): an
+        uncached page simply renders without text, and the background worker
+        may fill the cache later. Never enqueues and never blocks.
+        """
+        try:
+            version = self._page_version(book, page)
+            cached = self._load(self._cache_path(book, page, version))
+            return OCRPage(**cached) if cached is not None else None
+        except Exception:  # noqa: BLE001 — missing/corrupt OCR is simply "no OCR"
+            return None
+
     def search(self, book: str, pages: list, query: str, regex: bool) -> tuple[list[SearchHit], int]:
         """Match cached OCR text, submitting missing pages to the worker.
 

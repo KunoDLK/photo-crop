@@ -121,17 +121,29 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
 - `router.py` — OCR/search routes are `async` and wrap blocking work in
   `asyncio.to_thread` so the event loop (and tile serving) never blocks.
 
-### Social — `server/social.py`
+### Social — `server/social.py`, `server/pages.py`
 
-Link previews for iMessage/Discord/Reddit and the SPA fallback page.
+Link previews for iMessage/Discord/Reddit, the SPA fallback page, and the
+crawler-facing HTML.
 
 - The viewer page is served for **every** path: `app.py`'s `NoCacheStaticFiles`
   serves real assets as files and hands everything else (the root, any
   `/93050a0` share link, unknown paths) to `social.spa_response`, which injects
-  Open Graph meta tags into `index.html` and returns it with `no-cache`.
+  content and Open Graph meta tags into `index.html` and returns it with
+  `no-cache`.
+- `pages.py` builds the **server-rendered body fragment** per path (the crawlable
+  content): the root renders a link to every book, a book's short-id path renders
+  a link to every page (the crawl hub — one hop to anything), and a page's
+  short-id path renders its OCR text plus prev/next/back links. Same markup for
+  every client, JS or not (no cloaking). The fragment goes into `#seo-content`
+  in the shell, visible only before the viewer boots (`html.no-js`); `main.js`
+  intercepts clicks on those real links and routes them through the SPA
+  (`nav.navigateToPath`), so users never see a full reload.
 - OG meta: `og:title` varies by location (site name / book name / `Book • Page N`),
   `og:description` is a fixed site blurb, `og:image` is an absolute URL built from
   `request.base_url` (picks up the public hostname behind the Cloudflare tunnel).
+- Page HTML uses `OCRService.get_page_ocr_cached` — a pure cache read that never
+  enqueues or blocks, so crawler requests never trigger OCR work.
 - `GET /og/{book}/{page}/{mtime}.jpg` renders the 1200×630 preview **from the
   existing tile pipeline**: picks the finest level whose image still covers the
   target, fetches that level's full grid via `TileService.get_tile` (reusing the

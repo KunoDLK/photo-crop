@@ -10,7 +10,7 @@
 import * as state from "./state.js";
 import * as url from "./url.js";
 import { fetchBooks, fetchPages, fetchImageInfo } from "./api/books.js";
-import { getLocationId } from "./api/locations.js";
+import { getLocationId, resolveLocation } from "./api/locations.js";
 import { buildLayout } from "./layout.js";
 import * as viewport from "./viewport.js";
 import * as render from "./render.js";
@@ -145,6 +145,29 @@ export function openFromURL(loc) {
 /** Return to the root book list. */
 export function goBack() {
   showBooks();
+}
+
+/**
+ * Navigate to a root path ("/" or "/<short-id>") without a full page load.
+ *
+ * Used by the click interceptor so the real `<a href>` links rendered into
+ * `#seo-content` (also crawlable by search engines) route through the SPA.
+ * Full page loads still work for middle-clicks or new-tab opens, and the
+ * popstate handler reuses this for the browser back/forward buttons.
+ */
+export async function navigateToPath(path) {
+  const id = url.idFromPath(path);
+  if (!id) {
+    await showBooks();
+    return;
+  }
+  try {
+    const loc = await resolveLocation(id);
+    if (loc && loc.book) await openFromURL(loc);
+    else await showBooks();
+  } catch (e) {
+    await showBooks();
+  }
 }
 
 /** Reload the current location, forcing a server re-scan, without moving the view. */

@@ -31,14 +31,19 @@ class NoCacheStaticFiles(StaticFiles):
 
     Assets (``js/``, ``css/``, favicons) are served as files — ``no-cache`` so
     the viewer revalidates during development, favicons cached long-term so
-    browsers keep them — while every other path (the root and any share link
-    like ``/93050a0``) serves the viewer page with Open Graph tags injected by
-    :mod:`social` so link crawlers get a preview. Tiles are separate and
-    immutable."""
+    browsers keep them — while the root, ``/index.html``, and every other path
+    (e.g. any share link like ``/93050a0``) serve the viewer page with content
+    and Open Graph tags injected by :mod:`social` so crawlers get real content
+    and link previews. Tiles are separate and immutable."""
 
     IMMUTABLE = {"favicon-16.png", "favicon-32.png"}
 
     async def get_response(self, path: str, scope) -> Response:
+        # The root and a direct /index.html request serve the viewer page with
+        # injected content and OG tags (not the bare static file), so the root
+        # carries the book list and every location is indexable.
+        if path in ("", "index.html"):
+            return social.spa_response(Request(scope))
         full_path, stat_result = self.lookup_path(path)
         if full_path and stat_result is not None and S_ISREG(stat_result.st_mode):
             response = await super().get_response(path, scope)
@@ -47,9 +52,9 @@ class NoCacheStaticFiles(StaticFiles):
             else:
                 response.headers["Cache-Control"] = "no-cache"
             return response
-        # Root directory (index.html) and every unknown path serve the viewer
-        # page (the client re-reads the launch path at startup); OG tags are
-        # injected for the root and bare share-link segments.
+        # Every other unknown path serves the viewer page (the client re-reads
+        # the launch path at startup); content + OG tags are injected for the
+        # root and bare share-link segments.
         return social.spa_response(Request(scope))
 
 

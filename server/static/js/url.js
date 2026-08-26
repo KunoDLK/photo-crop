@@ -13,7 +13,12 @@ export function setPath(id) {
 }
 
 /** The location id from a bare root path segment (`/93050a0`), or null. */
-export function currentId() {
-  const m = location.pathname.match(/^\/([^/]+)$/);
+export function idFromPath(path) {
+  const m = path.match(/^\/([^/]+)$/);
   return m ? decodeURIComponent(m[1]) : null;
+}
+
+/** The location id from the current path (`/93050a0`), or null. */
+export function currentId() {
+  return idFromPath(location.pathname);
 }
