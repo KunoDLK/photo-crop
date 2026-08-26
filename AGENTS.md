@@ -104,11 +104,13 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
   whenever blur rendering changes, so old blur bytes are never served without a manual
   wipe); the router resolves the policy first and never crosses variants, so a real tile
   cached from an owner's visit can never leak to an anonymous viewer.
-- `blur.py` — blur rendering for restricted pages: the tile crop is downscaled to a
-  64 px patch, heavily Gaussian-blurred (`blur_strength`), and upscaled back. No
-  darkening — the client overlays its own dark banner for the region text. The strength
-  is halved per pyramid level up from 0, keeping the source-space blur identical across
-  levels so adjacent tiles rendered at different levels blur consistently.
+- `blur.py` — blur rendering for restricted pages: the whole page is blurred
+  once, at a capped resolution (`blur_levels_from_coarsest` levels in from the
+  coarsest pyramid level), and every blur tile at any zoom level is a crop of
+  that single plane — so adjacent tiles are pixel-consistent with no seams,
+  and fine blur tiles are cheap upscales. The sigma is scaled so the
+  source-space blur stays ≈ 4 × `blur_strength`. No darkening — the client
+  overlays its own dark banner for the region text.
 - `page_cache.py` — RAM LRU of decoded mipmaps with a **background idle sweeper**:
   pages are dropped `page_idle_seconds` (default 10 s) after last access so RAM falls
   back near zero when idle.

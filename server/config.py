@@ -43,10 +43,13 @@ class Settings(BaseSettings):
             header is present (local development); empty → ``unknown`` zone.
         dev_region_header: Honor an ``X-Test-Region`` country header so curl
             checks can simulate regions (off by default; never enable in prod).
-        blur_strength: Gaussian sigma applied to blurred tiles (restricted
-            pages) at level 0; halved per pyramid level up so adjacent tiles
-            blur consistently. Larger = less detail survives. The client adds
-            its own dark banner for text readability.
+        blur_strength: Base Gaussian sigma of the whole-page blur plane; the
+            effective source-space blur is 4 × ``blur_strength`` px regardless
+            of the plane's cap level. Larger = less detail survives. The
+            client adds its own dark banner for text readability.
+        blur_levels_from_coarsest: The blur plane is built this many levels in
+            from the coarsest pyramid level (default 3), capping its resolution
+            so fine blur tiles are cheap upscales of one seamless plane.
         host: Bind address.
         port: Bind port.
     """
@@ -75,6 +78,7 @@ class Settings(BaseSettings):
     default_region: str = ""
     dev_region_header: bool = False
     blur_strength: float = 20.0
+    blur_levels_from_coarsest: int = 3
     host: str = "0.0.0.0"
     port: int = 8000
 

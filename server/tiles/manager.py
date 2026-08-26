@@ -136,18 +136,53 @@ class TileService:
         lv = mip.level(level)
         region = lv[crop.y : crop.y + crop.h, crop.x : crop.x + crop.w]
         if blur:
-            # Half the strength per pyramid level up from 0: a tile at level L
-            # covers 2^L× the source area per pixel, so halving keeps the blur
-            # constant in source pixels and adjacent tiles blur consistently.
-            # The blur applies to the image region only — never the padded
-            # canvas, or edge padding would bleed dark borders into the image.
-            strength = self.settings.blur_strength / (2 ** level)
-            region = blur_util.apply_blur(region, strength)
+            # Every blur tile is a crop of one whole-page blur plane, so
+            # adjacent tiles are pixel-consistent (no seams) and fine levels
+            # are cheap upscales — there is no per-tile patch blur.
+            plane = self._get_blur_plane(mip)
+            scale = 2.0 ** (level - mip.blur_plane_level)
+            region = blur_util.crop_and_upscale(
+                plane,
+                crop.x * scale, crop.y * scale, crop.w * scale, crop.h * scale,
+                crop.w, crop.h,
+            )
         canvas = np.zeros((self.settings.tile_size, self.settings.tile_size, 3), dtype=np.uint8)
         canvas[0 : crop.h, 0 : crop.w] = region
         return encoder.encode_progressive_jpeg(
             canvas, self.settings.jpeg_quality, self.settings.jpeg_progressive
         )
+
+    def _get_blur_plane(self, mip: PageMipmap) -> np.ndarray:
+        """Return the page's whole-image blur plane, building it once.
+
+        The plane is the mipmap level ``blur_levels_from_coarsest`` levels in
+        from the coarsest level (so its resolution is capped — fine blur tiles
+        are upscales of it) with a Gaussian over the whole image. Built under
+        the mipmap's own lock and stored on it, so it is created once per page
+        and evicted together with the page.
+
+        Args:
+            mip: The decoded page mipmap.
+
+        Returns:
+            The blurred BGR plane (a copy, never aliasing a mipmap level).
+        """
+        if mip.blur_plane is not None:
+            return mip.blur_plane
+        with mip._lock:  # noqa: SLF001 — same lock that serializes level building
+            if mip.blur_plane is not None:
+                return mip.blur_plane
+            plane_level = max(
+                0, mip.max_level - self.settings.blur_levels_from_coarsest
+            )
+            plane_src = mip.level(plane_level)
+            # Keep the source-space blur constant: a plane pixel covers
+            # 2**plane_level source pixels, so scale the sigma down by
+            # 2**(2 - plane_level) to land on blur_strength at level 2.
+            sigma = self.settings.blur_strength * 2.0 ** (2 - plane_level)
+            mip.blur_plane = blur_util.build_blur_plane(plane_src, sigma)
+            mip.blur_plane_level = plane_level
+            return mip.blur_plane
 
     def _get_mipmap(self, book: str, page: str, version: int, path) -> PageMipmap:
         """Return the decoded page mipmap, decoding it once under a per-page lock."""

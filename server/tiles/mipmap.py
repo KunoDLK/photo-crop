@@ -29,7 +29,13 @@ class PageMipmap:
         self.max_level = max_level
         self.tile_size = tile_size
         self._levels: dict[int, np.ndarray] = {0: source}
-        self._lock = threading.Lock()
+        # Reentrant so the blur plane can be built under the same lock that
+        # builds levels (level() re-locks while the plane is being computed).
+        self._lock = threading.RLock()
+        # Whole-page blur plane (built lazily by the tile manager); lives on
+        # the mipmap so it is evicted with the page and shares its lock.
+        self.blur_plane: np.ndarray | None = None
+        self.blur_plane_level: int = 0
 
     @property
     def width(self) -> int:
@@ -79,4 +85,6 @@ class PageMipmap:
         with self._lock:
             for img in self._levels.values():
                 total += img.nbytes
+            if self.blur_plane is not None:
+                total += self.blur_plane.nbytes
         return total

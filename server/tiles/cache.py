@@ -15,7 +15,7 @@ from diskcache import Cache
 
 #: Bumped whenever the blur rendering changes: blur-tile keys embed it, so a
 #: re-render never serves the old bytes from the disk cache (no manual wipe).
-BLUR_GENERATION = 2
+BLUR_GENERATION = 3
 
 
 class TileCache:
