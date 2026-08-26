@@ -21,6 +21,7 @@ import * as ocrOverlay from "./ocr/overlay.js";
 import * as search from "./ocr/search.js";
 import * as nameFilter from "./nameFilter.js";
 import * as help from "./help.js";
+import * as share from "./share.js";
 
 async function bootstrap() {
   const viewEl = document.getElementById("view");
@@ -49,6 +50,7 @@ async function bootstrap() {
   search.init({ nav });
   nameFilter.init({ nav });
   help.init();
+  share.init();
 
   state.on("images-removed", (removed) => {
     for (const im of removed) cache.dropImage(im.id);

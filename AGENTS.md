@@ -164,6 +164,7 @@ crawler-facing HTML.
 | `GET /og/{book}/{page}/{version}.jpg` | 1200×630 social preview, stitched from cached tiles |
 | `GET /api/books/{book}/pages/{page}/ocr` | word/line boxes in source px |
 | `GET /api/search?book=&q=&regex=` | matches + `pending` count |
+| `GET /api/qr?url=` | PNG QR code (H error correction) with the brand "K" logo centred over it, for the Share panel |
 
 Response schemas in `server/models.py` are the server↔client contract: listings include
 each image's dimensions and `max_level` so the client computes tile geometry without
@@ -233,6 +234,10 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
 - `nameFilter.js` — client-side substring filter on raw file name (matches the
   `2_123-Page.jpg` prefix too). **Mutually exclusive with OCR search**: starting one
   clears the other.
+- `share.js` — Share button opens a centred panel with the current URL's QR code
+  (`/api/qr`) and copies the URL to the clipboard; a green tick marks a completed
+  clipboard write. Dismissed by the Okay button or Enter/Escape (keys.js routes
+  those while the panel is open).
 
 ## Gotchas and non-obvious facts
 

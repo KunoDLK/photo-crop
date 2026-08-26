@@ -22,6 +22,7 @@ from .config import Settings
 from .errors import register_error_handlers
 from .ocr import router as ocr_router
 from .ocr.service import OCRService
+from .qr import router as qr_router
 from .tiles import router as tiles_router
 from .tiles.manager import TileService
 
@@ -81,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(tiles_router.router)
     app.include_router(ocr_router.router)
     app.include_router(social.router)
+    app.include_router(qr_router)
 
     app.mount("/", NoCacheStaticFiles(directory=str(_static_dir()), html=True), name="static")
     return app

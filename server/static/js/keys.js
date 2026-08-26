@@ -10,6 +10,7 @@ import * as state from "./state.js";
 import { clearSearch } from "./ocr/search.js";
 import { clearNameFilter } from "./nameFilter.js";
 import { toggleTileDebug } from "./ui.js";
+import { isOpen as shareOpen, close as closeShare } from "./share.js";
 
 let nav = null;
 
@@ -21,6 +22,14 @@ export function init(deps) {
 /** Attach global keyboard handlers. Call once at startup. */
 export function installKeys() {
   window.addEventListener("keydown", (e) => {
+    // The share modal is open: only Enter/Escape (dismiss) are meaningful.
+    if (shareOpen()) {
+      if (e.key === "Enter" || e.key === "Escape") {
+        e.preventDefault();
+        closeShare();
+      }
+      return;
+    }
     // Ignore shortcuts while typing in an input (search box, tile budget, etc.).
     const tag = (document.activeElement && document.activeElement.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA") return;
