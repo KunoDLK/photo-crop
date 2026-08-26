@@ -19,7 +19,6 @@ import { formatPixels, formatBytes, formatDuration, clamp } from "./util.js";
 
 let urlSyncSeq = 0;
 let bookLoadMs = 0;
-let currentSig = null;
 let currentItems = [];
 
 /** The normalized items of the current (full, unfiltered) listing. */
@@ -37,13 +36,11 @@ export async function showBooks(force = false, keepView = null) {
   state.setFocusedImage(null);
   try {
     const data = await fetchBooks(force);
-    if (force && data.signature === currentSig) {
-      state.setStatus("No changes");
-      scheduler.reconcile();
-      render.requestRender();
-      state.emit("location-changed");
-      return;
-    }
+    // Note: there is deliberately no "signature unchanged" shortcut here. The
+    // server signature covers the scanned archive only, not the per-viewer
+    // access filter, so a force reload (Reload button, or the login/logout
+    // refresh) must always reapply the listing: granted books appear, and
+    // every image's access (blurred -> full and back) flips with the session.
     const items = data.books.map((b, i) => ({
       kind: "book",
       bookId: b.id,
@@ -55,6 +52,8 @@ export async function showBooks(force = false, keepView = null) {
       ih: b.cover.height,
       maxLevel: b.cover.max_level,
       version: b.cover.mtime,
+      visibility: b.visibility,
+      access: b.cover.access,
     }));
     currentItems = items;
     buildLayout(items);
@@ -68,7 +67,6 @@ export async function showBooks(force = false, keepView = null) {
     }
     scheduler.reconcile();
     render.requestRender();
-    currentSig = data.signature;
     state.setStatus(items.length ? `${items.length} book(s)` : "No books found");
     url.setPath(null);
     state.emit("location-changed");
@@ -85,12 +83,10 @@ export async function enterBook(book, pageId = null, force = false, keepView = n
   scheduler.resetLevels();
   try {
     const data = await fetchPages(book.id, force);
-    if (force && data.signature === currentSig) {
-      state.setStatus("No changes");
-      scheduler.reconcile();
-      render.requestRender();
-      return;
-    }
+    // Same as showBooks: a force reload always rebuilds so the session's
+    // access (and visibility) are reapplied, even when the archive signature
+    // is unchanged. Skipping it left images on their old access after login,
+    // so tiles kept loading from the blurred endpoint.
     const items = data.pages.map((p) => ({
       kind: "page",
       bookId: book.id,
@@ -102,6 +98,7 @@ export async function enterBook(book, pageId = null, force = false, keepView = n
       ih: p.height,
       maxLevel: p.max_level,
       version: p.mtime,
+      access: p.access,
     }));
     state.location.type = "book";
     state.location.book = book;
@@ -110,7 +107,6 @@ export async function enterBook(book, pageId = null, force = false, keepView = n
     buildLayout(items);
     updateChrome();
     bookLoadMs = performance.now() - t0;
-    currentSig = data.signature;
 
     const target = pageId ? state.images.find((im) => im.pageId === pageId) : null;
     if (keepView) {

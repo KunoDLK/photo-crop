@@ -78,6 +78,15 @@ export class TileCache {
   }
 
   /**
+   * Drop every cached tile, pinned roots included. Used when the viewer
+   * identity changes (login/logout): each image's access variant flips, and
+   * stale decoded tiles would otherwise be reused instead of refetched.
+   */
+  clear() {
+    for (const key of [...this.map.keys()]) this._remove(key);
+  }
+
+  /**
    * Remove every tile of an image except its pinned root (used when the image
    * scrolls off-screen: only the coarse, always-viewable root stays cached).
    */

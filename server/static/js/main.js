@@ -22,6 +22,8 @@ import * as search from "./ocr/search.js";
 import * as nameFilter from "./nameFilter.js";
 import * as help from "./help.js";
 import * as share from "./share.js";
+import * as login from "./login.js";
+import * as access from "./access.js";
 
 async function bootstrap() {
   const viewEl = document.getElementById("view");
@@ -37,7 +39,10 @@ async function bootstrap() {
   compositor.init({ cache });
   render.initDebug({ cache });
 
-  const queue = new TileQueue((req, bitmap) => scheduler.handleTile(req, bitmap));
+  const queue = new TileQueue(
+    (req, bitmap) => scheduler.handleTile(req, bitmap),
+    () => scheduler.reconcile(), // stale (identity-changed) tile discarded: re-decide
+  );
   scheduler.init({ cache, queue, requestRender: render.requestRender });
 
   render.initRenderer(viewEl, leftEl);
@@ -51,6 +56,10 @@ async function bootstrap() {
   nameFilter.init({ nav });
   help.init();
   share.init();
+  login.init();
+  // Resolve the viewer identity before the initial navigation so the boot-time
+  // auth-changed event (below) is never mistaken for a login/logout.
+  await access.init();
 
   state.on("images-removed", (removed) => {
     for (const im of removed) cache.dropImage(im.id);
@@ -124,6 +133,39 @@ async function bootstrap() {
 
   // Restore the location from the launch path (short id) if present.
   await navigateFromPath();
+
+  // Automatic access switching: when the viewer logs in or out, drop the
+  // decoded tiles and invalidate in-flight fetches (the access variant of
+  // every image flips, so stale blur/real bitmaps must be refetched) and
+  // reload the current location. Registered after the initial navigation, so
+  // the boot-time identity fetch never triggers it.
+  state.on("auth-changed", async () => {
+    cache.clear();
+    queue.invalidate();
+    if (state.viewer && state.viewer.authenticated) {
+      // Signed in: refetch the current location in place (private books
+      // appear, blurred pages flip to real tiles).
+      nav.reload();
+      return;
+    }
+    // Signed out: revert to the anonymous view — reload in place when the book
+    // still exists publicly, otherwise return to the root book list.
+    if (state.location.type === "book" && state.location.book) {
+      const bookId = state.location.book.id;
+      try {
+        const res = await fetch(`/api/books/${encodeURIComponent(bookId)}/pages`, {
+          cache: "no-store",
+        });
+        if (res.ok) {
+          nav.reload();
+          return;
+        }
+      } catch (e) {
+        /* fall through to the root */
+      }
+    }
+    nav.showBooks();
+  });
 }
 
 bootstrap();

@@ -37,6 +37,18 @@ class BadRequest(AppError):
     status_code = 400
 
 
+class Unauthorized(AppError):
+    """The requester is not authenticated (or lacks credentials)."""
+
+    status_code = 401
+
+
+class TooManyRequests(AppError):
+    """The requester exceeded a rate limit."""
+
+    status_code = 429
+
+
 def register_error_handlers(app: FastAPI) -> None:
     """Install exception handlers mapping :class:`AppError` subclasses to JSON.
 

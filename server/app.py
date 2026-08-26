@@ -15,6 +15,9 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from . import social
+from .admin import router as admin_router
+from .auth import router as auth_router
+from .auth.service import AuthService
 from .books import router as books_router
 from .books.locations import LocationRegistry
 from .books.scanner import Catalog
@@ -23,6 +26,9 @@ from .errors import register_error_handlers
 from .ocr import router as ocr_router
 from .ocr.service import OCRService
 from .qr import router as qr_router
+from .rights.geo import RegionDetector
+from .rights.policy import Policy
+from .rights.store import RightsStore
 from .tiles import router as tiles_router
 from .tiles.manager import TileService
 
@@ -76,6 +82,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ocr = OCRService(settings)
     app.state.locations = LocationRegistry(settings.cache_dir / "locations.json")
     app.state.catalog = Catalog(settings.archive_root, settings.tile_size)
+    app.state.rights = RightsStore(settings.rights_db)
+    app.state.auth = AuthService(settings, app.state.rights)
+    app.state.region = RegionDetector(settings.default_region, settings.dev_region_header)
+    app.state.policy = Policy(app.state.rights)
 
     register_error_handlers(app)
     app.include_router(books_router.router)
@@ -83,6 +93,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ocr_router.router)
     app.include_router(social.router)
     app.include_router(qr_router)
+    app.include_router(auth_router.router)
+    app.include_router(admin_router.router)
 
     app.mount("/", NoCacheStaticFiles(directory=str(_static_dir()), html=True), name="static")
     return app

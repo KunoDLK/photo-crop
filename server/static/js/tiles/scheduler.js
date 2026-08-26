@@ -70,6 +70,11 @@ function visibleImages() {
   return out.map((o) => o.im);
 }
 
+/** True when the image resolves to the blurred variant (its tiles use /bx/). */
+function imBlurred(im) {
+  return im.access != null && im.access.status === "blurred";
+}
+
 /** Prefetch and pin the root tile of an image (rule 7). */
 export function ensureRootTile(im) {
   const L = im.maxLevel;
@@ -78,7 +83,7 @@ export function ensureRootTile(im) {
   if (queue.has(key)) return;
   queue.request({
     key,
-    url: tileUrl(im.bookId, im.pageId, im.version, L, 0, 0),
+    url: tileUrl(im.bookId, im.pageId, im.version, L, 0, 0, imBlurred(im)),
     priority: 0,
     imId: im.id,
     L,
@@ -121,7 +126,7 @@ export function nextStepTiles(im) {
         const cx = dx + (tx + 0.5) * twsc;
         const cy = dy + (ty + 0.5) * twsc;
         const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
-        list.push({ key, url: tileUrl(im.bookId, im.pageId, im.version, M, tx, ty), priority: d2, A, imId: im.id, L: M, tx, ty });
+        list.push({ key, url: tileUrl(im.bookId, im.pageId, im.version, M, tx, ty, imBlurred(im)), priority: d2, A, imId: im.id, L: M, tx, ty });
       }
     }
   }

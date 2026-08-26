@@ -10,11 +10,28 @@ import { MAX_INFLIGHT } from "../config.js";
 import { fetchTile } from "../api/tiles.js";
 
 export class TileQueue {
-  constructor(onTile) {
+  constructor(onTile, onDropped = () => {}) {
     this.onTile = onTile; // (req, bitmap | null) callback
+    this.onDropped = onDropped; // called after a stale response is discarded
     this.inflight = new Set(); // keys currently being fetched
     this.queued = []; // { key, url, priority, imId, L, tx, ty }
     this.stats = { total: 0, hits: 0 }; // cache-hit tally for the debug bar
+    this.epoch = 0; // bumped on identity change; stale responses are discarded
+  }
+
+  /**
+   * Invalidate every request issued before now (in-flight and queued).
+   *
+   * Called when the viewer identity changes (login/logout): each image's
+   * access variant flips, so a blur/real tile fetched under the old session
+   * must never land in the decoded cache under the new one. Queued requests
+   * are dropped outright; in-flight ones are allowed to finish on the wire but
+   * their bitmaps are closed and discarded when they arrive (the scheduler is
+   * notified so it re-requests the tiles under the current variant).
+   */
+  invalidate() {
+    this.epoch++;
+    this.queued.length = 0;
   }
 
   /** Reset the cache-hit tally (called when a fetch burst begins). */
@@ -61,9 +78,20 @@ export class TileQueue {
       }
       const req = this.queued.splice(best, 1)[0];
       this.inflight.add(req.key);
+      const epoch = this.epoch;
+      const stale = () => epoch !== this.epoch;
       fetchTile(req.url)
         .then(({ bitmap, hit }) => {
           this.inflight.delete(req.key);
+          if (stale()) {
+            // Identity changed while this tile was on the wire; its variant is
+            // wrong for the new session, so never cache it. Wake the scheduler
+            // so the tile is re-requested under the current variant.
+            if (bitmap && bitmap.close) bitmap.close();
+            this.onDropped();
+            this._pump();
+            return;
+          }
           this.stats.total++;
           if (hit) this.stats.hits++;
           this.onTile(req, bitmap);
@@ -71,8 +99,12 @@ export class TileQueue {
         })
         .catch(() => {
           this.inflight.delete(req.key);
-          this.stats.total++;
-          this.onTile(req, null);
+          if (stale()) {
+            this.onDropped();
+          } else {
+            this.stats.total++;
+            this.onTile(req, null);
+          }
           this._pump();
         });
     }

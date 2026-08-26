@@ -27,7 +27,9 @@ from fastapi import APIRouter, Request
 from starlette.responses import HTMLResponse, Response
 
 from .books import dimensions, scanner
+from .errors import NotFound
 from .pages import DESCRIPTION, SITE_TITLE, esc, render_fragment
+from .rights.policy import FULL
 from .tiles import decoder, encoder, geometry, resampler
 
 router = APIRouter(tags=["social"])
@@ -35,8 +37,11 @@ router = APIRouter(tags=["social"])
 PREVIEW_W = 1200
 PREVIEW_H = 630
 
-_index_html: str | None = None
+#: Preview cache keyed by (book, page, version): content-addressed (immutable
+#: URLs) and cached apart from the tiles themselves.
 _preview_cache: dict[tuple[str, str, int], bytes] = {}
+
+_index_html: str | None = None
 
 #: Sitemap cache: (monotonic timestamp, rendered bytes). Rebuilt when the
 #: catalog TTL elapses so re-scans (new books/pages) eventually appear.
@@ -108,7 +113,11 @@ def spa_response(request: Request) -> HTMLResponse:
     html = _inject_og(_viewer_html(), meta)
     html = _inject_title(html, meta)
     html = _inject_content(html, content)
-    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+    headers = {"Cache-Control": "no-cache"}
+    if meta.get("robots"):
+        # Private locations must not be indexed at all.
+        headers["X-Robots-Tag"] = meta["robots"]
+    return HTMLResponse(html, headers=headers)
 
 
 def _stitch_preview(
@@ -169,8 +178,9 @@ async def _render_preview(
     cols, rows = geometry.grid_extent(width, height, tile_size, level)
     lw, lh = geometry.level_size(width, height, level)
 
+    getter = service.get_tile
     jobs = [
-        service.get_tile(book_id, page_id, version, level, tx, ty)
+        getter(book_id, page_id, version, level, tx, ty)
         for ty in range(rows)
         for tx in range(cols)
     ]
@@ -182,11 +192,18 @@ async def _render_preview(
     )
 
 
+def _preview_access(request: Request, book_id: str, page_id: str) -> dict:
+    """Resolve the page's access for the requesting crawler/session."""
+    viewer = request.app.state.auth.viewer_from_request(request)
+    zone = request.app.state.region.zone_of_request(request)
+    return request.app.state.policy.resolve(viewer, book_id, page_id, zone)
+
+
 @router.get("/og/{book_id}/{page_id}/{version}.jpg")
 async def preview_image_endpoint(
     book_id: str, page_id: str, version: int, request: Request
 ) -> Response:
-    """Return the social preview JPEG for a page.
+    """Return the real social preview JPEG for a page (full access only).
 
     Args:
         book_id: Book directory name.
@@ -196,9 +213,17 @@ async def preview_image_endpoint(
 
     Returns:
         A 1200×630 progressive JPEG with long-lived cache headers.
+
+    Raises:
+        errors.NotFound: Unless the requester's access is ``full`` — the real
+            image never leaks to blurred/nonexistent requests (those pages get
+            no preview image at all).
     """
     settings = request.app.state.settings
     path = scanner.page_path(settings.archive_root, book_id, page_id)
+    access = _preview_access(request, book_id, page_id)
+    if access["status"] != FULL:
+        raise NotFound(f"page not found: {page_id}")
     key = (book_id, page_id, version)
     data = _preview_cache.get(key)
     if data is None:
@@ -208,10 +233,17 @@ async def preview_image_endpoint(
         if len(_preview_cache) >= 32:
             _preview_cache.clear()
         _preview_cache[key] = data
+    # The real preview is share-cacheable only when the page is not
+    # region-locked (open to everyone); otherwise browser-cache only.
+    cache_control = (
+        "public, max-age=31536000, immutable"
+        if not access["region_locked"]
+        else "private, max-age=31536000, immutable"
+    )
     return Response(
         content=data,
         media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        headers={"Cache-Control": cache_control},
     )
 
 
@@ -245,6 +277,7 @@ async def sitemap_endpoint(request: Request) -> Response:
 
     catalog = request.app.state.catalog
     locations = request.app.state.locations
+    rights = request.app.state.rights
     base = str(request.base_url).rstrip("/")
 
     entries = [f"  <url><loc>{base}/</loc><priority>1.0</priority></url>"]
@@ -256,6 +289,9 @@ async def sitemap_endpoint(request: Request) -> Response:
     pairs: list[tuple[str, str | None]] = []
     meta: list[tuple[str, str | None]] = []  # (mtime_ns, priority) per pair
     for book in books:
+        # Private books are excluded from the sitemap entirely.
+        if rights.book_visibility(book.id) != "public":
+            continue
         pairs.append((book.id, None))
         meta.append((book.cover.mtime, "0.9"))
         try:

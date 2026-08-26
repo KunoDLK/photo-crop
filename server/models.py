@@ -9,14 +9,35 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class AccessInfo(BaseModel):
+    """Resolved access for one page: ``full``, ``blurred`` or ``nonexistent``.
+
+    ``until`` is present on blurred pages that have a known public-domain date
+    (e.g. ``"1 Jan 2026"``) so the client can render the overlay text.
+    ``region_locked`` is True unless the page resolves ``full`` for an
+    anonymous viewer in every zone — the only case where real tiles may be
+    cached publicly (Cloudflare edge); locked content is served ``private``.
+    """
+
+    status: str
+    zone: str
+    until: str | None = None
+    region_locked: bool = True
+
+
 class CoverInfo(BaseModel):
-    """Cover metadata for a book (the first page of its first group)."""
+    """Cover metadata for a book (the first page of its first group).
+
+    ``access`` is the cover page's resolved access, so the root view knows
+    which tile variant (``/rt/`` real vs ``/bx/`` blurred) to request.
+    """
 
     page_id: str
     width: int
     height: int
     max_level: int
     mtime: int
+    access: AccessInfo | None = None
 
 
 class BookSummary(BaseModel):
@@ -25,6 +46,7 @@ class BookSummary(BaseModel):
     id: str
     name: str
     cover: CoverInfo
+    visibility: str = "private"
 
 
 class PageInfo(BaseModel):
@@ -38,6 +60,7 @@ class PageInfo(BaseModel):
     height: int
     max_level: int
     mtime: int
+    access: AccessInfo | None = None
 
 
 class BooksResponse(BaseModel):
@@ -64,6 +87,7 @@ class ImageInfo(BaseModel):
     max_level: int
     file_size: int
     hash: str
+    access: AccessInfo | None = None
 
 
 class OCRWord(BaseModel):
@@ -113,3 +137,12 @@ class SearchResponse(BaseModel):
     regex: bool
     matches: list[SearchHit]
     pending: int = 0
+
+
+class MeResponse(BaseModel):
+    """Response body for ``GET /api/me`` and a successful login."""
+
+    authenticated: bool
+    username: str | None = None
+    is_owner: bool = False
+    grants: list[str] = []

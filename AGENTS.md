@@ -43,9 +43,10 @@ The server contradicts that. Trust the code, not the docs.
 ## Server architecture (`server/`)
 
 FastAPI app assembled in `server/app.py` `create_app()`: services are constructed once and
-exposed on `app.state` (`.settings`, `.tiles`, `.ocr`, `.locations`, `.catalog`); routers
-fetch them from `request.app.state` — never construct their own. Static viewer is mounted
-at `/` with `no-cache` headers (dev-friendly; tiles are separate and immutable).
+exposed on `app.state` (`.settings`, `.tiles`, `.ocr`, `.locations`, `.catalog`, `.rights`,
+`.auth`, `.region`, `.policy`); routers fetch them from `request.app.state` — never
+construct their own. Static viewer is mounted at `/` with `no-cache` headers (dev-friendly;
+tiles are separate and immutable).
 
 ### Config — `server/config.py`
 
@@ -54,7 +55,10 @@ module that knows env names. Defaults target `/archive/Library` (books root) and
 `/archive/cache`. Key knobs: `ARCHIVE_ROOT`, `CACHE_DIR`, `CACHE_GB` (encoded-tile disk
 budget), `PAGE_CACHE_BYTES` (decoded-page RAM budget), `PAGE_IDLE_SECONDS` (default 10),
 `TILE_SIZE` (256), `JPEG_QUALITY`/`JPEG_PROGRESSIVE`, `OPENCL`, `OCR_*` (cache dir, max dim
-3000, lang, conf threshold 40), `HOST`, `PORT`.
+3000, lang, conf threshold 40), `RIGHTS_DB_PATH` + `ARCHIVE_USERNAME`/`ARCHIVE_PASSWORD` +
+`SESSION_SECRET`/`SESSION_COOKIE_SECURE`/`LOGIN_RATE_LIMIT` + `DEFAULT_REGION`/
+`DEV_REGION_HEADER` + `BLUR_STRENGTH`/`BLUR_DARKNESS` (rights/auth/admin; see the Rights
+section), `HOST`, `PORT`.
 
 ### Errors — `server/errors.py`
 
@@ -96,15 +100,33 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
 - `encoder.py` — progressive (SOF2) JPEG via OpenCV.
 - `cache.py` — diskcache-backed LRU of encoded tiles, byte-limited; key includes the page
   mtime ("version"), so re-saved pages get fresh keys and stale tiles are never served.
+  Keys carry a `t/` vs `x<gen>/` prefix for real vs blurred tiles (the generation bumps
+  whenever blur rendering changes, so old blur bytes are never served without a manual
+  wipe); the router resolves the policy first and never crosses variants, so a real tile
+  cached from an owner's visit can never leak to an anonymous viewer.
+- `blur.py` — blur rendering for restricted pages: the tile crop is downscaled to a
+  64 px patch, heavily Gaussian-blurred (`blur_strength`), and upscaled back. No
+  darkening — the client overlays its own dark banner for the region text. The strength
+  is halved per pyramid level up from 0, keeping the source-space blur identical across
+  levels so adjacent tiles rendered at different levels blur consistently.
 - `page_cache.py` — RAM LRU of decoded mipmaps with a **background idle sweeper**:
   pages are dropped `page_idle_seconds` (default 10 s) after last access so RAM falls
   back near zero when idle.
 - `locks.py` — `KeyedLock`: per-key `asyncio.Lock`s with refcounting, dedupes concurrent
   identical tile renders. Decoded-page dedupe is separate: per-page `threading.Lock`s in
   the manager, so one page is decoded once under concurrent tile storms.
-- `router.py` — `GET /tiles/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg`. Tile responses
-  carry `public, max-age=31536000, immutable` (content-addressed by version); the client
-  relies on the browser HTTP cache for tile reuse.
+- `router.py` — **one route per access variant** so every tile URL is served
+  identically to everyone who may cache it: `GET /rt/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg`
+  serves the real tile (404 unless access is `full`) and `GET /bx/...` serves
+  the blurred tile (404 unless access is exactly `blurred`); `nonexistent` →
+  404 both (indistinguishable from a missing page). Cache headers: blur tiles
+  are always `public, max-age=31536000, immutable` (region-independent bytes);
+  real tiles are `public, immutable` only when the page is **not** region-locked
+  (open to every requester, e.g. `public` default with no governing rule) and
+  `private, immutable` otherwise — a shared cache (Cloudflare edge, browsers)
+  must never hold bytes one requester is entitled to and another is not, and
+  the region decision happens on the origin at request time. The client picks
+  the variant from each image's resolved `access` (`tileUrl(..., blurred)`).
 
 ### OCR — `server/ocr/`
 
@@ -120,6 +142,67 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
   `pending` count so the client polls for progressive results.
 - `router.py` — OCR/search routes are `async` and wrap blocking work in
   `asyncio.to_thread` so the event loop (and tile serving) never blocks.
+
+### Rights + auth + admin — `server/rights/`, `server/auth/`, `server/admin/` (RightsUpdate.md)
+
+Access model (fail-closed defaults): unknown book = `private` (invisible to
+everyone without a grant), page with no rights row = `blurred` (blurred tile,
+never real content), owner always wins, a granted account sees its granted
+books in full, region/date rules apply to everything else.
+
+- `rights/store.py` — SQLite (`cache_dir/rights.db`, full schema created on
+  first boot): editors (death year is the access key), rights_holders, books
+  (visibility, editor, holder, publication year), page_rights (the allow-rule
+  whitelist: exact page → book default → blurred, a per-page `copyright_kind` of
+  `editor`/`holder`/`ad`, plus a per-page `default_access` of `block` (fail
+  closed) or `public` — the owner's own images, open everywhere with no
+  governing rule), page_editors (many-to-many page → editors; UK/EU terms run
+  from the LAST editor's death), users (pbkdf2), user_grants.
+  One connection + a lock; all CRUD lives here.
+- `rights/geo.py` — `RegionDetector`: policy zone from the `CF-IPCountry` header
+  (`US`→us, `GB`/`IE`→uk, EU→eu, else `unknown`), `DEFAULT_REGION` fallback for
+  dev, per-IP TTL cache (bypassed by the dev-only `X-Test-Region` header when
+  `DEV_REGION_HEADER=true`). Unknown regions fail closed.
+- `rights/rules.py` — `pd_year(editors, kind, zone, publication_year)`, per
+  copyright kind: `editor` → uk/eu = LAST editor's death year + 70, us =
+  publication year ≤ 1929 → +95; `holder` (rights holder/publisher) → uk/eu =
+  publication + 70, us = publication + 95; `ad` (advertisement, not covered by
+  the notice) → publication + 28 in every zone; unknown → never.
+- `rights/policy.py` — `Policy.resolve(viewer, book, page, zone, today)` →
+  `full` / `blurred` (+`until` "1 Jan YYYY") / `nonexistent`; recomputed from
+  today's date every request, so pages flip to full automatically on their PD
+  date. `resolve_pages` does one DB pass per book. Resolution: owner → grant →
+  book visibility → governing rule (the page's own copyright kind + editors,
+  else the book's default editor; region/date rules) → the page's
+  `default_access` (`public` = open everywhere, `block` = blurred). Each result
+  carries `region_locked`: True unless the page is `full` for an anonymous
+  viewer in every zone — the only case where real tiles may be cached publicly.
+- `auth/service.py` — owner login from env (`ARCHIVE_USERNAME`/`ARCHIVE_PASSWORD`,
+  `hmac.compare_digest`); account login from pbkdf2 hashes in the DB (stdlib
+  only). Stateless HMAC-signed session cookie (`bv_session`, httpOnly, Secure,
+  SameSite=Lax, 30-day); signing secret auto-persisted to `cache_dir/secret` so
+  sessions survive restarts. Per-IP failure rate limit (`login_rate_limit`,
+  5-min window). Exposes the `Viewer` type (owner/account/anonymous, with
+  `grants`), the `current_viewer` FastAPI dependency, and stateless per-session
+  CSRF tokens (`csrf_token`/`verify_csrf`) for the admin forms.
+- `auth/router.py` — `POST /api/login`, `POST /api/logout`, `GET /api/me`
+  (`{authenticated, username, is_owner, grants}`). pbkdf2 runs in the thread pool.
+- `admin/` — server-rendered HTML CRUD at `/admin` (no build step, no required
+  JS): books (flip public/private, editor, holder, year), editors, rights
+  holders, per-book page-rights screens (default editor / bulk / per-page
+  override: multi-editor sets via Ctrl-click selects, the per-page
+  `copyright_kind` editor/holder/ad, `default_access` block↔public flags, and a
+  bulk "set for all pages" action), accounts (create, reset password, grants, delete). Owner session only
+  (Cloudflare Access guards the network layer); every POST carries the session
+  CSRF token; anonymous GETs render the login form, mutations 401.
+- `scripts/import_rights.py` — CSV bulk seed (`python -m server.scripts.import_rights
+  --db … --editors e.csv --books b.csv --pages p.csv`; upserts, names matched
+  case-insensitively and created when missing).
+- Config: `rights_db_path` (default `cache_dir/rights.db`), `archive_username`,
+  `archive_password` (empty disables owner login), `session_secret` (empty =
+  auto-persist), `session_cookie_secure` (set `false` for plain-http local dev),
+  `login_rate_limit`, `default_region`, `dev_region_header`, `blur_strength`,
+  Requirements gained `python-multipart` (admin forms).
 
 ### Social — `server/social.py`, `server/pages.py`
 
@@ -144,27 +227,41 @@ crawler-facing HTML.
   `request.base_url` (picks up the public hostname behind the Cloudflare tunnel).
 - Page HTML uses `OCRService.get_page_ocr_cached` — a pure cache read that never
   enqueues or blocks, so crawler requests never trigger OCR work.
+- **Access gating**: every content route resolves the policy for the requester's
+  session + region first. `GET /og/...` serves the real preview only for `full`
+  access; `blurred` (and `nonexistent`) pages get **no preview image at all** —
+  the OG meta carries no `og:image`/`twitter:image`, so region-locked shares
+  render as a text-only card and the real image can never leak. SEO fragments:
+  public books render normally, blurred pages keep structure but **no OCR
+  text**, private locations render an empty fragment with
+  `X-Robots-Tag: noindex, nofollow`. The sitemap lists only public books and
+  their pages.
 - `GET /og/{book}/{page}/{mtime}.jpg` renders the 1200×630 preview **from the
   existing tile pipeline**: picks the finest level whose image still covers the
   target, fetches that level's full grid via `TileService.get_tile` (reusing the
   encoded disk cache, decoded-page cache, and mipmaps), stitches, area-downscales,
   centers on white, and progressive-JPEG-encodes. Content-addressed by mtime →
-  `immutable`; small in-process cache (≤32).
+  `immutable`; small in-process cache (≤32, keyed by status too).
 
 ### HTTP API
 
 | Endpoint | Notes |
 |---|---|
-| `GET /api/books[?force=1]` | book summaries + covers + `signature` |
-| `GET /api/books/{book}/pages[?force=1]` | pages sorted by (group, order) + `signature` |
-| `GET /api/books/{book}/pages/{page}/info` | dims, `max_level`, file size, sha256 |
+| `GET /api/books[?force=1]` | visible books (private hidden without a grant) + `signature` + per-book `visibility` + cover `access` |
+| `GET /api/books/{book}/pages[?force=1]` | pages sorted by (group, order) + `signature`; each page carries its resolved `access` |
+| `GET /api/books/{book}/pages/{page}/info` | dims, `max_level`, file size, sha256, resolved `access` |
 | `GET /api/locations?book=&page=` | create/fetch short id → `{id}` |
 | `GET /api/locations/{id}` | resolve short id → `{book, page}` |
-| `GET /tiles/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg` | immutable progressive JPEG |
-| `GET /og/{book}/{page}/{version}.jpg` | 1200×630 social preview, stitched from cached tiles |
-| `GET /api/books/{book}/pages/{page}/ocr` | word/line boxes in source px |
-| `GET /api/search?book=&q=&regex=` | matches + `pending` count |
+| `GET /rt/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg` | immutable real progressive JPEG — `full` access only |
+| `GET /bx/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg` | immutable blurred progressive JPEG — `blurred` access only |
+| `GET /og/{book}/{page}/{version}.jpg` | 1200×630 real social preview (full access only; region-locked pages send no image) |
+| `GET /api/books/{book}/pages/{page}/ocr` | word/line boxes in source px — `full` access only, else 404 |
+| `GET /api/search?book=&q=&regex=` | matches (filtered to fully-visible pages) + `pending` count |
 | `GET /api/qr?url=` | PNG QR code (H error correction) with the brand "K" logo centred over it, for the Share panel |
+| `POST /api/login` | owner/account login → session cookie (401 bad creds, 429 rate-limited) |
+| `POST /api/logout` | clears the session cookie |
+| `GET /api/me` | `{authenticated, username, is_owner, grants}` for the current session |
+| `GET /admin…` / `POST /admin…` | owner-only server-rendered CRUD (CSRF-protected forms) |
 
 Response schemas in `server/models.py` are the server↔client contract: listings include
 each image's dimensions and `max_level` so the client computes tile geometry without
@@ -178,8 +275,8 @@ must keep the `.js` extension or the browser breaks.
 
 `main.js` is the only module that imports everything and wires the object graph
 (TileCache → TileQueue → scheduler → render → interaction → keys → ui → OCR overlay →
-search → nameFilter → help), then restores the location from the launch path. No domain
-logic there.
+search → nameFilter → help → share → login → access), then restores the location from
+the launch path. No domain logic there.
 
 Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fetchPages` →
 `buildLayout` → `scheduler.reconcile` (decides what to fetch) → `queue.request` →
@@ -238,6 +335,18 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   (`/api/qr`) and copies the URL to the clipboard; a green tick marks a completed
   clipboard write. Dismissed by the Okay button or Enter/Escape (keys.js routes
   those while the panel is open).
+- `access.js` — access UX: boot-time `/api/me` fetch → `state.viewer`; renders
+  per-image DOM elements inside the OCR scene (Private badges, and the
+  "Unavailable in your region until …" text, shown only for blurred pages
+  zoomed in near page size — the dark tint itself is canvas-painted by
+  `render.js`, so hundreds of unavailable pages cost nothing at overview zoom);
+  top banner shows the sign-in status or a region-unavailable count. Listings
+  carry per-page `access` and per-book `visibility`, so the client never
+  resolves policy itself.
+- `login.js` — toolbar lock button opens a modal: username/password form for
+  anonymous viewers, "Signed in as … / Log out" for authenticated ones. Login
+  updates `state.viewer` (event `auth-changed`) and reloads the current
+  location so private books appear. Enter submits, Escape dismisses (keys.js).
 
 ## Gotchas and non-obvious facts
 

@@ -64,6 +64,17 @@ export function setStatus(msg) {
   emit("status", msg);
 }
 
+/**
+ * Viewer identity from ``/api/me``: ``{authenticated, username, is_owner,
+ * grants}`` or null until the first fetch resolves. Set by access.js; login
+ * and logout update it so the client refetches listings.
+ */
+export let viewer = null;
+export function setViewer(v) {
+  viewer = v;
+  emit("auth-changed", v);
+}
+
 // ------------------------------------------------------------------ event bus
 const listeners = new Map();
 
@@ -91,3 +102,5 @@ export function emit(event, payload) {
 //   "search-changed"   — search mode applied or cleared
 //   "text-select"      — Ctrl held/released (arg: boolean)
 //   "focus-changed"    — the focused image changed (arg: image or null)
+//   "auth-changed"     — viewer identity changed after login/logout/me fetch
+//                        (arg: viewer profile or null)

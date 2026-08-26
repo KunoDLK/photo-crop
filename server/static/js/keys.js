@@ -11,6 +11,7 @@ import { clearSearch } from "./ocr/search.js";
 import { clearNameFilter } from "./nameFilter.js";
 import { toggleTileDebug } from "./ui.js";
 import { isOpen as shareOpen, close as closeShare } from "./share.js";
+import { isOpen as loginOpen, close as closeLogin } from "./login.js";
 
 let nav = null;
 
@@ -22,6 +23,17 @@ export function init(deps) {
 /** Attach global keyboard handlers. Call once at startup. */
 export function installKeys() {
   window.addEventListener("keydown", (e) => {
+    // The login modal is open: Enter submits, Escape dismisses.
+    if (loginOpen()) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        document.getElementById("btn-login-go")?.click();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeLogin();
+      }
+      return;
+    }
     // The share modal is open: only Enter/Escape (dismiss) are meaningful.
     if (shareOpen()) {
       if (e.key === "Enter" || e.key === "Escape") {

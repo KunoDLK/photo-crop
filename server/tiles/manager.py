@@ -16,6 +16,7 @@ import numpy as np
 from ..books.scanner import page_path
 from ..config import Settings
 from ..errors import BadRequest
+from . import blur as blur_util
 from . import cache as encoded_cache
 from . import decoder, encoder, geometry
 from . import page_cache as decoded_cache
@@ -43,7 +44,7 @@ class TileService:
     async def get_tile(
         self, book: str, page: str, version: int, level: int, tx: int, ty: int
     ) -> tuple[bytes, bool]:
-        """Return encoded JPEG bytes for a tile, caching along the way.
+        """Return encoded JPEG bytes for a real tile, caching along the way.
 
         Args:
             book: Book directory name.
@@ -62,7 +63,38 @@ class TileService:
             errors.NotFound: If the page does not exist.
             errors.BadRequest: If the coordinates are out of range.
         """
-        key = self.tiles.key(book, page, version, level, tx, ty)
+        return await self._get_tile(book, page, version, level, tx, ty, blur=False)
+
+    async def get_blur_tile(
+        self, book: str, page: str, version: int, level: int, tx: int, ty: int
+    ) -> tuple[bytes, bool]:
+        """Return encoded JPEG bytes for a blurred tile of a restricted page.
+
+        Same geometry path as :meth:`get_tile` (so the client's tiling lines
+        up), then a heavy Gaussian blur destroys all detail — no darkening:
+        the client overlays its own dark banner for the region text. The blur
+        strength is halved per level so adjacent tiles blur consistently, and
+        the cache key carries the blur generation + variant, keeping real and
+        blurred tiles strictly separate.
+
+        Args:
+            book: Book directory name.
+            page: Page filename.
+            version: Page file mtime (content version).
+            level: Pyramid level.
+            tx: Tile column.
+            ty: Tile row.
+
+        Returns:
+            ``(bytes, from_cache)`` exactly as :meth:`get_tile`.
+        """
+        return await self._get_tile(book, page, version, level, tx, ty, blur=True)
+
+    async def _get_tile(
+        self, book: str, page: str, version: int, level: int, tx: int, ty: int,
+        blur: bool,
+    ) -> tuple[bytes, bool]:
+        key = self.tiles.key(book, page, version, level, tx, ty, blur)
         cached = self.tiles.get(key)
         if cached is not None:
             return cached, True
@@ -71,11 +103,16 @@ class TileService:
             cached = self.tiles.get(key)
             if cached is not None:
                 return cached, True
-            data = await asyncio.to_thread(self._render_tile, book, page, version, level, tx, ty)
+            data = await asyncio.to_thread(
+                self._render_tile, book, page, version, level, tx, ty, blur
+            )
             self.tiles.put(key, data)
             return data, False
 
-    def _render_tile(self, book: str, page: str, version: int, level: int, tx: int, ty: int) -> bytes:
+    def _render_tile(
+        self, book: str, page: str, version: int, level: int, tx: int, ty: int,
+        blur: bool = False,
+    ) -> bytes:
         """Decode/build the mipmap level, crop, resample, and encode one tile.
 
         Runs on a worker thread (called via ``asyncio.to_thread``); performs no
@@ -97,8 +134,17 @@ class TileService:
             raise BadRequest(f"tile ({tx},{ty}) out of range for level {level}")
 
         lv = mip.level(level)
+        region = lv[crop.y : crop.y + crop.h, crop.x : crop.x + crop.w]
+        if blur:
+            # Half the strength per pyramid level up from 0: a tile at level L
+            # covers 2^L× the source area per pixel, so halving keeps the blur
+            # constant in source pixels and adjacent tiles blur consistently.
+            # The blur applies to the image region only — never the padded
+            # canvas, or edge padding would bleed dark borders into the image.
+            strength = self.settings.blur_strength / (2 ** level)
+            region = blur_util.apply_blur(region, strength)
         canvas = np.zeros((self.settings.tile_size, self.settings.tile_size, 3), dtype=np.uint8)
-        canvas[0 : crop.h, 0 : crop.w] = lv[crop.y : crop.y + crop.h, crop.x : crop.x + crop.w]
+        canvas[0 : crop.h, 0 : crop.w] = region
         return encoder.encode_progressive_jpeg(
             canvas, self.settings.jpeg_quality, self.settings.jpeg_progressive
         )

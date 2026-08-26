@@ -11,6 +11,7 @@ import * as state from "./state.js";
 import * as viewport from "./viewport.js";
 import * as compositor from "./compositor.js";
 import * as ocrOverlay from "./ocr/overlay.js";
+import * as access from "./access.js";
 import { drawHighlights } from "./ocr/search.js";
 import { getCss } from "./util.js";
 import { tileKey } from "./tiles/tileCache.js";
@@ -76,10 +77,16 @@ function render() {
     drawLabel(im, sc);
     if (im.status === "ready") {
       compositor.drawImageTiles(ctx, im, sc);
-      drawFrame(im, sc);
-      if (im.kind === "book") drawBadge(im, sc);
     } else {
       drawPlaceholder(im, sc);
+    }
+    // Unavailable pages get their dark tint painted here (one canvas fill per
+    // visible image, cheap at any zoom and book size) — the "Unavailable…"
+    // text is a separate DOM label that access.js shows only when zoomed in.
+    if (im.access && im.access.status === "blurred") drawBlurTint(im, sc);
+    if (im.status === "ready") {
+      drawFrame(im, sc);
+      if (im.kind === "book") drawBadge(im, sc);
     }
   }
 
@@ -93,6 +100,7 @@ function render() {
   if (state.frameHook) state.frameHook();
 
   ocrOverlay.update();
+  access.update();
 }
 
 /** Draw a text label above an image cell. */
@@ -117,6 +125,17 @@ function drawFrame(im, sc) {
   ctx.strokeStyle = "rgba(0,0,0,0.25)";
   ctx.lineWidth = 1;
   ctx.strokeRect(dx + 0.5, dy + 0.5, im.drawW * sc - 1, im.drawH * sc - 1);
+}
+
+/**
+ * Darken an unavailable page's rect. A plain canvas fill, so hundreds of
+ * blurred pages cost the same as hundreds of normal ones: no per-image DOM
+ * nodes, and the rect follows the pan/zoom transform by construction.
+ */
+function drawBlurTint(im, sc) {
+  const [dx, dy] = viewport.sceneToDev(im.drawX, im.drawY);
+  ctx.fillStyle = "rgba(10, 10, 14, 0.6)";
+  ctx.fillRect(dx, dy, im.drawW * sc, im.drawH * sc);
 }
 
 /**

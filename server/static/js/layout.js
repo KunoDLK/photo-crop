@@ -72,6 +72,8 @@ export function buildLayout(items) {
         im.ih = it.ih;
         im.maxLevel = it.maxLevel;
         im.version = it.version;
+        im.access = it.access;
+        im.visibility = it.visibility;
         im.cellX = ox;
         im.cellY = oy + LABEL_H;
         im.cell = CELL;
@@ -90,6 +92,8 @@ export function buildLayout(items) {
           ih: it.ih,
           maxLevel: it.maxLevel,
           version: it.version,
+          access: it.access,
+          visibility: it.visibility,
           fitFactor: 1,
           cellX: ox,
           cellY: oy + LABEL_H,

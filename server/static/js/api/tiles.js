@@ -6,9 +6,18 @@
  * (no manual IndexedDB here).
  */
 
-/** Build the absolute URL for a tile (versioned by the page file's mtime). */
-export function tileUrl(book, page, version, level, tx, ty) {
-  return `/tiles/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${version}/${level}/${tx}/${ty}.jpg`;
+/**
+ * Build the absolute URL for a tile (versioned by the page file's mtime).
+ *
+ * The variant lives in the path: ``/rt/`` real tiles and ``/bx/`` blurred
+ * tiles are separate URLs, so each is served identically to every requester
+ * that may cache it (browser and Cloudflare edge alike) and the server can
+ * refuse the wrong variant per policy. The image's resolved ``access`` decides
+ * which one the client requests.
+ */
+export function tileUrl(book, page, version, level, tx, ty, blurred = false) {
+  const stem = blurred ? "bx" : "rt";
+  return `/${stem}/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${version}/${level}/${tx}/${ty}.jpg`;
 }
 
 /**

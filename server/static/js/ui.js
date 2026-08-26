@@ -49,6 +49,10 @@ function wireDOM() {
     tiledbg.addEventListener("click", toggleTileDebug);
   }
 
+  // Server-rendered admin CRUD: a hard navigation, not an SPA route.
+  const admin = document.getElementById("btn-admin");
+  if (admin) admin.addEventListener("click", () => { location.href = "/admin"; });
+
   const budget = document.getElementById("tile-budget");
   if (budget) {
     budget.addEventListener("change", () => {

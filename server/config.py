@@ -30,6 +30,23 @@ class Settings(BaseSettings):
             Tesseract (scans are huge; full-res OCR is needlessly slow).
         ocr_lang: Tesseract language code(s), e.g. "eng".
         ocr_conf_threshold: Minimum word confidence (0-100) to keep a word.
+        rights_db_path: SQLite rights database; defaults to ``cache_dir/rights.db``.
+        archive_username: Owner login name (env ``ARCHIVE_USERNAME``).
+        archive_password: Owner password; empty disables owner login.
+        session_secret: Session signing secret; empty auto-generates and
+            persists one next to the rights DB so sessions survive restarts.
+        session_cookie_secure: Mark the session cookie ``Secure`` (turn off
+            for plain-http local development).
+        login_rate_limit: Failed login attempts allowed per IP before a
+            temporary lockout (5-minute window).
+        default_region: ISO country code assumed when no ``CF-IPCountry``
+            header is present (local development); empty → ``unknown`` zone.
+        dev_region_header: Honor an ``X-Test-Region`` country header so curl
+            checks can simulate regions (off by default; never enable in prod).
+        blur_strength: Gaussian sigma applied to blurred tiles (restricted
+            pages) at level 0; halved per pyramid level up so adjacent tiles
+            blur consistently. Larger = less detail survives. The client adds
+            its own dark banner for text readability.
         host: Bind address.
         port: Bind port.
     """
@@ -49,6 +66,15 @@ class Settings(BaseSettings):
     ocr_max_dim: int = 3000
     ocr_lang: str = "eng"
     ocr_conf_threshold: int = 40
+    rights_db_path: Path | None = None
+    archive_username: str = "admin"
+    archive_password: str = ""
+    session_secret: str = ""
+    session_cookie_secure: bool = True
+    login_rate_limit: int = 10
+    default_region: str = ""
+    dev_region_header: bool = False
+    blur_strength: float = 20.0
     host: str = "0.0.0.0"
     port: int = 8000
 
@@ -56,3 +82,8 @@ class Settings(BaseSettings):
     def cache_bytes(self) -> int:
         """Encoded-tile cache budget in bytes (derived from ``cache_gb``)."""
         return int(self.cache_gb * 1024 * 1024 * 1024)
+
+    @property
+    def rights_db(self) -> Path:
+        """Location of the rights SQLite database (defaults under ``cache_dir``)."""
+        return self.rights_db_path or self.cache_dir / "rights.db"

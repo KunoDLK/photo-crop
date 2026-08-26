@@ -16,6 +16,8 @@
   <span class="title" id="title">Books</span>
   <div class="controls" id="controls">
     <button id="btn-share">Share</button>
+    <button id="btn-auth">Log in</button>
+    <button id="btn-admin" hidden>Admin</button>
     <button id="btn-reload">Reload</button>
     <button id="btn-fit">Fit</button>
     <button id="btn-tiledbg">Tile debug: off</button>
@@ -45,7 +47,10 @@
 
 <div class="left" id="left">
   <canvas id="view"></canvas>
-  <div id="ocr-overlay"><div id="ocr-scene"></div></div>
+  <div id="ocr-overlay">
+    <div id="ocr-scene"></div>
+    <div id="access-scene"></div>
+  </div>
   <div class="stats" id="prof" hidden></div>
   <div class="stats" id="stats" hidden></div>
 </div>
@@ -55,6 +60,28 @@
 <div id="seo-content"></div>
 
 <div id="status">Loading…</div>
+
+<!-- Access banner: sign-in status, or a region-unavailable notice. -->
+<div id="access-banner" class="access-banner" hidden></div>
+
+<!-- Login modal: owner/account credentials, or sign-out for a live session. -->
+<div id="login-panel" class="share-panel" hidden>
+  <form id="login-form" autocomplete="off">
+    <label>Username<br><input id="login-user" name="username" autocomplete="username"></label>
+    <label>Password<br><input id="login-pass" name="password" type="password" autocomplete="current-password"></label>
+    <div id="login-message" class="login-message"></div>
+    <div class="share-actions">
+      <button type="button" id="btn-login-cancel">Cancel</button>
+      <button type="submit" id="btn-login-go">Log in</button>
+    </div>
+  </form>
+  <div id="login-logged-in" hidden>
+    <div class="login-signed-in" id="login-signed-in"></div>
+    <div class="share-actions">
+      <button type="button" id="btn-login-logout">Log out</button>
+    </div>
+  </div>
+</div>
 
 <!-- Share modal: current URL as a QR code + copy confirmation. -->
 <div id="share-panel" class="share-panel" hidden>
