@@ -52,8 +52,15 @@ export function init(deps) {
     for (const im of removed) loaded.delete(im.id);
     dirtySpans = true;
   });
-  state.on("focus-changed", () => {
+  state.on("focus-changed", (im) => {
     selectedLines = [];
+    // OCR is a one-page overlay: text follows the focused image, so switching
+    // pages (arrows through search results, clicking another match) unloads
+    // every other page's text instead of accumulating overlays.
+    for (const other of state.images) {
+      if (other === im) continue;
+      loaded.delete(other.id);
+    }
     dirtySpans = true;
   });
   // Keep OCR lifetime in lockstep with the tile cache: when an image's tiles
@@ -251,22 +258,19 @@ export function update() {
 /**
  * Fetch OCR lazily, and only when the text is actually needed: while Ctrl is
  * held (the user is about to select), in debug mode (lines are visible), or
- * for visible matched pages during a search. Pushing to the screen happens on
- * arrival: the fetch stores the data and marks the spans dirty, so the next
- * frame rebuilds them.
+ * for the focused page during a search. Only the focused image's text is ever
+ * loaded, so the overlay stays a one-page overlay. Pushing to the screen
+ * happens on arrival: the fetch stores the data and marks the spans dirty, so
+ * the next frame rebuilds them.
  */
 function ensureLoaded() {
   if (state.searchActive) {
-    // Search mode: warm OCR for visible matched pages so their text overlay is
-    // ready as soon as one of them is focused (a single-result search is
-    // auto-selected immediately). Bounded by what is actually on screen.
-    const vpw = state.viewport.w, vph = state.viewport.h;
-    for (const im of state.images) {
-      if (!im.searchHits) continue;
-      if (im.status !== "ready") continue;
-      if (!viewport.isImageVisible(im, vpw, vph)) continue;
-      requestOcr(im);
-    }
+    // Search mode: only the focused page's text loads. Matched text is already
+    // highlighted by the canvas dim layer (search.drawHighlights); the DOM
+    // overlay exists for reading/selecting one page, and loading it for every
+    // matched page at once is what stalls frames.
+    const im = state.focusedImage;
+    if (im && im.status === "ready") requestOcr(im);
     return;
   }
   const im = state.focusedImage;
@@ -286,7 +290,7 @@ function requestOcr(im) {
       // while the page is still current and on screen: a fetch racing a
       // scroll-away must not resurrect text whose tiles were already pruned.
       if (suppressed.delete(im.id)) return;
-      if (state.images.some((i) => i.id === im.id)
+      if (state.focusedImage === im
           && viewport.isImageVisible(im, state.viewport.w, state.viewport.h)) {
         loaded.set(im.id, data);
         dirtySpans = true;
@@ -299,10 +303,9 @@ function requestOcr(im) {
 }
 
 /**
- * Rebuild the spans for every image with loaded OCR — the focused page plus
- * any page a selection drag fetched. Bounding the DOM to one page would hide
- * text the user already paid to load (debug view, selection highlight); the
- * loaded data itself survives until navigation empties the layout.
+ * Rebuild the spans for the single image with loaded OCR — the focused page
+ * (focus changes unload every other page's text, so at most one image's
+ * overlay exists at a time).
  */
 function rebuildSpans() {
   if (!sceneEl) return;
