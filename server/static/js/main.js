@@ -24,6 +24,7 @@ import * as help from "./help.js";
 import * as share from "./share.js";
 import * as login from "./login.js";
 import * as access from "./access.js";
+import * as fullscreen from "./fullscreen.js";
 
 async function bootstrap() {
   const viewEl = document.getElementById("view");
@@ -48,6 +49,7 @@ async function bootstrap() {
   render.initRenderer(viewEl, leftEl);
   interaction.init({ scheduler, nav });
   interaction.installInteraction(viewEl);
+  fullscreen.init({ viewEl });
   keys.init({ nav });
   keys.installKeys();
   ui.init({ cache, queue, nav });
@@ -63,6 +65,12 @@ async function bootstrap() {
 
   state.on("images-removed", (removed) => {
     for (const im of removed) cache.dropImage(im.id);
+  });
+
+  // The renderer re-fits the view after a large viewport change (rotation,
+  // browser bars collapsing); reconcile tile targets for the new size.
+  state.on("viewport-resized", () => {
+    scheduler.reconcile();
   });
 
   state.setFrameHook(() => {

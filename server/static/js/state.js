@@ -104,3 +104,6 @@ export function emit(event, payload) {
 //   "focus-changed"    — the focused image changed (arg: image or null)
 //   "auth-changed"     — viewer identity changed after login/logout/me fetch
 //                        (arg: viewer profile or null)
+//   "viewport-resized" — the canvas changed size enough that the view was
+//                        re-fit (rotation, browser bars); subscribers should
+//                        reconcile tile targets

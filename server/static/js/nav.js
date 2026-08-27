@@ -271,6 +271,21 @@ export function fitOverview() {
 }
 
 /**
+ * Re-fit the view to the current viewport after it changed size (rotation, or
+ * the browser bars collapsing in landscape). Content then fills the whole
+ * screen again, safe-area regions included. Rebuilds tile targets for the new
+ * size; called by fullscreen.js and on the "viewport-resized" event.
+ */
+export function refitViewport() {
+  const { w, h } = state.viewport;
+  if (!w || !h) return;
+  if (state.focusedImage) viewport.fitViewToImage(state.focusedImage, w, h);
+  else viewport.fitView(w, h);
+  scheduler.reconcile();
+  render.requestRender();
+}
+
+/**
  * Called after navigation settles or a search narrows the listing: promote the
  * page under the viewport centre to the active location when it dominates the
  * screen (which also pulls in its OCR overlay text), or select the page outright

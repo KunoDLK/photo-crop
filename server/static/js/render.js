@@ -23,6 +23,8 @@ let needRender = false;
 let cache = null;
 let debugLayer = null; // offscreen tint layer for the tile-debug overlay
 let debugCtx = null;
+let refitTimer = null; // debounced viewport-change handler
+let lastSize = { w: 0, h: 0 };
 
 /** Provide the decoded-tile cache so the debug overlay can enumerate tiles. */
 export function initDebug(deps) {
@@ -35,6 +37,22 @@ export function initRenderer(viewEl, leftEl) {
   ctx = canvas.getContext("2d");
   new ResizeObserver(() => {
     resizeCanvas(leftEl);
+    // After a large viewport change (rotation, or the browser bars collapsing
+    // in landscape) the view must be re-fit so content fills the whole screen
+    // again — the previously hidden safe-area regions included. Debounced so
+    // the browser's own resize animation settles before the refit runs.
+    if (refitTimer) clearTimeout(refitTimer);
+    refitTimer = setTimeout(() => {
+      refitTimer = null;
+      const w = state.viewport.w, h = state.viewport.h;
+      if (lastSize.w && (Math.abs(w - lastSize.w) > 40 || Math.abs(h - lastSize.h) > 40)) {
+        if (state.focusedImage) viewport.fitViewToImage(state.focusedImage, w, h);
+        else viewport.fitView(w, h);
+        state.emit("viewport-resized");
+      }
+      lastSize = { w, h };
+      requestRender();
+    }, 120);
     requestRender();
   }).observe(leftEl);
   resizeCanvas(leftEl);

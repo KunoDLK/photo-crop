@@ -8,8 +8,9 @@
  * render.js (cheap at any zoom); this module adds the "Unavailable in your
  * region…" text only when such a page is zoomed in near page size, plus a
  * badge on private books; the top banner reports the session and
- * region-limited counts. Also owns the boot-time ``/api/me`` fetch that
- * publishes ``state.viewer``.
+ * region-limited counts. The banner auto-slides away after a few seconds and
+ * returns on any content change (login, navigation, layout). Also owns the
+ * boot-time ``/api/me`` fetch that publishes ``state.viewer``.
  */
 
 import * as state from "./state.js";
@@ -27,6 +28,14 @@ let lastTransform = "";
 // the whole story. Keeps at most a couple of text elements in the DOM.
 const BLUR_TEXT_VIEWPORT_FRACTION = 0.2;
 
+// The banner slides up after this long showing the same content; any change
+// to its text (or a navigation or login) brings it back and restarts the
+// timer, so a repeated message on a new screen is never skipped.
+const BANNER_DISMISS_MS = 4000;
+let bannerTimer = null;
+let bannerEpoch = 0;
+let lastBannerSig = null;
+
 /**
  * Wire the access layer to its scene element and load the viewer identity.
  *
@@ -40,10 +49,10 @@ export async function init() {
   bannerEl = document.getElementById("access-banner");
   if (!sceneEl) return;
 
-  state.on("images-changed", () => { dirty = true; });
-  state.on("images-removed", () => { dirty = true; });
+  state.on("images-changed", () => { dirty = true; bannerEpoch++; });
+  state.on("images-removed", () => { dirty = true; bannerEpoch++; });
   state.on("focus-changed", () => updateBanner());
-  state.on("auth-changed", updateBanner);
+  state.on("auth-changed", () => { bannerEpoch++; updateBanner(); });
 
   const me = await fetchMe();
   state.setViewer(me); // null when the endpoint is unreachable
@@ -149,7 +158,9 @@ function refreshLabels() {
 
 /**
  * The banner under the toolbar: signed-in status, or a region notice when the
- * current book has pages the viewer cannot see in full.
+ * current book has pages the viewer cannot see in full. Auto-dismisses by
+ * sliding up after BANNER_DISMISS_MS; any content change (login, navigation,
+ * layout) brings it back and restarts the timer.
  */
 function updateBanner() {
   if (!bannerEl) return;
@@ -157,22 +168,46 @@ function updateBanner() {
   if (v && v.authenticated) {
     bannerEl.textContent = "Signed in as " + v.username + (v.is_owner ? " (owner)" : "");
     bannerEl.hidden = false;
-    return;
-  }
-  let blurred = 0;
-  let until = null;
-  for (const im of state.images) {
-    if (im.kind !== "page" || !im.access || im.access.status !== "blurred") continue;
-    blurred++;
-    if (im.access.until && (!until || im.access.until < until)) until = im.access.until;
-  }
-  if (blurred > 0) {
-    const n = blurred === state.images.length
-      ? "These pages are unavailable in your region"
-      : `${blurred} page${blurred === 1 ? " is" : "s are"} unavailable in your region`;
-    bannerEl.textContent = n + (until ? ` until ${until}` : "");
-    bannerEl.hidden = false;
   } else {
-    bannerEl.hidden = true;
+    let blurred = 0;
+    let until = null;
+    for (const im of state.images) {
+      if (im.kind !== "page" || !im.access || im.access.status !== "blurred") continue;
+      blurred++;
+      if (im.access.until && (!until || im.access.until < until)) until = im.access.until;
+    }
+    if (blurred > 0) {
+      const n = blurred === state.images.length
+        ? "These pages are unavailable in your region"
+        : `${blurred} page${blurred === 1 ? " is" : "s are"} unavailable in your region`;
+      bannerEl.textContent = n + (until ? ` until ${until}` : "");
+      bannerEl.hidden = false;
+    } else {
+      bannerEl.hidden = true;
+    }
   }
+  // updateBanner() runs every frame; only re-arm the dismiss timer when the
+  // banner's visibility or content actually changed.
+  const sig = (bannerEl.hidden ? "h" : "v") + bannerEpoch + "|" + bannerEl.textContent;
+  if (sig !== lastBannerSig) {
+    lastBannerSig = sig;
+    armBannerDismiss();
+  }
+}
+
+/**
+ * (Re)start the slide-away timer: restore the banner, measure its height into
+ * ``--banner-h`` (the CSS slide collapses the flex slot by exactly that much),
+ * then schedule the ``dismissed`` class.
+ */
+function armBannerDismiss() {
+  clearTimeout(bannerTimer);
+  bannerTimer = null;
+  bannerEl.classList.remove("dismissed");
+  if (bannerEl.hidden) return;
+  bannerEl.style.setProperty("--banner-h", bannerEl.offsetHeight + "px");
+  bannerTimer = setTimeout(() => {
+    bannerTimer = null;
+    bannerEl.classList.add("dismissed");
+  }, BANNER_DISMISS_MS);
 }

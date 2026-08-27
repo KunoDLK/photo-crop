@@ -12,6 +12,7 @@ import { clearNameFilter } from "./nameFilter.js";
 import { toggleTileDebug } from "./ui.js";
 import { isOpen as shareOpen, close as closeShare } from "./share.js";
 import { isOpen as loginOpen, close as closeLogin } from "./login.js";
+import { toggleFullscreen } from "./fullscreen.js";
 
 let nav = null;
 
@@ -46,7 +47,10 @@ export function installKeys() {
     const tag = (document.activeElement && document.activeElement.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA") return;
 
-    if (e.key === "f" || e.key === "F") {
+    if (e.key === "F" && e.shiftKey) {
+      // Shift+F toggles the Fullscreen API (desktop/iPad; no-op elsewhere).
+      toggleFullscreen();
+    } else if (e.key === "f" || e.key === "F") {
       if (nav) nav.fitOverview();
     } else if (e.key === "r" || e.key === "R") {
       if (nav) nav.reload();

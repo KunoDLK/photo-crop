@@ -342,13 +342,32 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   "Unavailable in your region until …" text, shown only for blurred pages
   zoomed in near page size — the dark tint itself is canvas-painted by
   `render.js`, so hundreds of unavailable pages cost nothing at overview zoom);
-  top banner shows the sign-in status or a region-unavailable count. Listings
-  carry per-page `access` and per-book `visibility`, so the client never
-  resolves policy itself.
+  top banner shows the sign-in status or a region-unavailable count (it
+  auto-slides away after a few seconds and returns on any content change).
+  Listings carry per-page `access` and per-book `visibility`, so the client
+  never resolves policy itself.
 - `login.js` — toolbar lock button opens a modal: username/password form for
   anonymous viewers, "Signed in as … / Log out" for authenticated ones. Login
   updates `state.viewer` (event `auth-changed`) and reloads the current
   location so private books appear. Enter submits, Escape dismisses (keys.js).
+- `fullscreen.js` — two paths to reclaimed screen space. Desktop/iPad: the
+  Fullscreen API via a toolbar button (hidden where unsupported, e.g. iPhone
+  Safari; Shift+F also toggles it). iPhone Safari/Chrome: the browser bars can
+  only collapse via a real downward scroll of the document, so a
+  `visualViewport` watcher shows a fixed "swipe down" hint while the bars are
+  open in landscape and temporarily unlocks the document (a hidden spacer adds
+  scroll room; the viewer is fully `position: fixed`, so the scroll is
+  invisible) — the swipe is then a genuine document scroll that collapses the
+  bars, and the watcher locks the page again and flips the app into
+  "immersive" mode (`html.immersive`): on coarse-pointer devices the
+  toolbar/status bar tuck away after a pan/zoom burst and a touch near the top
+  edge brings them back. On touch devices /
+  narrow windows the canvas is full-bleed (`#left` fixed, inset 0) and the
+  chrome floats on top of it: back/title/☰ become translucent safe-area-aware
+  pills, and the banner + status line become floating pills — content renders
+  right around the dynamic island. `viewport-fit=cover` +
+  `env(safe-area-inset-*)` paddings keep content clear of the notch/home
+  indicator when the chrome is gone.
 
 ## Gotchas and non-obvious facts
 

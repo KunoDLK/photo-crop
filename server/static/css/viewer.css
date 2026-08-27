@@ -19,6 +19,7 @@
 * { box-sizing: border-box; }
 html, body {
   height: 100%;
+  height: 100dvh;
   margin: 0;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
@@ -31,11 +32,12 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: calc(8px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 8px calc(12px + env(safe-area-inset-left));
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
   position: relative;
+  z-index: 2;
 }
 .toolbar button {
   padding: 6px 12px;
@@ -130,7 +132,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 #status {
   flex: 0 0 auto;
-  padding: 5px 12px;
+  padding: calc(5px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(5px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
   font-size: 12px;
   color: var(--muted);
   border-top: 1px solid var(--border);
@@ -277,7 +279,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 .access-banner {
   flex: 0 0 auto;
-  padding: 4px 12px;
+  padding: calc(4px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
   font-size: 12px;
   color: var(--text);
   background: color-mix(in srgb, var(--accent, #a5b4fc) 18%, var(--bg));
@@ -285,8 +287,16 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  --banner-h: 26px;
+  margin-top: 0;
+  transition: margin-top 0.35s ease, opacity 0.35s ease;
 }
 .access-banner[hidden] { display: none; }
+.access-banner.dismissed {
+  margin-top: calc(-1 * var(--banner-h, 26px));
+  opacity: 0;
+  pointer-events: none;
+}
 
 .access-badge {
   position: absolute;
@@ -403,18 +413,75 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 /* ---------------------------------------------------------------- mobile
    On touch devices (phones/tablets, any orientation) or narrow windows the
-   toolbar controls collapse into a dropdown menu toggled by the ☰ button; the
-   back button, title and zoom label stay visible. Desktop (mouse) is unchanged. */
+   canvas fills the entire screen and the chrome floats on top of it: the back
+   button, title and ☰ menu become translucent pills positioned clear of the
+   notch/home indicator via safe-area insets, the banner and status line become
+   floating pills, and the other controls appear in the ☰ dropdown. Content
+   renders right around the dynamic island. The no-JS crawler view keeps the
+   old in-flow layout (html.no-js). Desktop (mouse, wide) is unchanged. */
 @media (max-width: 900px), (hover: none) and (pointer: coarse) {
-  .toolbar { position: relative; }
+  html:not(.no-js) body { display: block; }
+  html:not(.no-js) .left { position: fixed; inset: 0; }
+
+  html:not(.no-js) .toolbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 30;
+    padding: 0;
+    background: transparent;
+    border: none;
+    align-items: flex-start;
+    pointer-events: none;
+  }
+  html:not(.no-js) .toolbar > button,
+  html:not(.no-js) .title,
+  html:not(.no-js) .controls { pointer-events: auto; }
+
+  html:not(.no-js) .nav-back {
+    margin: calc(env(safe-area-inset-top) + 6px) 0 0 calc(env(safe-area-inset-left) + 10px);
+    padding: 0 14px;
+    min-width: 42px;
+    min-height: 42px;
+    border-radius: 999px;
+    background: rgba(20, 20, 24, 0.55);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(8px);
+  }
+  html:not(.no-js) .title {
+    margin: calc(env(safe-area-inset-top) + 6px) 0 0 10px;
+    max-width: 42vw;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(20, 20, 24, 0.55);
+    color: #fff;
+    backdrop-filter: blur(8px);
+  }
+  html:not(.no-js) .zoom-lbl {
+    margin: calc(env(safe-area-inset-top) + 6px) 0 0 8px;
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  }
+  html:not(.no-js) .toolbar > button:hover { background: rgba(255, 255, 255, 0.15); }
+
   .menu-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 40px;
-    min-height: 40px;
+    min-width: 42px;
+    min-height: 42px;
     font-size: 18px;
     padding: 6px 10px;
+  }
+  html:not(.no-js) .menu-btn {
+    margin: calc(env(safe-area-inset-top) + 6px) calc(env(safe-area-inset-right) + 10px) 0 auto;
+    border-radius: 999px;
+    background: rgba(20, 20, 24, 0.55);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(8px);
   }
   .toolbar-spacer { display: block; flex: 1; }
 
@@ -422,12 +489,15 @@ body { display: flex; flex-direction: column; overflow: hidden; }
     display: none;
     position: absolute;
     top: calc(100% + 4px);
-    right: 8px;
+    right: calc(env(safe-area-inset-right) + 8px);
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
     padding: 8px;
     min-width: 200px;
+    max-height: calc(100vh - 80px);
+    max-height: calc(100dvh - 80px);
+    overflow-y: auto;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -443,6 +513,49 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   .tile-budget { justify-content: space-between; }
   .search-box { width: 100%; }
   .search-box input[type="text"] { flex: 1; width: auto; }
+
+  /* Floating status pill (bottom-centre) and access banner (below the chrome). */
+  html:not(.no-js) #status {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(env(safe-area-inset-bottom) + 8px);
+    max-width: 90vw;
+    padding: 4px 12px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(20, 20, 24, 0.55);
+    color: #fff;
+    font-size: 11px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    z-index: 20;
+  }
+  html:not(.no-js) .access-banner {
+    position: fixed;
+    top: calc(env(safe-area-inset-top) + 54px);
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 90vw;
+    margin: 0;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    z-index: 25;
+    transition: transform 0.35s ease, opacity 0.35s ease;
+  }
+  html:not(.no-js) .access-banner.dismissed {
+    margin-top: 0;
+    transform: translate(-50%, -200%);
+    opacity: 0;
+    pointer-events: none;
+  }
+  html:not(.no-js) .stats { bottom: calc(env(safe-area-inset-bottom) + 4px); }
+  html:not(.no-js) #prof { bottom: calc(env(safe-area-inset-bottom) + 24px); }
 }
 
 /* ------------------------------------------------------- crawler content
@@ -466,3 +579,82 @@ html.no-js #seo-content {
 #seo-content .seo-breadcrumb { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
 #seo-content .seo-pager { display: flex; gap: 16px; margin-top: 16px; }
 #seo-content .seo-page p { margin: 0.4em 0; line-height: 1.5; }
+
+/* -------------------------------------------------------------- fullscreen
+   Two mechanisms for reclaiming screen space (see js/fullscreen.js). Desktop
+   and iPad use the Fullscreen API via the toolbar button. iPhone Safari cannot
+   collapse its bars by script, only by a real downward scroll inside a
+   scrollable element: while the bars are open in landscape, fullscreen.js
+   shows the "swipe down" pill below, whose body IS that scroll container;
+   collapsing the chrome then flips the app into "immersive" mode
+   (html.immersive). On coarse-pointer devices immersive tucks the toolbar and
+   status bar away after a pan/zoom burst and shows a small ⌄ button (or a
+   touch near the top edge) to bring them back; desktop fullscreen keeps its
+   bars, there is room to spare. */
+
+.collapse-pill {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  /* Well below the top edge so an upward swipe has room to complete before
+     the finger runs off the screen (landscape viewport is short). */
+  padding-top: calc(env(safe-area-inset-top) + 25vh);
+  z-index: 100;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+.collapse-pill.visible {
+  opacity: 1;
+  visibility: visible;
+}
+.collapse-pill-bubble {
+  pointer-events: auto;
+  max-width: 86vw;
+  padding: 11px 20px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, 0.78);
+  color: #fff;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+/* While Safari's bars are open in landscape, the document must be scrollable
+   for the collapse gesture to work: a hidden spacer adds scroll room, and the
+   viewer's fixed layout stays put, so the scroll is invisible (only Safari's
+   bars react). The bars-open class is toggled by fullscreen.js (iPhone only). */
+html.bars-open,
+html.bars-open body { overflow: visible; }
+.scroll-spacer {
+  display: none;
+  width: 100%;
+  height: 300vh;
+}
+html.bars-open .scroll-spacer { display: block; }
+
+/* Touch devices: slide the chrome away in immersive mode (fullscreen on
+   desktop, bars collapsed on iPhone). The toolbar floats over the canvas, so
+   hiding it is a pure transform + fade; the status pill fades down. */
+@media (hover: none) and (pointer: coarse) {
+  .toolbar { transition: transform 0.28s ease, opacity 0.28s ease; }
+  html.immersive.chrome-hidden .toolbar {
+    transform: translateY(-130%);
+    opacity: 0;
+    pointer-events: none;
+  }
+  html.immersive #status {
+    transform: translateX(-50%) translateY(14px);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.28s ease, opacity 0.28s ease;
+  }
+}
+
