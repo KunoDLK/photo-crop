@@ -10,15 +10,46 @@
 export const TILE = 256;
 
 /**
+ * Persisted tunables: a few UI-adjustable budgets survive reloads via
+ * localStorage so each browser remembers its own settings. Storage reads and
+ * writes are best-effort (private mode, disabled cookies must not break the
+ * viewer), and stored values are always clamped to the same ranges the
+ * toolbar inputs enforce.
+ */
+
+/** Read a persisted tunable, clamped to [min, max]; fallback on any failure. */
+function loadSetting(key, fallback, min, max) {
+  try {
+    const raw = parseInt(localStorage.getItem(key), 10);
+    if (!Number.isNaN(raw)) return Math.max(min, Math.min(max, raw));
+  } catch (e) { /* storage unavailable: keep the default */ }
+  return fallback;
+}
+
+/** Persist a tunable; failures are ignored (best effort). */
+function saveSetting(key, value) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch (e) { /* storage unavailable: skip persisting */ }
+}
+
+/** Clamp a raw input to [min, max], normalising non-numbers to the fallback. */
+function clampSetting(v, min, max, fallback) {
+  return Math.max(min, Math.min(max, Math.floor(v) || fallback));
+}
+
+/**
  * Quality budget: the maximum number of tiles rendered on screen at once.
  * Drives per-image level selection (see tiles/levelSelect.js). UI-adjustable via
- * the toolbar "Tiles" input; a live binding so dependents see updates.
+ * the toolbar "Tiles" input; a live binding so dependents see updates. Persists
+ * across reloads via localStorage.
  */
-export let MAX_DISPLAYED_TILES = 100;
+export let MAX_DISPLAYED_TILES = loadSetting("bv.maxDisplayedTiles", 100, 4, 1024);
 
 /** Update the tile budget at runtime (used by the toolbar control). */
 export function setMaxDisplayedTiles(v) {
-  MAX_DISPLAYED_TILES = Math.max(4, Math.floor(v) || 4);
+  MAX_DISPLAYED_TILES = clampSetting(v, 4, 1024, 4);
+  saveSetting("bv.maxDisplayedTiles", MAX_DISPLAYED_TILES);
 }
 
 /**
@@ -28,12 +59,14 @@ export function setMaxDisplayedTiles(v) {
  * priority ordering is lost), while over HTTP/2 ~100 streams are available, so
  * raising it widens each refinement wave. That pays off most when tiles return
  * fast (Cloudflare edge hits) and is a live binding so the toolbar can tune it.
+ * Persists across reloads via localStorage.
  */
-export let MAX_INFLIGHT = 16;
+export let MAX_INFLIGHT = loadSetting("bv.maxInflight", 16, 1, 64);
 
 /** Update the tile-fetch concurrency at runtime (used by the Fetch control). */
 export function setMaxInflight(v) {
-  MAX_INFLIGHT = Math.max(1, Math.floor(v) || 1);
+  MAX_INFLIGHT = clampSetting(v, 1, 64, 1);
+  saveSetting("bv.maxInflight", MAX_INFLIGHT);
 }
 
 /** Quiet period after the last input before the scheduler "settles". */

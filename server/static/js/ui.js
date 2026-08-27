@@ -55,6 +55,8 @@ function wireDOM() {
 
   const budget = document.getElementById("tile-budget");
   if (budget) {
+    // Reflect the persisted value (config.js initialised it from localStorage).
+    budget.value = String(MAX_DISPLAYED_TILES);
     budget.addEventListener("change", () => {
       setMaxDisplayedTiles(parseInt(budget.value, 10) || 100);
       scheduler.reconcile();
@@ -64,7 +66,7 @@ function wireDOM() {
 
   const inflight = document.getElementById("tile-inflight");
   if (inflight) {
-    // Reflect the auto-raised value (main.js bumps it on HTTP/2/3).
+    // Reflect the persisted value (config.js initialised it from localStorage).
     inflight.value = String(MAX_INFLIGHT);
     inflight.addEventListener("change", () => {
       setMaxInflight(parseInt(inflight.value, 10) || 6);
