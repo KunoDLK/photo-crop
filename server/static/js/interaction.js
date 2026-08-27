@@ -8,7 +8,7 @@
 
 import * as state from "./state.js";
 import { clamp } from "./util.js";
-import { SETTLE_MS } from "./config.js";
+import { SETTLE_MS, MAX_SCALE } from "./config.js";
 import * as render from "./render.js";
 
 let scheduler = null;
@@ -64,7 +64,7 @@ function onWheel(e) {
   // notches. Clamp the per-event factor so a ctrl+wheel notch can't jump wildly.
   const k = e.ctrlKey ? 0.036 : 0.0012;
   const f = clamp(Math.exp(-e.deltaY * k), 0.5, 2);
-  const ns = clamp(state.view.scale * f, 0.00005, 64);
+  const ns = clamp(state.view.scale * f, 0.00005, MAX_SCALE);
   const wx = (mx - state.view.vx) / state.view.scale;
   const wy = (my - state.view.vy) / state.view.scale;
   state.view.vx = mx - wx * ns;
@@ -194,7 +194,7 @@ function updatePinch() {
   if (!a || !b) return;
   const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
   const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
-  const ns = clamp(pinch.startScale * (dist / pinch.startDist), 0.00005, 64);
+  const ns = clamp(pinch.startScale * (dist / pinch.startDist), 0.00005, MAX_SCALE);
   const wx = (pinch.midX - pinch.startVx) / pinch.startScale;
   const wy = (pinch.midY - pinch.startVy) / pinch.startScale;
   state.view.scale = ns;

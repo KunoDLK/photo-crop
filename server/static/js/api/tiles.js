@@ -9,13 +9,20 @@
 /**
  * Build the absolute URL for a tile (versioned by the page file's mtime).
  *
- * The variant lives in the path: ``/rt/`` real tiles and ``/bx/`` blurred
+ * Archive images use variant paths: ``/rt/`` real tiles and ``/bx/`` blurred
  * tiles are separate URLs, so each is served identically to every requester
  * that may cache it (browser and Cloudflare edge alike) and the server can
  * refuse the wrong variant per policy. The image's resolved ``access`` decides
  * which one the client requests.
+ *
+ * Provider images (``source !== "archive"``, e.g. the fractal generator) use
+ * the generic ``/pv/`` route instead; the book id is the namespace key the
+ * server registry resolves to the owning source.
  */
-export function tileUrl(book, page, version, level, tx, ty, blurred = false) {
+export function tileUrl(book, page, version, level, tx, ty, blurred = false, source = "archive") {
+  if (source !== "archive") {
+    return `/pv/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${version}/${level}/${tx}/${ty}.jpg`;
+  }
   const stem = blurred ? "bx" : "rt";
   return `/${stem}/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${version}/${level}/${tx}/${ty}.jpg`;
 }

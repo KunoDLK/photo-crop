@@ -83,7 +83,7 @@ export function ensureRootTile(im) {
   if (queue.has(key)) return;
   queue.request({
     key,
-    url: tileUrl(im.bookId, im.pageId, im.version, L, 0, 0, imBlurred(im)),
+    url: tileUrl(im.bookId, im.pageId, im.version, L, 0, 0, imBlurred(im), im.source),
     priority: 0,
     imId: im.id,
     L,
@@ -126,7 +126,7 @@ export function nextStepTiles(im) {
         const cx = dx + (tx + 0.5) * twsc;
         const cy = dy + (ty + 0.5) * twsc;
         const d2 = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
-        list.push({ key, url: tileUrl(im.bookId, im.pageId, im.version, M, tx, ty, imBlurred(im)), priority: d2, A, imId: im.id, L: M, tx, ty });
+        list.push({ key, url: tileUrl(im.bookId, im.pageId, im.version, M, tx, ty, imBlurred(im), im.source), priority: d2, A, imId: im.id, L: M, tx, ty });
       }
     }
   }

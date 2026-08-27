@@ -29,6 +29,10 @@ from .qr import router as qr_router
 from .rights.geo import RegionDetector
 from .rights.policy import Policy
 from .rights.store import RightsStore
+from .sources import router as sources_router
+from .sources.base import SourceRegistry
+from .sources.fractal import FractalSource
+from .sources.service import SourceTileService
 from .tiles import router as tiles_router
 from .tiles.manager import TileService
 
@@ -86,6 +90,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.auth = AuthService(settings, app.state.rights)
     app.state.region = RegionDetector(settings.default_region, settings.dev_region_header)
     app.state.policy = Policy(app.state.rights)
+    # The image-source hook: registered sources own their book ids and render
+    # tiles on demand (the fractal generator is the reference implementation).
+    app.state.sources = SourceRegistry([FractalSource()])
+    app.state.source_tiles = SourceTileService(settings, app.state.sources)
 
     register_error_handlers(app)
     app.include_router(books_router.router)
@@ -95,6 +103,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(qr_router)
     app.include_router(auth_router.router)
     app.include_router(admin_router.router)
+    app.include_router(sources_router.router)
 
     app.mount("/", NoCacheStaticFiles(directory=str(_static_dir()), html=True), name="static")
     return app

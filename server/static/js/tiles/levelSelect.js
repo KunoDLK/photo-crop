@@ -16,7 +16,7 @@
  * size as an L0 tile of a small phone image, satisfying "tiles at closest size".
  */
 
-import { TILE, MAX_DISPLAYED_TILES } from "../config.js";
+import { TILE, MAX_DISPLAYED_TILES, VIRTUAL_MIN_LEVEL } from "../config.js";
 import * as state from "../state.js";
 import * as viewport from "../viewport.js";
 import { tileRange } from "../compositor.js";
@@ -37,11 +37,19 @@ export function visibleTileCount(im, level) {
  * The "1:1" base level for an image: finest level whose tiles are still rendered
  * at >= their native resolution (>= ~256 device px). Going finer would draw a
  * 256×256 tile smaller than its own resolution, which wastes bandwidth.
+ *
+ * Provider (non-archive) images have no native resolution: any level shows
+ * real detail, so they may zoom without bound — the clamp floor becomes
+ * VIRTUAL_MIN_LEVEL instead of 0 (level 0 is the whole image on one tile,
+ * deeper levels are further zoom).
  */
 export function baseLevel(im) {
   const dpr = window.devicePixelRatio || 1;
   const eff = im.fitFactor * state.view.scale; // source px per CSS px
   const L = Math.floor(-Math.log2(Math.max(eff * dpr, 1e-9)));
+  if (im.source !== "archive") {
+    return Math.max(VIRTUAL_MIN_LEVEL, Math.min(im.maxLevel, L));
+  }
   return Math.max(0, Math.min(im.maxLevel, L));
 }
 

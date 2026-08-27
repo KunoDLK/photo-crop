@@ -118,3 +118,18 @@ export const SEARCH_HIT_COLOR = "#1ca7e8";
  * apart.
  */
 export const BLUR_TEXT_VIEWPORT_FRACTION = 0.2;
+
+/**
+ * Deepest level to request for provider (non-archive) images. -52 = a
+ * 2^52 × 2^52 tile grid — the JS safe-integer wall (tile indices must stay
+ * below 2^53). No practical limit.
+ */
+export const VIRTUAL_MIN_LEVEL = -52;
+
+/**
+ * Highest scene scale; the largest exact float64 magnitude. Panning becomes
+ * coarse past ~2^40 but rendering never errors. Replaces the historical 64
+ * cap so provider images can zoom without bound (real images are unaffected:
+ * their base level still clamps at maxLevel).
+ */
+export const MAX_SCALE = 2 ** 52;

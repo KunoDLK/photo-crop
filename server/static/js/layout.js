@@ -74,6 +74,7 @@ export function buildLayout(items) {
         im.version = it.version;
         im.access = it.access;
         im.visibility = it.visibility;
+        im.source = it.source;
         im.cellX = ox;
         im.cellY = oy + LABEL_H;
         im.cell = CELL;
@@ -94,6 +95,7 @@ export function buildLayout(items) {
           version: it.version,
           access: it.access,
           visibility: it.visibility,
+          source: it.source,
           fitFactor: 1,
           cellX: ox,
           cellY: oy + LABEL_H,

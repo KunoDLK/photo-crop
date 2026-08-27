@@ -38,6 +38,7 @@ class CoverInfo(BaseModel):
     max_level: int
     mtime: int
     access: AccessInfo | None = None
+    source: str = "archive"
 
 
 class BookSummary(BaseModel):
@@ -61,6 +62,7 @@ class PageInfo(BaseModel):
     max_level: int
     mtime: int
     access: AccessInfo | None = None
+    source: str = "archive"
 
 
 class BooksResponse(BaseModel):
@@ -88,6 +90,7 @@ class ImageInfo(BaseModel):
     file_size: int
     hash: str
     access: AccessInfo | None = None
+    source: str = "archive"
 
 
 class OCRWord(BaseModel):

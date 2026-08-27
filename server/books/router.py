@@ -7,6 +7,8 @@ resolved ``access`` so the client renders blur labels with no extra calls.
 """
 from __future__ import annotations
 
+import hashlib
+
 from fastapi import APIRouter, Depends, Request
 
 from ..auth.service import Viewer, current_viewer
@@ -59,7 +61,13 @@ def list_books_endpoint(
         access = AccessInfo(**policy.resolve(viewer, book.id, book.cover.page_id, zone))
         cover = book.cover.model_copy(update={"access": access})
         visible.append(book.model_copy(update={"visibility": visibility, "cover": cover}))
-    return BooksResponse(books=visible, signature=signature)
+    # Provider books (the image-source hook): sources own their access story,
+    # so they are appended as-is; the archive rights policy never sees them.
+    visible.extend(request.app.state.sources.list_books())
+    combined = hashlib.sha256(
+        "\n".join(sorted((signature, request.app.state.sources.signature))).encode()
+    ).hexdigest()
+    return BooksResponse(books=visible, signature=combined)
 
 
 @router.get("/api/books/{book_id}/pages", response_model=PagesResponse)
@@ -85,6 +93,13 @@ def list_pages_endpoint(
         errors.NotFound: For private books the viewer has no grant for
             (indistinguishable from a missing book).
     """
+    # Provider books (the image-source hook): sources own their access story,
+    # so they are resolved before any rights/visibility checks apply.
+    sources = request.app.state.sources
+    result = sources.pages(book_id)
+    if result is not None:
+        sig, pages = result
+        return PagesResponse(book=book_id, pages=pages, signature=sig)
     if not _granted(viewer, book_id) and not _is_public(request, book_id):
         raise NotFound(f"book not found: {book_id}")
     catalog = request.app.state.catalog
@@ -125,6 +140,10 @@ def image_info_endpoint(
         errors.NotFound: For private books without a grant, and for pages whose
             resolved status is ``nonexistent`` (same as a missing page).
     """
+    # Provider books (the image-source hook): resolved before rights checks.
+    info = request.app.state.sources.image_info(book_id, page_id)
+    if info is not None:
+        return info
     if not _granted(viewer, book_id) and not _is_public(request, book_id):
         raise NotFound(f"book not found: {book_id}")
     settings = request.app.state.settings

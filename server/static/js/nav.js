@@ -16,7 +16,7 @@ import * as viewport from "./viewport.js";
 import * as render from "./render.js";
 import * as scheduler from "./tiles/scheduler.js";
 import { formatPixels, formatBytes, formatDuration, clamp } from "./util.js";
-import { BLUR_TEXT_VIEWPORT_FRACTION } from "./config.js";
+import { BLUR_TEXT_VIEWPORT_FRACTION, MAX_SCALE } from "./config.js";
 
 let urlSyncSeq = 0;
 let bookLoadMs = 0;
@@ -55,6 +55,7 @@ export async function showBooks(force = false, keepView = null) {
       version: b.cover.mtime,
       visibility: b.visibility,
       access: b.cover.access,
+      source: b.cover.source,
     }));
     currentItems = items;
     buildLayout(items);
@@ -100,6 +101,7 @@ export async function enterBook(book, pageId = null, force = false, keepView = n
       maxLevel: p.max_level,
       version: p.mtime,
       access: p.access,
+      source: p.source,
     }));
     state.location.type = "book";
     state.location.book = book;
@@ -244,7 +246,7 @@ export function toggleZoomFit() {
   const onPage = state.cursor.x >= 0
     && sx >= im.drawX && sx <= im.drawX + im.drawW
     && sy >= im.drawY && sy <= im.drawY + im.drawH;
-  state.view.scale = clamp(oneToOne, 0.00005, 64);
+  state.view.scale = clamp(oneToOne, 0.00005, MAX_SCALE);
   if (onPage) {
     state.view.vx = state.cursor.x - sx * state.view.scale;
     state.view.vy = state.cursor.y - sy * state.view.scale;

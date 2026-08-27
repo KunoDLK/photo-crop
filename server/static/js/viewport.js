@@ -6,6 +6,7 @@
  */
 
 import { clamp } from "./util.js";
+import { MAX_SCALE } from "./config.js";
 import { view, scene } from "./state.js";
 
 /** Map scene coordinates to device (CSS px) coordinates. */
@@ -45,7 +46,7 @@ export function fitViewToImage(im, vpw, vph) {
   const cx = im.drawX + im.drawW / 2;
   const cy = im.drawY + im.drawH / 2;
   const s = Math.min(vpw / im.drawW, vph / im.drawH) * 0.96;
-  view.scale = clamp(s, 0.00005, 64);
+  view.scale = clamp(s, 0.00005, MAX_SCALE);
   view.vx = vpw / 2 - cx * view.scale;
   view.vy = vph / 2 - cy * view.scale;
 }

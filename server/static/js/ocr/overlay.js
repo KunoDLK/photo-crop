@@ -280,6 +280,7 @@ function ensureLoaded() {
 
 /** Fetch one page's OCR once (deduped); push to screen when it arrives. */
 function requestOcr(im) {
+  if (im.source !== "archive") return; // provider images have no OCR
   if (loaded.has(im.id) || pending.has(im.id)) return;
   suppressed.delete(im.id); // an explicit fetch is wanted: lift any stale suppression
   pending.add(im.id);
