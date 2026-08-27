@@ -6,7 +6,7 @@
  * tile compositing is delegated to compositor.js.
  */
 
-import { TILE, LABEL_FONT, LABEL_H, LEVEL_COLORS, VIRTUAL_MIN_LEVEL } from "./config.js";
+import { TILE, LABEL_FONT, LABEL_H, LEVEL_COLORS } from "./config.js";
 import * as state from "./state.js";
 import * as viewport from "./viewport.js";
 import * as compositor from "./compositor.js";
@@ -184,7 +184,14 @@ function drawDebugOverlay(sc) {
     const [dx, dy] = viewport.sceneToDev(im.drawX, im.drawY);
     const dw = im.drawW * sc, dh = im.drawH * sc;
 
-    const lo = im.source !== "archive" ? VIRTUAL_MIN_LEVEL : 0;
+    // Only iterate the levels that can actually be cached/drawn: the finest
+    // requested level (targetLevel) mirrors the compositor. Flooring at
+    // VIRTUAL_MIN_LEVEL instead would sweep quadrillions of tile positions at
+    // deep levels (a level -52 tile is ~1e-13 px on screen, so tileRange
+    // reports an enormous visible range) and freeze the tab.
+    const lo = im.source !== "archive"
+      ? (im.targetLevel == null ? im.maxLevel : im.targetLevel)
+      : 0;
     for (let lv = im.maxLevel; lv >= lo; lv--) {
       const r = compositor.tileRange(im, lv, sc, dx, dy, dw, dh, vpw, vph);
       if (r.tx0 > r.tx1 || r.ty0 > r.ty1) continue;
