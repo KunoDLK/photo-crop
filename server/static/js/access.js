@@ -15,6 +15,7 @@
 
 import * as state from "./state.js";
 import { fetchMe } from "./api/auth.js";
+import { BLUR_TEXT_VIEWPORT_FRACTION } from "./config.js";
 
 let sceneEl = null;
 let bannerEl = null;
@@ -22,11 +23,6 @@ let labels = new Map(); // image id -> "Unavailable…" text element (zoomed-in 
 let badges = []; // { el } — private pills per cell
 let dirty = false;
 let lastTransform = "";
-
-// Show the text only when a blurred page is at least this fraction of the
-// viewport width (i.e. near page size); below that, the canvas dark tint is
-// the whole story. Keeps at most a couple of text elements in the DOM.
-const BLUR_TEXT_VIEWPORT_FRACTION = 0.2;
 
 // The banner slides up after this long showing the same content; any change
 // to its text (or a navigation or login) brings it back and restarts the

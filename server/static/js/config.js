@@ -76,3 +76,12 @@ export const SEARCH_DIM_ALPHA = 0.62;
 
 /** Accent color outlining matched text in search mode. */
 export const SEARCH_HIT_COLOR = "#1ca7e8";
+
+/**
+ * Minimum on-screen width (fraction of the viewport) at which a blurred page
+ * shows its "Unavailable in your region" text (access.js) — and the zoom gate
+ * at which the settle-checker auto-selects the page nearest the screen centre
+ * (nav.js). One value drives both, so the selection and the text can't drift
+ * apart.
+ */
+export const BLUR_TEXT_VIEWPORT_FRACTION = 0.2;

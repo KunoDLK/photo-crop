@@ -16,6 +16,7 @@ import * as viewport from "./viewport.js";
 import * as render from "./render.js";
 import * as scheduler from "./tiles/scheduler.js";
 import { formatPixels, formatBytes, formatDuration, clamp } from "./util.js";
+import { BLUR_TEXT_VIEWPORT_FRACTION } from "./config.js";
 
 let urlSyncSeq = 0;
 let bookLoadMs = 0;
@@ -287,10 +288,11 @@ export function refitViewport() {
 
 /**
  * Called after navigation settles or a search narrows the listing: promote the
- * page under the viewport centre to the active location when it dominates the
- * screen (which also pulls in its OCR overlay text), or select the page outright
- * when the listing is a single image. Zooming back out clears the active page
- * and resets the URL + status message.
+ * page at the viewport centre to the active location when it dominates the
+ * screen, or when zoomed in near page size pick the page nearest the centre
+ * (which also pulls in its OCR overlay text); select the page outright when
+ * the listing is a single image. Zooming back out clears the active page and
+ * resets the URL + status message.
  */
 export function updateActiveImage() {
   if (state.location.type !== "book") return;
@@ -305,8 +307,8 @@ export function updateActiveImage() {
     }
     return;
   }
-  const im = imageAtViewportCenter();
-  if (im && im.kind === "page" && imageDominant(im)) {
+  const im = imageAtViewportCenter() || imageClosestToViewportCenter();
+  if (im && im.kind === "page" && (imageDominant(im) || imageNearPageZoom(im))) {
     if (im !== state.focusedImage) {
       state.setFocusedImage(im);
       syncUrl(im.bookId, im.pageId);
@@ -352,6 +354,38 @@ function imageAtViewportCenter() {
         sy >= im.labelY && sy <= im.cellY + im.cell) return im;
   }
   return null;
+}
+
+/**
+ * The page nearest the viewport centre: the image whose on-screen rect is
+ * closest to the centre (0 distance when the centre lies over it), so a centre
+ * point that lands in a gap between pages still picks the page it belongs to.
+ * Used by the settle-checker when the view is zoomed in near page size.
+ */
+function imageClosestToViewportCenter() {
+  const vpw = state.viewport.w, vph = state.viewport.h;
+  const sc = state.view.scale;
+  const cx = vpw / 2, cy = vph / 2;
+  let best = null, bestD = Infinity;
+  for (const im of state.images) {
+    if (im.status === "error") continue;
+    const [dx, dy] = viewport.sceneToDev(im.drawX, im.drawY);
+    const dw = im.drawW * sc, dh = im.drawH * sc;
+    const px = clamp(cx, dx, dx + dw);
+    const py = clamp(cy, dy, dy + dh);
+    const d = (cx - px) * (cx - px) + (cy - py) * (cy - py);
+    if (d < bestD) { bestD = d; best = im; }
+  }
+  return best;
+}
+
+/**
+ * True when a page is zoomed in near page size: at least
+ * BLUR_TEXT_VIEWPORT_FRACTION of the viewport wide — the same gate that shows
+ * the "Unavailable in your region" text over blurred pages (access.js).
+ */
+function imageNearPageZoom(im) {
+  return im.drawW * state.view.scale >= state.viewport.w * BLUR_TEXT_VIEWPORT_FRACTION;
 }
 
 /**
