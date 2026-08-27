@@ -32,6 +32,12 @@ def esc(text) -> str:
     return html_mod.escape(str(text), quote=True)
 
 
+def _og_root_image_url(request: Request) -> str:
+    """Absolute URL of the site-root OG image (a static asset)."""
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/og-root.jpg"
+
+
 def _og_image_url(request: Request, book: str, page: str, mtime: int) -> str:
     """Absolute URL for a page's real preview image (content-addressed).
 
@@ -124,7 +130,7 @@ def render_fragment(request: Request) -> tuple[str, dict]:
 
 
 def _render_root(request: Request) -> tuple[str, dict]:
-    """The root view: a link to every public book, first cover as OG image.
+    """The root view: a link to every public book, static OG image.
 
     Private books are invisible to crawlers (no session), so only public books
     are listed; logged-in viewers get the full list from the API instead.
@@ -141,15 +147,7 @@ def _render_root(request: Request) -> tuple[str, dict]:
         or viewer.kind == "owner"
         or (viewer.kind == "account" and b.id in viewer.grants)
     ]
-    meta = {"title": SITE_TITLE, "image": None}
-    if public_books:
-        cover_book = public_books[0]
-        cover = cover_book.cover
-        access = _access_of(request, cover_book.id, cover.page_id)
-        if access["status"] != BLURRED:
-            meta["image"] = _og_image_url(
-                request, cover_book.id, cover.page_id, cover.mtime
-            )
+    meta = {"title": SITE_TITLE, "image": _og_root_image_url(request)}
     ids = state.locations.get_ids([(b.id, None) for b in public_books])
     items = "".join(
         f'    <li><a href="/{esc(ident)}">{esc(book.name)}</a></li>\n'
