@@ -196,16 +196,14 @@ function updateBanner() {
 }
 
 /**
- * (Re)start the slide-away timer: restore the banner, measure its height into
- * ``--banner-h`` (the CSS slide collapses the flex slot by exactly that much),
- * then schedule the ``dismissed`` class.
+ * (Re)start the slide-away timer: restore the banner (clearing the
+ * ``dismissed`` class so it reappears), then schedule the ``dismissed`` class.
  */
 function armBannerDismiss() {
   clearTimeout(bannerTimer);
   bannerTimer = null;
   bannerEl.classList.remove("dismissed");
   if (bannerEl.hidden) return;
-  bannerEl.style.setProperty("--banner-h", bannerEl.offsetHeight + "px");
   bannerTimer = setTimeout(() => {
     bannerTimer = null;
     bannerEl.classList.add("dismissed");

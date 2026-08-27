@@ -112,9 +112,6 @@ function render() {
 
   if (state.searchActive) drawHighlights(ctx, sc);
 
-  const lbl = document.getElementById("zoom-lbl");
-  if (lbl) lbl.textContent = Math.round(state.view.scale * 100) + "%";
-
   if (state.frameHook) state.frameHook();
 
   ocrOverlay.update();

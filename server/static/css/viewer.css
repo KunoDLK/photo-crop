@@ -21,13 +21,23 @@ html, body {
   height: 100%;
   height: 100dvh;
   margin: 0;
+  /* No elastic pull / scroll chaining at screen edges (iPhone): the canvas
+     must never be yanked away from the dynamic island or home indicator. */
+  overscroll-behavior: none;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
   color: var(--text);
   background: var(--bg);
 }
 body { display: flex; flex-direction: column; overflow: hidden; }
+html:not(.no-js) body { display: block; }
 
+/* --------------------------------------------- toolbar (floating pill chrome)
+   On every device (there is no desktop-only layout anymore) the toolbar is a
+   fixed strip of floating pills over the full-bleed canvas: back + title at
+   the left, the ☰ menu at the right, and every other control in the dropdown
+   the menu opens. Pills sit clear of the notch/home indicator via safe-area
+   insets. html.no-js keeps a plain in-flow bar for the crawler view. */
 .toolbar {
   display: flex;
   align-items: center;
@@ -37,8 +47,23 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
   position: relative;
-  z-index: 2;
+  z-index: 30;
 }
+html:not(.no-js) .toolbar {
+  align-items: flex-start;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  pointer-events: none;
+}
+html:not(.no-js) .toolbar > button,
+html:not(.no-js) .title,
+html:not(.no-js) .controls { pointer-events: auto; }
+
 .toolbar button {
   padding: 6px 12px;
   border: 1px solid var(--border);
@@ -49,6 +74,20 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   font-size: 13px;
 }
 .toolbar button:hover { background: var(--border); }
+html:not(.no-js) .toolbar > button:hover { background: rgba(255, 255, 255, 0.15); }
+
+html:not(.no-js) .nav-back {
+  margin: calc(env(safe-area-inset-top) + 6px) 0 0 calc(env(safe-area-inset-left) + 10px);
+  padding: 0 14px;
+  min-width: 42px;
+  min-height: 42px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, 0.55);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(8px);
+}
+
 .title {
   font-weight: 600;
   min-width: 0;
@@ -56,21 +95,69 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+html:not(.no-js) .title {
+  flex: 1 1 auto;
+  margin: calc(env(safe-area-inset-top) + 6px) 0 0 10px;
+  /* Grow to use the room up to the ☰ menu, but never past the text's own
+     width, so a short title stays a compact pill next to the back button and
+     a long one only starts ellipsizing when it actually reaches the menu. */
+  max-width: fit-content;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, 0.55);
+  color: #fff;
+  backdrop-filter: blur(8px);
+}
+
 .spacer { flex: 1; }
 .toolbar-spacer { display: none; }
+html:not(.no-js) .toolbar-spacer { display: block; flex: 1; }
 
-/* Desktop: controls flow inline as a single row; internal spacer right-aligns
-   the "Tiles" input before the zoom label. */
-.controls {
-  display: flex;
+.menu-btn {
+  display: none;
   align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
-  min-width: 0;
+  justify-content: center;
+  min-width: 42px;
+  min-height: 42px;
+  font-size: 18px;
+  padding: 6px 10px;
 }
-.menu-btn { display: none; }
+html:not(.no-js) .menu-btn {
+  display: inline-flex;
+  margin: calc(env(safe-area-inset-top) + 6px) calc(env(safe-area-inset-right) + 10px) 0 auto;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, 0.55);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(8px);
+}
 
-.tile-budget { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.controls {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: calc(env(safe-area-inset-right) + 8px);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px;
+  min-width: 200px;
+  max-height: calc(100vh - 80px);
+  max-height: calc(100dvh - 80px);
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  z-index: 30;
+}
+.toolbar.menu-open .controls { display: flex; }
+.controls button {
+  width: 100%;
+  min-height: 40px;
+}
+
+.tile-budget { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; justify-content: space-between; }
 .tile-budget input {
   width: 64px;
   padding: 4px 6px;
@@ -80,13 +167,16 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   color: var(--text);
   font-size: 13px;
 }
-.zoom-lbl { color: var(--muted); font-variant-numeric: tabular-nums; }
-
 .left {
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
   background: #808080;
+}
+html:not(.no-js) .left {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
 }
 #view {
   position: absolute;
@@ -96,6 +186,10 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   display: block;
   touch-action: none;
   cursor: grab;
+  /* iOS 26 WebKit composites opaque fixed layers with gaps at the screen
+     corners; a hair of translucency forces edge-to-edge compositing, so the
+     canvas renders behind the dynamic island instead of stopping short. */
+  opacity: 0.999;
 }
 #view:active { cursor: grabbing; }
 
@@ -129,6 +223,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   z-index: 5;
 }
 #prof { bottom: 18px; font-size: 10px; }
+html:not(.no-js) .stats { bottom: calc(env(safe-area-inset-bottom) + 4px); }
+html:not(.no-js) #prof { bottom: calc(env(safe-area-inset-bottom) + 24px); }
 
 #status {
   flex: 0 0 auto;
@@ -141,6 +237,29 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+html:not(.no-js) #status {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom) + 8px);
+  max-width: 90vw;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, 0.55);
+  color: #fff;
+  font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 20;
+}
+/* The tile-debug bars sit at the bottom too; lift the status pill above them. */
+html:not(.no-js) body:has(#stats:not([hidden])) #status {
+  bottom: calc(env(safe-area-inset-bottom) + 52px);
+}
 
 /* ------------------------------------------------------- search + OCR overlay
    Search box in the toolbar, and the invisible OCR text layer above the canvas. */
@@ -149,9 +268,11 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
 }
 .search-box input[type="text"] {
-  width: 180px;
+  flex: 1;
+  width: auto;
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -160,7 +281,6 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   font-size: 13px;
 }
 .search-box input[type="text"]::placeholder { color: var(--muted); }
-.search-box.name-search input[type="text"] { width: 150px; }
 .search-regex {
   display: flex;
   align-items: center;
@@ -273,9 +393,9 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .share-actions button:hover { background: var(--border); }
 
 /* ------------------------------------------------------ access (auth/region)
-   Sign-in banner under the toolbar, cell badges, and the blurred-page overlay.
-   The badges and blur labels live inside #ocr-scene, so they inherit the
-   pan/zoom transform and stay glued to their images. */
+   Sign-in banner (a floating pill under the toolbar), cell badges, and the
+   blurred-page overlay. The badges and blur labels live inside #ocr-scene, so
+   they inherit the pan/zoom transform and stay glued to their images. */
 
 .access-banner {
   flex: 0 0 auto;
@@ -287,13 +407,25 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  --banner-h: 26px;
-  margin-top: 0;
-  transition: margin-top 0.35s ease, opacity 0.35s ease;
 }
 .access-banner[hidden] { display: none; }
-.access-banner.dismissed {
-  margin-top: calc(-1 * var(--banner-h, 26px));
+html:not(.no-js) .access-banner {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 54px);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 90vw;
+  margin: 0;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 25;
+  transition: transform 0.35s ease, opacity 0.35s ease;
+}
+html:not(.no-js) .access-banner.dismissed {
+  margin-top: 0;
+  transform: translate(-50%, -200%);
   opacity: 0;
   pointer-events: none;
 }
@@ -411,152 +543,12 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   background: rgba(28, 167, 232, 0.6);
 }
 
-/* ---------------------------------------------------------------- mobile
-   On touch devices (phones/tablets, any orientation) or narrow windows the
-   canvas fills the entire screen and the chrome floats on top of it: the back
-   button, title and ☰ menu become translucent pills positioned clear of the
-   notch/home indicator via safe-area insets, the banner and status line become
-   floating pills, and the other controls appear in the ☰ dropdown. Content
-   renders right around the dynamic island. The no-JS crawler view keeps the
-   old in-flow layout (html.no-js). Desktop (mouse, wide) is unchanged. */
-@media (max-width: 900px), (hover: none) and (pointer: coarse) {
-  html:not(.no-js) body { display: block; }
-  html:not(.no-js) .left { position: fixed; inset: 0; }
-
-  html:not(.no-js) .toolbar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 30;
-    padding: 0;
-    background: transparent;
-    border: none;
-    align-items: flex-start;
-    pointer-events: none;
-  }
-  html:not(.no-js) .toolbar > button,
-  html:not(.no-js) .title,
-  html:not(.no-js) .controls { pointer-events: auto; }
-
-  html:not(.no-js) .nav-back {
-    margin: calc(env(safe-area-inset-top) + 6px) 0 0 calc(env(safe-area-inset-left) + 10px);
-    padding: 0 14px;
-    min-width: 42px;
-    min-height: 42px;
-    border-radius: 999px;
-    background: rgba(20, 20, 24, 0.55);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    backdrop-filter: blur(8px);
-  }
-  html:not(.no-js) .title {
-    margin: calc(env(safe-area-inset-top) + 6px) 0 0 10px;
-    max-width: 42vw;
-    padding: 6px 12px;
-    border-radius: 999px;
-    background: rgba(20, 20, 24, 0.55);
-    color: #fff;
-    backdrop-filter: blur(8px);
-  }
-  html:not(.no-js) .zoom-lbl {
-    margin: calc(env(safe-area-inset-top) + 6px) 0 0 8px;
-    color: #fff;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-  }
-  html:not(.no-js) .toolbar > button:hover { background: rgba(255, 255, 255, 0.15); }
-
-  .menu-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 42px;
-    min-height: 42px;
-    font-size: 18px;
-    padding: 6px 10px;
-  }
-  html:not(.no-js) .menu-btn {
-    margin: calc(env(safe-area-inset-top) + 6px) calc(env(safe-area-inset-right) + 10px) 0 auto;
-    border-radius: 999px;
-    background: rgba(20, 20, 24, 0.55);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    backdrop-filter: blur(8px);
-  }
-  .toolbar-spacer { display: block; flex: 1; }
-
-  .controls {
-    display: none;
-    position: absolute;
-    top: calc(100% + 4px);
-    right: calc(env(safe-area-inset-right) + 8px);
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-    padding: 8px;
-    min-width: 200px;
-    max-height: calc(100vh - 80px);
-    max-height: calc(100dvh - 80px);
-    overflow-y: auto;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
-    z-index: 30;
-  }
-  .toolbar.menu-open .controls { display: flex; }
-  .controls .spacer { display: none; }
-  .controls button {
-    width: 100%;
-    min-height: 40px;
-  }
-  .tile-budget { justify-content: space-between; }
-  .search-box { width: 100%; }
-  .search-box input[type="text"] { flex: 1; width: auto; }
-
-  /* Floating status pill (bottom-centre) and access banner (below the chrome). */
-  html:not(.no-js) #status {
-    position: fixed;
-    left: 50%;
-    transform: translateX(-50%);
-    bottom: calc(env(safe-area-inset-bottom) + 8px);
-    max-width: 90vw;
-    padding: 4px 12px;
-    border: none;
-    border-radius: 999px;
-    background: rgba(20, 20, 24, 0.55);
-    color: #fff;
-    font-size: 11px;
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    pointer-events: none;
-    z-index: 20;
-  }
-  html:not(.no-js) .access-banner {
-    position: fixed;
-    top: calc(env(safe-area-inset-top) + 54px);
-    left: 50%;
-    transform: translateX(-50%);
-    max-width: 90vw;
-    margin: 0;
-    padding: 6px 14px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-    z-index: 25;
-    transition: transform 0.35s ease, opacity 0.35s ease;
-  }
-  html:not(.no-js) .access-banner.dismissed {
-    margin-top: 0;
-    transform: translate(-50%, -200%);
-    opacity: 0;
-    pointer-events: none;
-  }
-  html:not(.no-js) .stats { bottom: calc(env(safe-area-inset-bottom) + 4px); }
-  html:not(.no-js) #prof { bottom: calc(env(safe-area-inset-bottom) + 24px); }
-}
+/* ------------------------------------------------------------- full-bleed
+   The canvas always fills the whole screen: the toolbar pills, access banner
+   and status line are fixed overlays on top of it, so the banner sliding away
+   (or the chrome tucking itself in) never resizes the canvas behind it, and
+   on iPhone the canvas runs under the dynamic island (viewport-fit=cover).
+   The no-JS crawler view keeps the old in-flow layout (html.no-js). */
 
 /* ------------------------------------------------------- crawler content
    Server-rendered fragment for crawlers/no-JS visitors (see server/pages.py).
