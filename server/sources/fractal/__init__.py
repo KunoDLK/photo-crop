@@ -36,6 +36,10 @@ class FractalSource(ImageSource):
     """
 
     key = "fractal"
+    #: Never store or reuse fractal bytes: re-render on every request. The
+    #: Cache-Control header stays the public-immutable default so browsers
+    #: and edge caches may still hold the identical bytes.
+    cacheable = False
     BOOK_ID = "fractals"
     PAGE_ID = "mandelbrot"
     WIDTH = 256

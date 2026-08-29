@@ -52,6 +52,12 @@ class ImageSource(ABC):
     #: overrides this with ``private``.
     cache_control: str = "public, max-age=31536000, immutable"
 
+    #: Whether rendered tiles may be stored in the shared disk LRU. Set to
+    #: False for sources that must render fresh on every request (e.g. an
+    #: interactive preview); the tile service then skips both lookup and store,
+    #: while ``cache_control`` still governs browser/edge caching.
+    cacheable: bool = True
+
     def owns(self, book_id: str) -> bool:
         """True when this source serves ``book_id`` (cheap check, no scanning).
 

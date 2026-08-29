@@ -75,6 +75,15 @@ class SourceTileService:
         source = self.registry.source_for_book(book)
         if source is None:
             raise NotFound(f"book not found: {book}")
+        if not source.cacheable:
+            # Non-cacheable source (e.g. fractal preview): render fresh every
+            # request, touching neither the disk LRU nor the dedupe lock.
+            req = TileRequest(book, page, version, level, tx, ty, self.settings.tile_size)
+            bgr = await asyncio.to_thread(source.render_tile, req)
+            data = encoder.encode_progressive_jpeg(
+                bgr, self.settings.jpeg_quality, self.settings.jpeg_progressive
+            )
+            return data, False
         key = self.key(source.key, book, page, version, level, tx, ty)
         cached = self.tiles.get(key)
         if cached is not None:
