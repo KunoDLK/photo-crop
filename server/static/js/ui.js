@@ -107,9 +107,16 @@ function wireMobileMenu() {
     if (toolbar.classList.contains("menu-open") && !toolbar.contains(e.target)) close();
   });
 
-  // Close after activating any control in the dropdown.
+  // Close after activating any button in the dropdown. Inputs (search boxes,
+  // tile budget, fetch concurrency) deliberately keep the menu open, so
+  // tweaking a number field and moving on doesn't force reopening the menu.
   controls.querySelectorAll("button").forEach((b) => b.addEventListener("click", close));
-  controls.querySelectorAll("input").forEach((i) => i.addEventListener("change", close));
+}
+
+/** Open the ☰ dropdown (used by the search / name-filter keyboard shortcuts). */
+export function openMenu() {
+  const toolbar = document.getElementById("toolbar");
+  if (toolbar) toolbar.classList.add("menu-open");
 }
 
 /** Recompute and draw the tile debug stats into the bottom bar. */

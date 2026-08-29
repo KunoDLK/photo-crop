@@ -16,6 +16,7 @@ import * as render from "./render.js";
 import * as scheduler from "./tiles/scheduler.js";
 import { buildLayout } from "./layout.js";
 import { clearSearch as clearTextSearch } from "./ocr/search.js";
+import { openMenu } from "./ui.js";
 
 let nav = null;
 let box = null;
@@ -46,14 +47,15 @@ export function init(deps) {
     }
   });
 
-  if (clearBtn) clearBtn.addEventListener("click", () => { clearNameFilter(); box.focus(); });
+  if (clearBtn) clearBtn.addEventListener("click", () => { clearNameFilter(); openMenu(); box.focus(); });
 
-  // Ctrl+G focuses the name filter from anywhere.
+  // Ctrl+G opens the menu and focuses the name filter from anywhere.
   window.addEventListener("keydown", (e) => {
     const tag = (document.activeElement && document.activeElement.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA") return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") {
       e.preventDefault();
+      openMenu(); // the filter box lives in the ☰ dropdown
       box.focus();
       box.select();
     }

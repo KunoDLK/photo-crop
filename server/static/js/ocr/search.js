@@ -14,6 +14,7 @@ import * as scheduler from "../tiles/scheduler.js";
 import { searchBook } from "../api/ocr.js";
 import { buildLayout } from "../layout.js";
 import { clearNameFilter } from "../nameFilter.js";
+import { openMenu } from "../ui.js";
 import { SEARCH_DIM_ALPHA, SEARCH_HIT_COLOR } from "../config.js";
 
 let nav = null;
@@ -64,7 +65,10 @@ function wireDOM() {
 }
 
 function focusBox() {
-  if (box) { box.focus(); box.select(); }
+  if (!box) return;
+  openMenu(); // the search box lives in the ☰ dropdown
+  box.focus();
+  box.select();
 }
 
 async function runSearch() {

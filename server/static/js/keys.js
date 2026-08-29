@@ -3,7 +3,9 @@
  *
  * F = fit overview, R = reload, D = toggle tile debug, Space = toggle
  * 1:1 / fit-page, arrow keys navigate between images, Backspace/Escape returns
- * to the root book list when inside a book.
+ * to the root book list when inside a book. Ctrl/Meta combos (Ctrl+F search,
+ * Ctrl+G name filter, browser find/bookmark) are owned elsewhere and never
+ * reach the plain-letter shortcuts here.
  */
 
 import * as state from "./state.js";
@@ -46,6 +48,10 @@ export function installKeys() {
     // Ignore shortcuts while typing in an input (search box, tile budget, etc.).
     const tag = (document.activeElement && document.activeElement.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+    // Ctrl/Meta combos belong to the browser (find, bookmark) or to the search
+    // and name-filter shortcuts in their own modules — never the plain keys.
+    if (e.ctrlKey || e.metaKey) return;
 
     if (e.key === "F" && e.shiftKey) {
       // Shift+F toggles the Fullscreen API (desktop/iPad; no-op elsewhere).
