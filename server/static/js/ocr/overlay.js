@@ -325,7 +325,7 @@ function rebuildSpans() {
       el.style.fontSize = (line.h * im.fitFactor) + "px";
       spans.push({ im, line, el });
       sceneEl.appendChild(el);
-      fitSpanToBox(el, line.w * im.fitFactor);
+      fitSpanToBox(el, line.w * im.fitFactor, line.h * im.fitFactor);
     }
   }
   dirtySpans = false;
@@ -334,17 +334,31 @@ function rebuildSpans() {
 }
 
 /**
- * Stretch or squash a span horizontally so its text exactly fills the OCR
- * bounding box. Tesseract's boxes only approximate the glyph run, so the text
- * can come out narrower or wider than the printed line; a scaleX on the span
- * (in scene space, so pan/zoom still applies) lines it up with the image.
- * Measured via scrollWidth right after append, so layout is fresh.
+ * Make a span's text fit its OCR bounding box without distorting it. The OCR
+ * box matches the printed text's extent, but a browser font is usually wider
+ * than the scan's condensed typeface — a title can naturally render 40% wider
+ * than its box. The old scaleX squash aligned glyphs to the printed line but
+ * visibly crushed the letters; instead the font size is scaled down uniformly
+ * (aspect preserved) until the text fits, and the shorter text is centred
+ * vertically in the box. Text narrower than the box is left untouched — only
+ * overflow is ever reduced. The width is measured with canvas measureText:
+ * DOM layout APIs (scrollWidth, Range rects) are clamped to the span's own
+ * width by engines that clip via ``overflow: hidden``, but a canvas context
+ * measures glyph advances in isolation and cannot be clipped. The 0.5% shrink
+ * keeps glyph bearings from poking past the box edge after hinting/rounding.
  */
-function fitSpanToBox(el, boxW) {
-  const naturalW = el.scrollWidth;
-  if (!(naturalW > 0) || !(boxW > 0) || naturalW === boxW) return;
-  el.style.transform = `scaleX(${boxW / naturalW})`;
-  el.style.transformOrigin = "left top";
+const _measureCtx = document.createElement("canvas").getContext("2d");
+
+function fitSpanToBox(el, boxW, boxH) {
+  if (!(boxW > 0) || !(boxH > 0)) return;
+  _measureCtx.font = getComputedStyle(el).font;
+  const naturalW = _measureCtx.measureText(el.textContent).width;
+  if (!(naturalW > 0) || naturalW <= boxW) return; // already fits: never stretch
+  const ratio = (boxW / naturalW) * 0.995;
+  const fontSize = parseFloat(el.style.fontSize);
+  el.style.fontSize = (fontSize * ratio) + "px";
+  // The span's height is its font size (line-height: 1), so centre it.
+  el.style.top = (parseFloat(el.style.top) + (boxH - fontSize * ratio) / 2) + "px";
 }
 
 /** Hide spans too small to select (avoids tiny/overlapping hit targets). */
