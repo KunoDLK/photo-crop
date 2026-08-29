@@ -19,11 +19,12 @@ The site root is [archive.kunodlk.com](https://archive.kunodlk.com).
 
 ## Features
 
-![Progressive tiled loading: coarse tiles arrive first, then refinement](docs/dynamic-tiles.jpg)
-
 - **Smooth pan/zoom over huge scans** — pages are pre-encoded into a tile pyramid
   (disk-cached, GPU-accelerated when available); you can zoom from a full shelf view down to
   the paper grain without ever decoding a full page in the browser.
+
+![Progressive tiled loading: coarse tiles arrive first, then refinement](docs/dynamic-tiles.jpg)
+
 - **OCR text overlay** — every page's text is recognised in the background
   (RapidOCR/PaddleOCR onnx models) and layered over the scan; hold Ctrl and drag a box to
   select any text and copy it.
