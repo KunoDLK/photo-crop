@@ -116,7 +116,7 @@ class OCRService:
         src = decoder.decode(path)
         result = engine.ocr_image(
             src, self.settings.ocr_lang, self.settings.ocr_max_dim,
-            self.settings.ocr_conf_threshold,
+            self.settings.ocr_conf_threshold, self.settings.ocr_psm,
         )
         data = {
             "page_id": page,

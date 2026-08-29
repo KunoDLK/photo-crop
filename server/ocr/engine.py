@@ -1,28 +1,90 @@
-"""Tesseract extraction: image -> words and lines.
+"""RapidOCR extraction: image -> words and lines.
 
-The single place that talks to Tesseract. It downscales the page (full-resolution
-scans are far larger than Tesseract needs and make it slow), runs word-level
-recognition, filters low-confidence/empty words, and scales every box back into
-source-pixel coordinates. Words are grouped into lines by Tesseract's
-(block, paragraph, line) ids so the client can lay out natural reading order.
+The single place that talks to an OCR engine. This replaced Tesseract with
+RapidOCR, which runs PaddleOCR's PP-OCRv4 detection + recognition models via
+ONNX Runtime. Its DBNet text detector handles freeform/scattered layouts far
+better than Tesseract's page segmentation, and it runs on CPU with no PyTorch
+dependency. Model files ship inside the pip wheel, so the container needs no
+runtime downloads.
+
+RapidOCR detects text regions (typically whole lines) and recognizes each
+one; every region is returned as a 4-corner box in original-image pixels.
+Those become our "lines". Each line's text is then split into words and each
+word gets a box interpolated proportionally across the line box, so the
+client's word-based search highlighting keeps working. Confidence scores
+(0-1 softmax) are kept on Tesseract's 0-100 scale.
+
+The engine instance is a lazy module-level singleton: construction loads the
+ONNX models (~1 s), which must not happen at import time, and the OCR worker
+is a single thread so sharing one engine is safe.
 """
 from __future__ import annotations
 
-import cv2
+import threading
+
 import numpy as np
-import pytesseract
 
 from ..tiles import resampler
 
+_engine = None
+_engine_lock = threading.Lock()
 
-def ocr_image(img: np.ndarray, lang: str, max_dim: int, conf_threshold: int) -> dict:
+
+def _get_engine():
+    """Return the process-wide RapidOCR engine, loading it on first use."""
+    global _engine
+    if _engine is None:
+        with _engine_lock:
+            if _engine is None:
+                from rapidocr import RapidOCR
+
+                _engine = RapidOCR()
+    return _engine
+
+
+def _region_words(text: str, x0: int, y0: int, x1: int, y1: int, conf: float) -> list[dict]:
+    """Split one recognized region into words with proportionally split boxes.
+
+    RapidOCR recognizes whole lines, so per-word boxes have to be estimated:
+    each token gets a width proportional to its character count (including
+    the inter-word spaces), which leaves natural gaps between words.
+    """
+    tokens = text.split()
+    if not tokens or x1 <= x0:
+        return []
+    total_chars = len(text)
+    avail = x1 - x0
+    words: list[dict] = []
+    cx = x0
+    for tok in tokens:
+        w = max(1, round(avail * len(tok) / total_chars))
+        words.append(
+            {
+                "x": cx,
+                "y": y0,
+                "w": w,
+                "h": y1 - y0,
+                "text": tok,
+                "conf": conf,
+            }
+        )
+        cx += round(avail * (len(tok) + 1) / total_chars)
+    return words
+
+
+def ocr_image(
+    img: np.ndarray, lang: str, max_dim: int, conf_threshold: int, psm: int = 3
+) -> dict:
     """Recognize text in a BGR page image.
 
     Args:
         img: Decoded page image as a ``(H, W, 3)`` uint8 BGR ndarray.
-        lang: Tesseract language code(s), e.g. ``"eng"``.
-        max_dim: Long-edge target (px) for the pre-OCR downscale.
+        lang: Unused by RapidOCR (retained for call-site compatibility).
+        max_dim: Long-edge target (px) for the pre-OCR downscale; ``0``
+            disables downscaling entirely. RapidOCR resizes internally, so
+            this only matters for very large scans.
         conf_threshold: Minimum word confidence (0-100) to keep a word.
+        psm: Unused by RapidOCR (Tesseract-only, retained for compatibility).
 
     Returns:
         ``{"words": [...], "lines": [...]}`` where each word is
@@ -33,63 +95,42 @@ def ocr_image(img: np.ndarray, lang: str, max_dim: int, conf_threshold: int) -> 
     scale = 1.0
     work = img
     long_edge = max(src_w, src_h)
-    if long_edge > max_dim:
+    if max_dim > 0 and long_edge > max_dim:
         scale = max_dim / long_edge
         out_w = max(1, round(src_w * scale))
         out_h = max(1, round(src_h * scale))
         work = resampler.resize_area(img, out_w, out_h, use_opencl=False)
-    gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
 
-    data = pytesseract.image_to_data(
-        gray,
-        lang=lang,
-        output_type=pytesseract.Output.DICT,
-        config="--oem 3 --psm 3",
+    result = _get_engine()(work, text_score=conf_threshold / 100)
+    if not result or result.boxes is None:
+        return {"words": [], "lines": []}
+
+    # Reading order: top-to-bottom rows, left-to-right within a row.
+    boxes: np.ndarray = result.boxes  # (N, 4, 2)
+    txts = result.txts or ()
+    scores = result.scores or ()
+    order = sorted(
+        range(len(boxes)),
+        key=lambda i: (round(float(boxes[i][:, 1].mean()) / 40), float(boxes[i][:, 0].min())),
     )
 
     words: list[dict] = []
-    line_groups: dict[tuple[int, int, int], list[dict]] = {}
-    for i, raw in enumerate(data["text"]):
-        text = (raw or "").strip()
+    lines: list[dict] = []
+    for i in order:
+        text = (txts[i] or "").strip()
         if not text:
             continue
-        try:
-            conf = float(data["conf"][i])
-        except (TypeError, ValueError):
-            conf = -1.0
+        conf = round(float(scores[i]) * 100, 1)
         if conf < conf_threshold:
             continue
-        w = int(data["width"][i])
-        h = int(data["height"][i])
-        if w <= 0 or h <= 0:
+        quad = boxes[i] / scale
+        x0 = int(quad[:, 0].min())
+        y0 = int(quad[:, 1].min())
+        x1 = int(quad[:, 0].max())
+        y1 = int(quad[:, 1].max())
+        if x1 <= x0 or y1 <= y0:
             continue
-        word = {
-            "x": round(int(data["left"][i]) / scale),
-            "y": round(int(data["top"][i]) / scale),
-            "w": round(w / scale),
-            "h": round(h / scale),
-            "text": text,
-            "conf": conf,
-        }
-        words.append(word)
-        key = (int(data["block_num"][i]), int(data["par_num"][i]), int(data["line_num"][i]))
-        line_groups.setdefault(key, []).append(word)
-
-    lines: list[dict] = []
-    for key in sorted(line_groups):
-        ws = sorted(line_groups[key], key=lambda w: w["x"])
-        x0 = min(w["x"] for w in ws)
-        y0 = min(w["y"] for w in ws)
-        x1 = max(w["x"] + w["w"] for w in ws)
-        y1 = max(w["y"] + w["h"] for w in ws)
-        lines.append(
-            {
-                "x": x0,
-                "y": y0,
-                "w": x1 - x0,
-                "h": y1 - y0,
-                "text": " ".join(w["text"] for w in ws),
-            }
-        )
+        lines.append({"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0, "text": text})
+        words.extend(_region_words(text, x0, y0, x1, y1, conf))
 
     return {"words": words, "lines": lines}

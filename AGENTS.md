@@ -30,9 +30,9 @@ The server contradicts that. Trust the code, not the docs.
 - **Run the server** (from the repo root, package-relative imports require this):
   `python -m server.main` (equivalently `uvicorn server.main:app`). Honors `HOST`/`PORT`.
 - **Deps**: `pip install -r server/requirements.txt`. Includes fastapi, uvicorn, pydantic,
-  opencv-contrib-python-headless, numpy, pillow, diskcache, pytesseract.
+  opencv-contrib-python-headless, numpy, pillow, diskcache, rapidocr + onnxruntime.
 - **Docker**: `docker build -f server/Dockerfile .` (runs `python -m server.main`;
-  installs tesseract + eng language data and the OpenCL ICD loader; NVIDIA OpenCL is
+  installs the OpenCL ICD loader; NVIDIA OpenCL is
   injected at runtime with `--gpus all`, otherwise it transparently falls back to CPU).
 - **JS syntax checks**: `node` is NOT installed. Use `bun` (`/home/kuno/.bin/bun`).
   The viewer is plain browser ES modules, so a quick import/syntax smoke test is
@@ -55,7 +55,7 @@ module that knows env names. Defaults target `/archive/Library` (books root) and
 `/archive/cache`. Key knobs: `ARCHIVE_ROOT`, `CACHE_DIR`, `CACHE_GB` (encoded-tile disk
 budget), `PAGE_CACHE_BYTES` (decoded-page RAM budget), `PAGE_IDLE_SECONDS` (default 10),
 `TILE_SIZE` (256), `JPEG_QUALITY`/`JPEG_PROGRESSIVE`, `OPENCL`, `OCR_*` (cache dir, max dim
-3000, lang, conf threshold 40), `RIGHTS_DB_PATH` + `ARCHIVE_USERNAME`/`ARCHIVE_PASSWORD` +
+0 = no downscale, lang, conf threshold 25), `RIGHTS_DB_PATH` + `ARCHIVE_USERNAME`/`ARCHIVE_PASSWORD` +
 `SESSION_SECRET`/`SESSION_COOKIE_SECURE`/`LOGIN_RATE_LIMIT` + `DEFAULT_REGION`/
 `DEV_REGION_HEADER` + `BLUR_STRENGTH`/`BLUR_DARKNESS` (rights/auth/admin; see the Rights
 section), `HOST`, `PORT`.
@@ -132,10 +132,13 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
 
 ### OCR — `server/ocr/`
 
-- `engine.py` — the only module that talks to Tesseract (`pytesseract`, `--oem 3 --psm 3`).
-  Downscales pages to `ocr_max_dim` (3000) first, filters words below
-  `ocr_conf_threshold`, groups words into lines by Tesseract's (block, par, line) ids, and
-  scales every box back to source-pixel coordinates.
+- `engine.py` — the only module that talks to an OCR engine: RapidOCR (PaddleOCR
+  PP-OCRv4 models via ONNX Runtime, wheel-bundled, no runtime downloads). Its DBNet
+  detector handles freeform layouts far better than Tesseract's page segmentation.
+  RapidOCR recognizes whole lines; each line becomes an OCR line and its text is split
+  into words with proportionally interpolated boxes so word search highlighting keeps
+  working. Filters words below `ocr_conf_threshold`, and rescales every box back into
+  source-pixel coordinates when the optional `ocr_max_dim` downscale is enabled.
 - `service.py` — OCR is fully off the request path: a single daemon worker thread drains a
   `PriorityQueue`; interactive single-page requests jump ahead of bulk search prefetch
   (priority 0 vs 1). Results cached to disk as JSON keyed by page version

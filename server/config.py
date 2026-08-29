@@ -27,9 +27,15 @@ class Settings(BaseSettings):
         opencl: Whether to attempt OpenCL-accelerated resampling.
         ocr_cache_dir: Directory backing the on-disk OCR result cache (JSON).
         ocr_max_dim: Long-edge pixel target OCR downscales pages to before
-            Tesseract (scans are huge; full-res OCR is needlessly slow).
+            Tesseract; ``0`` (default) disables downscaling entirely — full-res
+            OCR, slower but more accurate on small/freeform text. Scans are
+            huge, so a nonzero value trades accuracy for speed.
         ocr_lang: Tesseract language code(s), e.g. "eng".
-        ocr_conf_threshold: Minimum word confidence (0-100) to keep a word.
+        ocr_psm: Tesseract page segmentation mode: 3 = automatic page layout
+            (good for structured columns), 6 = uniform text block, 11 =
+            sparse/freeform text. Freeform scans read better with 11.
+        ocr_conf_threshold: Minimum word confidence (0-100) to keep a word;
+            freeform output runs at lower confidences, so 25-30 keeps more.
         rights_db_path: SQLite rights database; defaults to ``cache_dir/rights.db``.
         archive_username: Owner login name (env ``ARCHIVE_USERNAME``).
         archive_password: Owner password; empty disables owner login.
@@ -66,9 +72,10 @@ class Settings(BaseSettings):
     jpeg_progressive: bool = True
     opencl: bool = True
     ocr_cache_dir: Path = Path("/archive/cache/ocr")
-    ocr_max_dim: int = 3000
+    ocr_max_dim: int = 0
     ocr_lang: str = "eng"
-    ocr_conf_threshold: int = 40
+    ocr_psm: int = 11
+    ocr_conf_threshold: int = 25
     rights_db_path: Path | None = None
     archive_username: str = "admin"
     archive_password: str = ""
