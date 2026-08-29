@@ -200,10 +200,21 @@ function imageAtPoint(sx, sy) {
   return null;
 }
 
-/** Copy the selected lines' text (joined by newlines) to the clipboard. */
+/**
+ * Copy the selected lines' text to the clipboard. Boxes on the same printed
+ * row (their tops within half the line height of each other) are joined with
+ * a space; a box whose top starts below the previous one's midline begins a
+ * new line, so table rows and stacked titles stay separate when copied.
+ */
 function copySelection(lines) {
   if (!lines.length) return;
-  const text = lines.map((l) => l.text).join("\n");
+  let text = lines[0].text;
+  for (let i = 1; i < lines.length; i++) {
+    const cur = lines[i - 1];
+    const next = lines[i];
+    const sameRow = Math.abs(next.y - cur.y) <= Math.min(cur.h, next.h) / 2;
+    text += (sameRow ? " " : "\n") + next.text;
+  }
   const done = () => state.setStatus(`Copied ${lines.length} OCR line(s)`);
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
