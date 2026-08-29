@@ -22,11 +22,16 @@ The site root is [archive.kunodlk.com](https://archive.kunodlk.com).
 - **Smooth pan/zoom over huge scans** — pages are pre-encoded into a tile pyramid
   (disk-cached, GPU-accelerated when available); you can zoom from a full shelf view down to
   the paper grain without ever decoding a full page in the browser.
-- **OCR text search** — pages are OCR'd in the background (RapidOCR/PaddleOCR onnx models);
-  search a whole book for a word or a regex and jump straight to every match, with the text
-  dimmed except the hits. Select any text with Ctrl-drag and copy it.
+- **OCR text overlay** — every page's text is recognised in the background
+  (RapidOCR/PaddleOCR onnx models) and layered over the scan; hold Ctrl and drag a box to
+  select any text and copy it.
 
-![OCR text overlay and search](docs/ocr.jpg)
+![OCR text overlay: select any text with Ctrl-drag and copy it](docs/ocr.jpg)
+
+- **Full-text search** — search a whole book for a word or a regex and jump straight to every
+  match, with the rest of the page dimmed around the hits.
+
+![OCR search: every match highlighted, the rest of the page dimmed](docs/ocr-search.jpg)
 
 - **Share links** — every book and page gets a short stable URL that renders real link
   previews (Open Graph) for iMessage/Discord/Reddit, and works even for crawlers that never
