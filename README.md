@@ -1,71 +1,128 @@
-# Photo Crop
+# Book Viewer
 
-A portable, fully client-side web tool for cropping photos out of large flatbed scans
-(Epson ET-7750 @ 1200dpi and similar). Renders scans with a DeepZoom-style tile pyramid so
-pan/zoom stays smooth on very large images, then exports crops at full resolution.
+A self-hosted archive viewer for scanned books and magazines. It serves pages as an
+immutable DeepZoom-style tile pyramid (fast pan/zoom over huge 1200dpi scans), runs on-device
+OCR so text is searchable and selectable, and gates everything behind copyright-aware access
+rules. The client is a plain ES-module SPA — no build step, no JavaScript frameworks.
 
-No server, no build step, no dependencies — the entire app is a single `index.html`.
+## Live demo
 
-## Run
+There is a public instance with a small sample book you can browse right now.
 
-Either:
+| Scan to open the sample page | or open it directly |
+|---|---|
+| ![QR code](docs/sample-qr.png) | [archive.kunodlk.com/4Nz0mBT](https://archive.kunodlk.com/4Nz0mBT) |
 
-- **Double-click `index.html`** (works via `file://`), or
-- Serve the folder and open in a browser:
+The site root is [archive.kunodlk.com](https://archive.kunodlk.com).
 
-  ```bash
-  python -m http.server 8000
-  # open http://localhost:8000
-  ```
+## Features
 
-Chrome/Edge are recommended (full tiling + folder save dialog). Firefox/Safari work for
-viewing/editing (canvas capped at 16384px per side); export falls back to standard downloads.
+![Progressive tiled loading: coarse tiles arrive first, then refinement](docs/dynamic-tiles.jpg)
 
-## Open from the command line
+- **Smooth pan/zoom over huge scans** — pages are pre-encoded into a tile pyramid
+  (disk-cached, GPU-accelerated when available); you can zoom from a full shelf view down to
+  the paper grain without ever decoding a full page in the browser.
+- **OCR text search** — pages are OCR'd in the background (RapidOCR/PaddleOCR onnx models);
+  search a whole book for a word or a regex and jump straight to every match, with the text
+  dimmed except the hits. Select any text with Ctrl-drag and copy it.
 
-A browser can't read arbitrary file paths, so `open.py` serves the scan over localhost and
-opens it in the app (requires Python 3):
+![OCR text overlay and search](docs/ocr.jpg)
+
+- **Share links** — every book and page gets a short stable URL that renders real link
+  previews (Open Graph) for iMessage/Discord/Reddit, and works even for crawlers that never
+  run JavaScript.
+- **Copyright-aware access** — pages outside their public-domain date are served blurred
+  (or not at all, per book); the rules are region-aware (UK/EU vs US) and flip automatically
+  when a page becomes public domain. Real tiles are cached privately so blurred content can
+  never leak through a shared cache.
+- **Admin panel** — a server-rendered CRUD UI for managing books, editors, rights holders,
+  per-page copyright rules, and viewer accounts.
+- **Works everywhere** — responsive full-bleed UI with floating chrome and gesture
+  pan/zoom/pinch; built for desktop, iPad, and iPhone Safari/Chrome.
+
+![The included sample book](docs/sample.jpg)
+
+## Quick start (Docker Compose)
+
+Clone the repo and put scanned books on disk (one folder per book, images as pages):
 
 ```bash
-python3 open.py /path/to/scan.png
+git clone https://github.com/KunoDLK/photo-crop.git
+cd photo-crop
+mkdir -p books cache
 ```
 
-`index.html` also accepts a `?file=` query parameter (a path relative to the page), so any
-static server works too:
+`docker-compose.yml`:
+
+```yaml
+services:
+  bookviewer:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "8471:8000"
+    volumes:
+      - ./books:/archive/Library   # scanned books: one folder per book, images as pages
+      - ./cache:/archive/cache     # encoded tiles + OCR results (created automatically)
+    environment:
+      ARCHIVE_ROOT: /archive/Library
+      CACHE_DIR: /archive/cache
+      CACHE_GB: "8"                # disk budget for encoded tiles
+      ARCHIVE_USERNAME: admin      # owner login for the admin panel
+      ARCHIVE_PASSWORD: change-me
+    # Optional: NVIDIA GPU for OpenCL-accelerated resampling (falls back to CPU)
+    # gpus: all
+    restart: unless-stopped
+```
 
 ```bash
-python -m http.server 8000
-# open http://localhost:8000/?file=scan.png
+docker compose up -d --build
+# open http://localhost:8471
 ```
 
-For a scan-then-crop workflow, e.g.:
+Pages are sorted by filename: `{group}_{order}-name.jpg` (e.g. `2_001-Page.jpg`); anything
+that doesn't match the pattern lands in a trailing "extra" group.
+
+## Run from source
+
+Requires Python 3.11+:
 
 ```bash
-scanimage --format png --resolution 1200 > scan.png && python3 open.py scan.png
+pip install -r server/requirements.txt
+python -m server.main          # or: uvicorn server.main:app
 ```
 
-A ready-made `scan-crop` command (install: `ln -s "$PWD/scan-crop" ~/.local/bin/scan-crop`)
-scans the Epson ET-7750 at 1200dpi color into `~/Docker-Server/copyparty/data/private/Photos/Scans/Ingest/`
-(override with `SCAN_CROP_INGEST`) and opens the result in Chrome. `open.py` exits by itself
-once the page has loaded, so the terminal returns.
+Honors `HOST` / `PORT` and every setting below can be set via environment variables or a
+`.env` file.
 
-## Usage
+## Configuration
 
-1. **Open** — drag & drop a scan onto the window, or click *Open image…*.
-2. **Zoom / pan** — mouse wheel zooms (anchored at the cursor); Ctrl+drag pans.
-3. **Boxes** — drag empty canvas to draw a box; click to select; drag inside to move; drag
-   the 8 handles to resize; drag the rotation handle (or use the list buttons) to rotate the
-   rectangle over the source image; the crop's short/long dimensions stay unchanged while
-   the image underneath is re-oriented to the rectangle before export;
-   `Del`/`Backspace` deletes the selected box. *Auto-detect* proposes boxes for photos on a
-   white scanner bed.
-4. **Name & preview** — each box appears in the right-hand list with a live thumbnail and a
-   filename field; uncheck *Include* to skip a crop.
-5. **Export** — pick PNG or JPEG (+ quality slider), press **Export**, choose a destination
-   folder (Chrome) or accept the downloads. Files are saved at full scan resolution; duplicate
-   names are auto-suffixed.
+| Variable | Default | What it does |
+|---|---|---|
+| `ARCHIVE_ROOT` | `/archive/Library` | Root folder of the scanned books |
+| `CACHE_DIR` | `/archive/cache` | Encoded tiles, OCR results, rights DB |
+| `CACHE_GB` | `8` | Disk budget for the encoded-tile cache |
+| `PAGE_CACHE_BYTES` | 6 GiB | RAM budget for decoded page mipmaps |
+| `OCR_*` | — | OCR cache dir, max dim, confidence threshold, language |
+| `ARCHIVE_USERNAME` / `ARCHIVE_PASSWORD` | `admin` / empty | Owner login (admin panel) |
+| `RIGHTS_DB_PATH` | `cache_dir/rights.db` | Rights/access database |
+| `SESSION_SECRET` / `SESSION_COOKIE_SECURE` | auto / `true` | Session signing and cookie policy |
+| `DEFAULT_REGION` / `DEV_REGION_HEADER` | empty / `false` | Region detection for rights rules |
 
-## Files
+## How it works
 
-- `index.html` — the whole application
-- `spec.md` — design specification
+- `server/` is a FastAPI app: tile rendering (disk cache → decoded-page cache → mipmap →
+  resample → progressive JPEG), OCR with a background worker queue, path-based share links,
+  rights/region policy, admin CRUD, and crawler-facing HTML with Open Graph previews.
+- `server/static/` is the client: ES modules with no bundler — a tile scheduler, an
+  rAF render loop, OCR overlay + search, and the responsive UI.
+- Every content route resolves a per-request access decision (owner → grants → book
+  visibility → copyright rule → page default), so the same server safely serves both public
+  and restricted material.
+
+## The crop tool
+
+This repo also contains a legacy, fully client-side crop tool for extracting photos from
+flatbed scans — see [`crop-tool/`](crop-tool/). It is a single `index.html`, unrelated to
+the server.

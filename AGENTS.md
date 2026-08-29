@@ -4,26 +4,26 @@
 
 Two separate projects coexist here:
 
-1. **Crop tool (legacy, stable)** — `index.html` at the repo root: a fully client-side,
+1. **Crop tool (legacy, stable)** — `crop-tool/index.html`: a fully client-side,
    single-file web app for cropping photos out of flatbed scans. No build, no deps.
-   Documented by `README.md` and `spec.md` (both describe only this app).
+   Documented by `crop-tool/README.md` and `crop-tool/spec.md` (both describe only this app).
 2. **Book viewer (actively developed)** — `server/`: a FastAPI tile server + an
    ES-module JS viewer (`server/static/`). DeepZoom-style pan/zoom over scanned book
    pages, OCR text search, name filter. This is where all recent commits land.
 
-Supporting files:
+The root holds only `README.md`, `LICENSE`, and this file; everything else lives in
+`server/`, `crop-tool/`, or `docs/` (screenshots and the feature docs).
+
+Crop-tool support files (inside `crop-tool/`):
 
 - `open.py` — stdlib-only server that serves one scan over localhost and opens the crop
   tool; auto-exits after the page loads (`PHOTO_CROP_BROWSER` overrides the browser).
 - `scan-crop` — bash wrapper: scans the Epson ET-7750 (color/1200dpi/PNG) into an
   ingest folder (`SCAN_CROP_INGEST`, default `~/Docker-Server/copyparty/data/private/Photos/Scans/Ingest/`),
   then opens the result via `open.py`.
-- `book.html` — **legacy single-file snapshot** of the book viewer, superseded by
-  `server/static/`. Do not edit it for new work; the module-based viewer in
-  `server/static/` is the live one.
 
-Note: `README.md` and `spec.md` predate the server and say "no server, no build step".
-The server contradicts that. Trust the code, not the docs.
+Note: the old `README.md` and `spec.md` documented only the crop tool; the root `README.md`
+now covers the server.
 
 ## Commands
 
@@ -148,7 +148,7 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
 - `router.py` — OCR/search routes are `async` and wrap blocking work in
   `asyncio.to_thread` so the event loop (and tile serving) never blocks.
 
-### Rights + auth + admin — `server/rights/`, `server/auth/`, `server/admin/` (RightsUpdate.md)
+### Rights + auth + admin — `server/rights/`, `server/auth/`, `server/admin/`
 
 Access model (fail-closed defaults): unknown book = `private` (invisible to
 everyone without a grant), page with no rights row = `blurred` (blurred tile,
@@ -374,7 +374,7 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
 
 ## Gotchas and non-obvious facts
 
-- **Two index.html files**: root `index.html` (crop tool) vs `server/static/index.html`
+- **Two index.html files**: `crop-tool/index.html` (crop tool) vs `server/static/index.html`
   (viewer). Don't confuse them.
 - **Share links are path-based, not hash-based**: `https://host/<short-id>` (e.g.
   `93050a0`). The server serves the same viewer page for every path (`app.py`
@@ -413,8 +413,8 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
 - **Debug helpers**: `window.dumpTiles()` and `window.__state` in the client; the D key /
   toolbar toggles the tile-debug overlay and stats bar.
 - **Zoom is clamped** to scale ∈ [0.00005, 64].
-- The local (gitignored) `.agents.md` contains environment/deployment notes (bun location,
-  copyparty deploy of `book.html`) but is **partially stale**: it still describes the
+- The local (removed) `.agents.md` contained environment/deployment notes (bun location,
+  copyparty deploy of the old `book.html`) but was **partially stale**: it still describes the
   single-file `book.html` as the active viewer. The server app in `server/` and
   `server/static/` is the current development target.
 
