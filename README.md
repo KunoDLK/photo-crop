@@ -5,6 +5,8 @@ immutable DeepZoom-style tile pyramid (fast pan/zoom over huge 1200dpi scans), r
 OCR so text is searchable and selectable, and gates everything behind copyright-aware access
 rules. The client is a plain ES-module SPA — no build step, no JavaScript frameworks.
 
+![The included sample book](docs/sample.jpg)
+
 ## Live demo
 
 There is a public instance with a small sample book you can browse right now.
@@ -44,8 +46,6 @@ The site root is [archive.kunodlk.com](https://archive.kunodlk.com).
   per-page copyright rules, and viewer accounts.
 - **Works everywhere** — responsive full-bleed UI with floating chrome and gesture
   pan/zoom/pinch; built for desktop, iPad, and iPhone Safari/Chrome.
-
-![The included sample book](docs/sample.jpg)
 
 ## Quick start (Docker Compose)
 
