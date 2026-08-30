@@ -323,7 +323,8 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   see the comment — trackpad pinches arrive as tiny ctrl+deltas), pointer pan, two-finger
   pinch, click/double-click/right-click; pan only on left button; marks interaction and
   reconciles after `SETTLE_MS` of quiet.
-- `keys.js` — F fit, R reload, D tile debug, Space toggle 1:1/fit, arrows navigate,
+- `keys.js` — F fit, R reload, D tile debug, H hide the toolbar chrome for clean
+  screenshots, Space toggle 1:1/fit, arrows navigate,
   Escape/Backspace back. Shortcuts ignore INPUT/TEXTAREA focus.
 - `nav.js` — showBooks / enterBook / reload (keeps the view), focusPage; syncs the URL
   path with the server-assigned short id via `history.replaceState` (never spams history).

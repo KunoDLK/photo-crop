@@ -22,6 +22,10 @@
  * the toolbar is tucked away); the sliding is pure CSS in viewer.css. Desktop
  * fullscreen also sets ``html.immersive``, but the coarse-pointer media query
  * keeps the bars visible there.
+ *
+ * The H key additionally toggles a manual chrome hide for clean screenshots on
+ * every device: it sets the same ``html.chrome-hidden`` class, but keeps it
+ * until H is pressed again, regardless of pan/zoom or fullscreen state.
  */
 
 import * as state from "./state.js";
@@ -47,6 +51,7 @@ const HIDE_DELAY = 1500;
 let viewEl = null;
 let immersive = false;
 let chromeHidden = false;
+let manualHide = false;
 let hideTimer = null;
 let pillEl = null;
 let spacerEl = null;
@@ -228,7 +233,7 @@ function wireImmersiveChrome() {
 
 /** Any pan/zoom burst starts the countdown that tucks the chrome away. */
 function onInteract() {
-  if (!immersive || chromeHidden) return;
+  if (!immersive || chromeHidden || manualHide) return;
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
     hideTimer = null;
@@ -250,11 +255,26 @@ function setImmersive(on) {
 function setChromeHidden(hidden) {
   if (chromeHidden === hidden) return;
   chromeHidden = hidden;
-  document.documentElement.classList.toggle("chrome-hidden", hidden);
+  applyChromeHidden();
+}
+
+/** Reflect manual + auto hide state on the html element. */
+function applyChromeHidden() {
+  document.documentElement.classList.toggle("chrome-hidden", manualHide || chromeHidden);
+}
+
+/**
+ * Hide/show the floating chrome for clean screenshots (H key). Independent of
+ * immersive mode and every device; wins over the auto-hide until toggled again.
+ */
+export function toggleChromeHidden() {
+  manualHide = !manualHide;
+  applyChromeHidden();
 }
 
 /** Bring the toolbar back (reveal button tap, or a touch near the top edge). */
 function revealChrome() {
+  if (manualHide) return; // a manual H-key hide stays until H is pressed again
   clearTimeout(hideTimer);
   setChromeHidden(false);
 }

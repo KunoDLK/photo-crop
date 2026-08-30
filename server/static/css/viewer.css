@@ -650,3 +650,20 @@ html.bars-open .scroll-spacer { display: block; }
   }
 }
 
+/* Manual chrome hide (H key): drop every floating pill for clean screenshots.
+   Unlike the coarse-pointer auto-hide above, this applies on every device and
+   also tucks the status + access pills away. */
+html.chrome-hidden .toolbar {
+  transform: translateY(-130%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.28s ease, opacity 0.28s ease;
+}
+html.chrome-hidden #status,
+html.chrome-hidden #access-banner {
+  transform: translateX(-50%) translateY(14px);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.28s ease, opacity 0.28s ease;
+}
+

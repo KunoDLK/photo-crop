@@ -1,11 +1,12 @@
 /**
  * Keyboard shortcuts.
  *
- * F = fit overview, R = reload, D = toggle tile debug, Space = toggle
- * 1:1 / fit-page, arrow keys navigate between images, Backspace/Escape returns
- * to the root book list when inside a book. Ctrl/Meta combos (Ctrl+F search,
- * Ctrl+G name filter, browser find/bookmark) are owned elsewhere and never
- * reach the plain-letter shortcuts here.
+ * F = fit overview, R = reload, D = toggle tile debug, H = hide the toolbar
+ * chrome for clean screenshots, Space = toggle 1:1 / fit-page, arrow keys
+ * navigate between images, Backspace/Escape returns to the root book list when
+ * inside a book. Ctrl/Meta combos (Ctrl+F search, Ctrl+G name filter, browser
+ * find/bookmark) are owned elsewhere and never reach the plain-letter
+ * shortcuts here.
  */
 
 import * as state from "./state.js";
@@ -14,7 +15,7 @@ import { clearNameFilter } from "./nameFilter.js";
 import { toggleTileDebug } from "./ui.js";
 import { isOpen as shareOpen, close as closeShare } from "./share.js";
 import { isOpen as loginOpen, close as closeLogin } from "./login.js";
-import { toggleFullscreen } from "./fullscreen.js";
+import { toggleFullscreen, toggleChromeHidden } from "./fullscreen.js";
 
 let nav = null;
 
@@ -62,6 +63,9 @@ export function installKeys() {
       if (nav) nav.reload();
     } else if (e.key === "d" || e.key === "D") {
       toggleTileDebug();
+    } else if (e.key === "h" || e.key === "H") {
+      // Hide the toolbar chrome (back, title, ☰ menu, pills) for screenshots.
+      toggleChromeHidden();
     } else if (e.key === " ") {
       e.preventDefault();
       if (nav) nav.toggleZoomFit();
