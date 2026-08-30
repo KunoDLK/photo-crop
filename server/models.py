@@ -78,6 +78,7 @@ class PagesResponse(BaseModel):
     book: str
     pages: list[PageInfo]
     signature: str
+    visibility: str = "private"
 
 
 class ImageInfo(BaseModel):

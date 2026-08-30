@@ -6,10 +6,12 @@
  * coordinates; search returns matching pages plus their matching word boxes.
  */
 
+import { withKey } from "../util.js";
+
 /** Fetch the OCR result (word/line boxes) for a single page. */
 export async function fetchPageOcr(book, page) {
   const res = await fetch(
-    `/api/books/${encodeURIComponent(book)}/pages/${encodeURIComponent(page)}/ocr`,
+    withKey(`/api/books/${encodeURIComponent(book)}/pages/${encodeURIComponent(page)}/ocr`),
     { cache: "no-store" },
   );
   if (!res.ok) throw new Error("HTTP " + res.status);
@@ -20,7 +22,7 @@ export async function fetchPageOcr(book, page) {
 export async function searchBook(book, query, regex) {
   const params = new URLSearchParams({ book, q: query });
   if (regex) params.set("regex", "1");
-  const res = await fetch("/api/search?" + params.toString(), { cache: "no-store" });
+  const res = await fetch(withKey("/api/search?" + params.toString()), { cache: "no-store" });
   if (!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
 }

@@ -6,6 +6,8 @@
  * only requests each id once.
  */
 
+import { withKey } from "../util.js";
+
 const idCache = new Map();
 
 /** Fetch (creating if needed) the short id for a (book, page) location. */
@@ -15,7 +17,7 @@ export async function getLocationId(book, page) {
 
   const params = new URLSearchParams({ book });
   if (page) params.set("page", page);
-  const res = await fetch("/api/locations?" + params.toString(), { cache: "no-store" });
+  const res = await fetch(withKey("/api/locations?" + params.toString()), { cache: "no-store" });
   if (!res.ok) throw new Error("HTTP " + res.status);
   const data = await res.json();
   idCache.set(key, data.id);
@@ -24,7 +26,7 @@ export async function getLocationId(book, page) {
 
 /** Resolve a short id to { book, page }, or null if unknown. */
 export async function resolveLocation(id) {
-  const res = await fetch("/api/locations/" + encodeURIComponent(id), { cache: "no-store" });
+  const res = await fetch(withKey("/api/locations/" + encodeURIComponent(id)), { cache: "no-store" });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error("HTTP " + res.status);
   return res.json();

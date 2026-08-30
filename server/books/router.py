@@ -20,9 +20,17 @@ router = APIRouter(tags=["books"])
 
 
 def _granted(viewer: Viewer, book_id: str) -> bool:
-    """True when the viewer has an explicit grant for a book (owner included)."""
+    """True when the viewer has an explicit grant for a book (owner included).
+
+    Any of the viewer's share grants (``share_grants``) counting for its own
+    book qualifies — whether they ride on a session (merged by AuthService) or
+    are the bare ``share`` viewer; the policy still limits each to its granted
+    page(s) of that book.
+    """
     return viewer.kind == "owner" or (
         viewer.kind == "account" and book_id in viewer.grants
+    ) or (
+        any(gbook == book_id for gbook, _ in viewer.share_grants)
     )
 
 
@@ -99,7 +107,9 @@ def list_pages_endpoint(
     result = sources.pages(book_id)
     if result is not None:
         sig, pages = result
-        return PagesResponse(book=book_id, pages=pages, signature=sig)
+        # Provider books are open to everyone; report that so the share panel
+        # never offers keyed links for them.
+        return PagesResponse(book=book_id, pages=pages, signature=sig, visibility="public")
     if not _granted(viewer, book_id) and not _is_public(request, book_id):
         raise NotFound(f"book not found: {book_id}")
     catalog = request.app.state.catalog
@@ -110,11 +120,19 @@ def list_pages_endpoint(
     access_map = policy.resolve_pages(
         viewer, book_id, [p.page_id for p in pages], zone
     )
+    # Pages the viewer cannot see at all (a page-scoped share token on a
+    # private book, say) are dropped from the listing, not shown as broken.
     annotated = [
         page.model_copy(update={"access": AccessInfo(**access_map[page.page_id])})
         for page in pages
+        if access_map[page.page_id]["status"] != "nonexistent"
     ]
-    return PagesResponse(book=book_id, pages=annotated, signature=signature)
+    return PagesResponse(
+        book=book_id,
+        pages=annotated,
+        signature=signature,
+        visibility=request.app.state.rights.book_visibility(book_id),
+    )
 
 
 @router.get("/api/books/{book_id}/pages/{page_id}/info", response_model=ImageInfo)

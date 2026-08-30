@@ -7,7 +7,12 @@
  * spams history. The hash scheme was removed; no legacy links are supported.
  */
 
-/** Write a location id into the path (null clears back to the root). */
+/**
+ * Write a location id into the path (null clears back to the root). Share keys
+ * never re-appear here: the bv_share cookie (set when a keyed URL loads) and
+ * the key kept in state and appended to requests carry the grant, so the
+ * address bar stays clean.
+ */
 export function setPath(id) {
   history.replaceState(null, "", id ? "/" + id : "/");
 }

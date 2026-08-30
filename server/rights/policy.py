@@ -137,6 +137,16 @@ class Policy:
             return {"status": FULL, "zone": zone}
         if viewer.kind == "account" and book_id in viewer.grants:
             return {"status": FULL, "zone": zone}
+        # Share tokens grant exactly their own locations: the whole book when
+        # the token has no page, else that one page. Any number of grants can
+        # ride on a viewer (several keyed links opened), and each is checked
+        # here. Anything outside the grants falls through to the normal
+        # (fail-closed) rules.
+        for grant_book, grant_page in viewer.share_grants:
+            if grant_book == book_id and (
+                grant_page is None or grant_page == page_id
+            ):
+                return {"status": FULL, "zone": zone}
         # Private (or unknown) books do not exist without a grant.
         if book_row is None or book_row["visibility"] != "public":
             return {"status": NONEXISTENT, "zone": zone}

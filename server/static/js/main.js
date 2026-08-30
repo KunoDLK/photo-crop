@@ -25,10 +25,46 @@ import * as share from "./share.js";
 import * as login from "./login.js";
 import * as access from "./access.js";
 import * as fullscreen from "./fullscreen.js";
+import { queryParam } from "./util.js";
 
 async function bootstrap() {
   const viewEl = document.getElementById("view");
   const leftEl = document.getElementById("left");
+
+  // Share tokens (?key=) elevate this session to their books. The server
+  // stores each valid key in its own bv_share_<hash> cookie on page load, so
+  // the secrets can leave the address bar: strip the URL (keeping them out of
+  // history and referrers) while retaining all held keys in memory for the
+  // requests that carry them, and stash them in sessionStorage so reloads
+  // keep working even in a cookie-blocking browser. Several links can be open
+  // at once — each key is added to the held set, never replacing the others.
+  try {
+    const stored = JSON.parse(sessionStorage.getItem("bv.shareKeys") || "[]");
+    if (Array.isArray(stored)) for (const k of stored) state.addShareKey(k);
+  } catch (e) { /* storage unavailable */ }
+  const urlKey = queryParam("key");
+  if (urlKey) {
+    state.addShareKey(urlKey);
+    try { sessionStorage.setItem("bv.shareKeys", JSON.stringify(state.shareKeys)); } catch (e) { /* storage unavailable */ }
+    history.replaceState(null, "", location.pathname);
+  }
+
+  // Drop revoked/expired keys from the held set in the background (the server
+  // ignores them regardless, so this is hygiene, not access control).
+  (async () => {
+    try {
+      const { fetchShareInfo } = await import("./api/shares.js");
+      const live = [];
+      for (const k of state.shareKeys) {
+        const info = await fetchShareInfo(k);
+        if (info.valid) live.push(k);
+      }
+      if (live.length !== state.shareKeys.length) {
+        state.setShareKeys(live);
+        try { sessionStorage.setItem("bv.shareKeys", JSON.stringify(live)); } catch (e) { /* storage unavailable */ }
+      }
+    } catch (e) { /* network hiccup: keys stay, server still filters */ }
+  })();
 
   // Keep tile resource-timing entries long enough for the cache-hit readout to
   // find each one (browser-cache hits are detected via transferSize === 0).

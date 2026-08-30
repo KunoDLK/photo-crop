@@ -85,6 +85,10 @@ export async function enterBook(book, pageId = null, force = false, keepView = n
   scheduler.resetLevels();
   try {
     const data = await fetchPages(book.id, force);
+    // The book's visibility (public/private) travels with the page listing so
+    // the share panel can warn about private works even when this book was
+    // opened directly from a share link (no root-listing row to read it from).
+    book.visibility = data.visibility;
     // Same as showBooks: a force reload always rebuilds so the session's
     // access (and visibility) are reapplied, even when the archive signature
     // is unchanged. Skipping it left images on their old access after login,
@@ -132,7 +136,8 @@ export async function enterBook(book, pageId = null, force = false, keepView = n
     syncUrl(book.id, target ? pageId : null);
     state.emit("location-changed");
   } catch (e) {
-    state.setStatus("Could not load book: " + e.message);
+    state.setStatus("Could not load book: " + e.message +
+      (state.shareKeys.length ? " — the share link may have expired" : ""));
   }
 }
 

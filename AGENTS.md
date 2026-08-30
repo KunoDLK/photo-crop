@@ -192,12 +192,42 @@ books in full, region/date rules apply to everything else.
   CSRF tokens (`csrf_token`/`verify_csrf`) for the admin forms.
 - `auth/router.py` — `POST /api/login`, `POST /api/logout`, `GET /api/me`
   (`{authenticated, username, is_owner, grants}`). pbkdf2 runs in the thread pool.
+- `shares/` — **time-limited share links, server-authoritative**: keys are
+  random 32-byte secrets (base64url, ~43 chars) whose record lives in the
+  `share_keys` table of the rights DB — stored **hashed** (SHA-256) so a leaked
+  database can't mint new links. `store.py` (`ShareStore`) owns the schema and
+  CRUD (create, hash-then-row lookup, list, set expiry, revoke, restore,
+  delete; one connection + lock, matching `RightsStore`). `router.py` has
+  `POST /api/share` (owner or granted account; durations allowlisted
+  `SHARE_DURATIONS`: 1h/1d/7d/30d; location validated against the catalog) and
+  `GET /api/share/info?key=` (no auth needed — possession of the key is the
+  credential — returns `{valid, book, page, expires_at, revoked}` and is the
+  only endpoint that writes `last_used_at`). Revoking a key cuts access
+  immediately; extending sets a new expiry; expiry can be cleared (never).
+  The old stateless HMAC token scheme is **gone** — legacy links no longer
+  work. `AuthService.viewer_from_request` resolves the session identity first,
+  then *merges* every valid share grant the request carries — repeated
+  `?key=` params and all `bv_share_*` cookies (one per key, set by the SPA
+  response with `Max-Age` = the key's remaining life) — onto it as a set of
+  `(book, page)` pairs, so any number of opened share links can be held at
+  once without dropping earlier ones, and a keyed request elevates exactly its
+  own locations without ever shadowing an authenticated session (owner stays
+  owner, accounts keep their grants, logged-in recipients see shared content
+  too). The policy grants exactly each key's book/page in **every region**;
+  anything outside the grants resolves by the normal fail-closed rules. Keyed
+  requests keep `region_locked` (real tiles stay `private, immutable`), and
+  keyed share URLs are `noindex, nofollow`.
 - `admin/` — server-rendered HTML CRUD at `/admin` (no build step, no required
   JS): books (flip public/private, editor, holder, year), editors, rights
   holders, per-book page-rights screens (default editor / bulk / per-page
   override: multi-editor sets via Ctrl-click selects, the per-page
   `copyright_kind` editor/holder/ad, `default_access` block↔public flags, and a
-  bulk "set for all pages" action), accounts (create, reset password, grants, delete). Owner session only
+  bulk "set for all pages" action), accounts (create, reset password, grants, delete),
+  and a **Share links** manager (`/admin/shares`): list every key (masked
+  hash, book, page or whole-book, creator, created/expiry/last-used, status
+  badge, note), create new keys (book + optional page + duration or never +
+  note), extend (preset durations or "never expires"), revoke/restore
+  (immediate invalidation, reversible), and hard-delete. Owner session only
   (Cloudflare Access guards the network layer); every POST carries the session
   CSRF token; anonymous GETs render the login form, mutations 401.
 - `scripts/import_rights.py` — CSV bulk seed (`python -m server.scripts.import_rights
@@ -233,14 +263,22 @@ crawler-facing HTML.
 - Page HTML uses `OCRService.get_page_ocr_cached` — a pure cache read that never
   enqueues or blocks, so crawler requests never trigger OCR work.
 - **Access gating**: every content route resolves the policy for the requester's
-  session + region first. `GET /og/...` serves the real preview only for `full`
+  session + region first (a valid `?key=` share token elevates the request —
+  the client and the `og:image` URL both carry it, and the `/og` endpoint
+  re-verifies it). `GET /og/...` serves the real preview only for `full`
   access; `blurred` (and `nonexistent`) pages get **no preview image at all** —
   the OG meta carries no `og:image`/`twitter:image`, so region-locked shares
   render as a text-only card and the real image can never leak. SEO fragments:
   public books render normally, blurred pages keep structure but **no OCR
   text**, private locations render an empty fragment with
   `X-Robots-Tag: noindex, nofollow`. The sitemap lists only public books and
-  their pages.
+  their pages. Keyed share URLs render their content (the key travels in the
+  preview image URL) but always carry `noindex, nofollow` — they are
+  capabilities, never indexable public URLs. When the URL carries a valid
+  `?key=`, `spa_response` also stores it in an httpOnly `bv_share` cookie
+  (sized to the token's remaining life), so every request in that browser
+  carries the grant automatically — robust against stale cached JS, restored
+  tabs, or links that dropped the query.
 - `GET /og/{book}/{page}/{mtime}.jpg` renders the 1200×630 preview **from the
   existing tile pipeline**: picks the finest level whose image still covers the
   target, fetches that level's full grid via `TileService.get_tile` (reusing the
@@ -253,7 +291,7 @@ crawler-facing HTML.
 | Endpoint | Notes |
 |---|---|
 | `GET /api/books[?force=1]` | visible books (private hidden without a grant) + `signature` + per-book `visibility` + cover `access` |
-| `GET /api/books/{book}/pages[?force=1]` | pages sorted by (group, order) + `signature`; each page carries its resolved `access` |
+| `GET /api/books/{book}/pages[?force=1]` | pages sorted by (group, order) + `signature` + book `visibility`; each page carries its resolved `access`; pages the viewer cannot see at all (page-scoped share token) are dropped |
 | `GET /api/books/{book}/pages/{page}/info` | dims, `max_level`, file size, sha256, resolved `access` |
 | `GET /api/locations?book=&page=` | create/fetch short id → `{id}` |
 | `GET /api/locations/{id}` | resolve short id → `{book, page}` |
@@ -266,6 +304,8 @@ crawler-facing HTML.
 | `POST /api/login` | owner/account login → session cookie (401 bad creds, 429 rate-limited) |
 | `POST /api/logout` | clears the session cookie |
 | `GET /api/me` | `{authenticated, username, is_owner, grants}` for the current session |
+| `POST /api/share` | owner/granted-only: mint a server-stored `?key=` secret for `{book, page?, duration}` → `{key, book, page, expires_at, created_at}` (401 without an owner/account session) |
+| `GET /api/share/info?key=` | validate a key + read its metadata → `{valid, book, page, expires_at, revoked}` (possession of the key is the credential; also records `last_used_at`) |
 | `GET /admin…` / `POST /admin…` | owner-only server-rendered CRUD (CSRF-protected forms) |
 
 Response schemas in `server/models.py` are the server↔client contract: listings include
@@ -339,8 +379,25 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   clears the other.
 - `share.js` — Share button opens a centred panel with the current URL's QR code
   (`/api/qr`) and copies the URL to the clipboard; a green tick marks a completed
-  clipboard write. Dismissed by the Okay button or Enter/Escape (keys.js routes
-  those while the panel is open).
+  clipboard write. When the current location is **private** or **region-locked**
+  a warning explains that a plain link won't work for everyone, and — whenever
+  a warning applies (owner/granted viewers) — an option row appears:
+  **No share** (the plain link, default) plus one button per `SHARE_DURATIONS`
+  entry (1h/1d/7d/30d). Pressing
+  a duration mints a fresh `?key=` token (`POST /api/share`), re-copies the
+  keyed URL, refreshes the QR, and highlights the selected button (the active
+  choice stays visible). Scope is the current path: a focused page keys that
+  page, the book grid keys the whole book. Dismissed by the Okay button or
+  Enter/Escape (keys.js routes those while the panel is open). The keys are
+  read from keyed URLs at boot and held as a **set** (`state.shareKeys`) — each
+  new link is added, never replacing earlier ones — stripped from the address
+  bar via `history.replaceState` (history/referrers stay clean; `url.js`
+  writes key-free paths), stashed in `sessionStorage` (`bv.shareKeys`) as a
+  reload fallback, and appended as repeated `key=` params to every content
+  request (`util.withKey` for listings/OCR/search/locations, `api/tiles.js`
+  for tiles). The per-key server-side `bv_share_*` cookies cover reloads and
+  any client that drops the query. A keyed session is never indexed and never
+  counts as logged in.
 - `access.js` — access UX: boot-time `/api/me` fetch → `state.viewer`; renders
   per-image DOM elements inside the OCR scene (Private badges, and the
   "Unavailable in your region until …" text, shown only for blurred pages
@@ -382,6 +439,34 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   `NoCacheStaticFiles` SPA fallback) and injects Open Graph tags (`social.py`) so
   iMessage/Discord/Reddit crawlers (which never run JS or see hashes) get previews.
   There is no `#` scheme and no legacy-hash support.
+- **Share keys are server-stored capabilities, not identities**: a valid
+  `?key=` secret elevates requests to its book/page in every region, but
+  `state.viewer` (`/api/me` never sees the key) stays anonymous, so keyed
+  sessions cannot mint further keys, touch admin, or see anything outside the
+  grant. Keys live in the `share_keys` table (hashed at rest) and are **fully
+  manageable from `/admin/shares`**: revoke = immediate cut, extend = new
+  expiry, restore/delete available. Old HMAC-format tokens from the previous
+  scheme are permanently invalid — no fallback is kept.
+- **Opening a keyed URL also sets a `bv_share_<hash>` cookie** (httpOnly,
+  `Secure`, `SameSite=Lax`, `Max-Age` = remaining token life) — **one per
+  key**, so several share links can be open in the same browser at once (the
+  name is deterministic, so re-opening the same link refreshes its own cookie
+  rather than duplicating it). The cookies ride on every same-origin request —
+  including the owner's own browser — but the merged viewer keeps the session
+  identity, so the owner's admin/grants are never shadowed. Cookie-blocking
+  browsers still work via the repeated `?key=` params the client appends.
+- **The key leaves the address bar**: on a keyed page load the client strips
+  `?key=` from the URL (`history.replaceState`, so it never sits in history or
+  referrers), keeps all held keys in memory for request propagation, and
+  stashes them in `sessionStorage` (`bv.shareKeys`, an array) as a reload
+  fallback for cookie-blocking browsers. The keys still travel as repeated
+  `key=` params on the client's content requests and in the `og:image` URL
+  (crawlers need it) — that is what keeps every failure mode working.
+- **Keys live in the URL**: browser history, HTTP logs, and the `og:image`
+  URL all carry them; keyed pages are `noindex, nofollow` and real tiles stay
+  `private, immutable` (the region decision is still recomputed per request).
+  A keyed recipient's browser caches tiles per key string, so two different
+  keys to the same page get separate cache entries.
 - **Restart the viewer via docker compose, never bare `docker restart`**: the deployed
   `bookviewer` container lives in the copyparty compose project
   (`~/Docker-Server/copyparty/docker-compose.yml`, same project as the Cloudflare tunnel

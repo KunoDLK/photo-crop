@@ -31,12 +31,19 @@ def _page_access(request: Request, viewer: Viewer, book_id: str, page_id: str) -
 
 
 def _granted(request: Request, viewer: Viewer, book_id: str) -> bool:
-    """True when the viewer may see the book at all (private requires a grant)."""
+    """True when the viewer may see the book at all (private requires a grant).
+
+    A share grant (``viewer.book``) counts for its own book — whether it rides
+    on a session (merged by AuthService) or is the bare ``share`` viewer; the
+    search filter below still limits hits to pages resolved ``full``.
+    """
     rights = request.app.state.rights
     if rights.book_visibility(book_id) == "public":
         return True
     return viewer.kind == "owner" or (
         viewer.kind == "account" and book_id in viewer.grants
+    ) or (
+        any(gbook == book_id for gbook, _ in viewer.share_grants)
     )
 
 

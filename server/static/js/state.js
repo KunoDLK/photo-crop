@@ -75,6 +75,24 @@ export function setViewer(v) {
   emit("auth-changed", v);
 }
 
+/**
+ * Held share tokens (from keyed URLs opened in this tab; also restored from
+ * sessionStorage). Each grants its own book/page, so several share links can
+ * be active at once without dropping earlier ones. Every held key is appended
+ * to content requests (the server verifies each and merges the valid grants);
+ * the server-side bv_share_* cookies carry the same grants on every request.
+ */
+export let shareKeys = [];
+export function addShareKey(key) {
+  if (!key || shareKeys.includes(key)) return;
+  shareKeys = [...shareKeys, key];
+}
+
+/** Replace the held key set wholesale (used after validating/pruning). */
+export function setShareKeys(keys) {
+  shareKeys = keys.filter((k) => !!k);
+}
+
 // ------------------------------------------------------------------ event bus
 const listeners = new Map();
 

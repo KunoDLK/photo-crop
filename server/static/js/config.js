@@ -133,3 +133,15 @@ export const VIRTUAL_MIN_LEVEL = -52;
  * their base level still clamps at maxLevel).
  */
 export const MAX_SCALE = 2 ** 52;
+
+/**
+ * Share-link durations (seconds) offered as buttons in the share panel's
+ * option row. Each press mints a fresh server-signed ``?key=`` token; the
+ * first button ("No share") is always the plain link.
+ */
+export const SHARE_DURATIONS = [
+  { label: "1 hour", seconds: 3600 },
+  { label: "1 day", seconds: 86400 },
+  { label: "7 days", seconds: 604800 },
+  { label: "30 days", seconds: 2592000 },
+];

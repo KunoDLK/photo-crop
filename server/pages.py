@@ -41,17 +41,27 @@ def _og_root_image_url(request: Request) -> str:
 def _og_image_url(request: Request, book: str, page: str, mtime: int) -> str:
     """Absolute URL for a page's real preview image (content-addressed).
 
+    When the request carries a valid share token, the key is appended to the
+    URL so crawlers fetching the Open Graph image of a keyed private or
+    region-locked share get the real preview (the ``/og`` endpoint re-verifies
+    the token itself).
+
     Args:
-        request: FastAPI request (for the base URL).
+        request: FastAPI request (for the base URL and any share key).
         book: Book directory name.
         page: Page filename.
         mtime: Page file mtime (content version).
 
     Returns:
-        The absolute ``/og/...`` preview URL.
+        The absolute ``/og/...`` preview URL, keyed when applicable.
     """
     base = str(request.base_url).rstrip("/")
-    return f"{base}/og/{quote(book)}/{quote(page)}/{mtime}.jpg"
+    url = f"{base}/og/{quote(book)}/{quote(page)}/{mtime}.jpg"
+    if _viewer_of(request).share_grants:
+        key = request.query_params.get("key")
+        if key:
+            url += f"?key={quote(key)}"
+    return url
 
 
 def _page_meta(request: Request, book_id: str, page, blurred: bool = False) -> dict:
@@ -126,6 +136,10 @@ def render_fragment(request: Request) -> tuple[str, dict]:
         else:
             content, meta = _render_page(request, loc["book"], loc["page"])
     meta["canonical"] = _canonical(request)
+    if _viewer_of(request).share_grants:
+        # Keyed share URLs are capabilities, not public content: they render
+        # (with the key in the preview image URL) but must never be indexed.
+        meta["robots"] = "noindex, nofollow"
     return content, meta
 
 
@@ -174,6 +188,8 @@ def _render_book(request: Request, book_id: str) -> tuple[str, dict]:
     viewer = _viewer_of(request)
     granted = viewer.kind == "owner" or (
         viewer.kind == "account" and book_id in viewer.grants
+    ) or (
+        any(gbook == book_id for gbook, _ in viewer.share_grants)
     )
     if state.rights.book_visibility(book_id) != "public" and not granted:
         return "", _noindex_meta()

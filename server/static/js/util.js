@@ -1,6 +1,9 @@
 /**
- * Pure, dependency-free helpers used across modules.
+ * Pure helpers used across modules, plus the share-key URL wrapper (which
+ * reads the key from state).
  */
+
+import * as state from "./state.js";
 
 /** Clamp a value into [a, b]. */
 export function clamp(v, a, b) {
@@ -38,4 +41,15 @@ export function getCss(name) {
 /** Read a query parameter (defaults to ""). */
 export function queryParam(name) {
   return new URLSearchParams(location.search).get(name) || "";
+}
+
+/**
+ * Append all held share keys (if any) to a content URL. Repeated ``key=``
+ * params let the server merge every grant; safe for URLs that already carry
+ * query params (``?force=1`` becomes ``?force=1&key=...&key=...``).
+ */
+export function withKey(url) {
+  if (!state.shareKeys.length) return url;
+  const params = state.shareKeys.map((k) => "key=" + encodeURIComponent(k)).join("&");
+  return url + (url.includes("?") ? "&" : "?") + params;
 }

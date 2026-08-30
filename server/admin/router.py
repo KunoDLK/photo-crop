@@ -9,13 +9,14 @@ not the UI.
 from __future__ import annotations
 
 import asyncio
+import time
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
 from ..auth.service import SESSION_TTL, COOKIE_NAME, AuthService
-from ..errors import BadRequest, TooManyRequests, Unauthorized
+from ..errors import BadRequest, NotFound, TooManyRequests, Unauthorized
 from . import pages
 
 router = APIRouter(tags=["admin"])
@@ -469,3 +470,89 @@ async def user_delete(request: Request, user_id: int) -> RedirectResponse:
     _check_csrf(request, await request.form())
     request.app.state.rights.delete_user(user_id)
     return _redirect("/admin/users")
+
+
+# ---------------------------------------------------------------- share links
+
+@router.get("/admin/shares")
+async def admin_shares(request: Request) -> HTMLResponse:
+    """Share-link manager: list all keys, create new ones."""
+    viewer = request.app.state.auth.viewer_from_request(request)
+    if viewer.kind != "owner":
+        return HTMLResponse(pages.login())
+    state = request.app.state
+    try:
+        _, books = state.catalog.books()
+    except Exception:  # noqa: BLE001 — admin stays usable without an archive
+        books = []
+    return HTMLResponse(
+        pages.shares(state.auth.csrf_token(request), state.shares.list(), books)
+    )
+
+
+@router.post("/admin/shares")
+async def admin_shares_create(request: Request) -> RedirectResponse:
+    """Create a share key for a (book, optional page) location."""
+    _require_owner(request)
+    form = await request.form()
+    _check_csrf(request, form)
+    state = request.app.state
+    book = (form.get("book") or "").strip()
+    page = (form.get("page") or "").strip() or None
+    if not book:
+        raise BadRequest("book is required")
+    _, pages = state.catalog.pages(book)  # raises errors.NotFound if gone
+    if page is not None and not any(p.page_id == page for p in pages):
+        raise BadRequest(f"page not found: {page}")
+    duration = _int_or_none(form.get("duration"))
+    if duration is None or duration < 0:
+        raise BadRequest("invalid duration")
+    if duration == 0:
+        duration = None  # no expiry — stored as NULL
+    note = (form.get("note") or "").strip() or None
+    state.shares.create(book, page, duration, "admin", note)
+    return _redirect("/admin/shares")
+
+
+@router.post("/admin/shares/{share_id}/extend")
+async def admin_shares_extend(request: Request, share_id: int) -> RedirectResponse:
+    """Set a key's expiry to now + duration (or never, with 0)."""
+    _require_owner(request)
+    form = await request.form()
+    _check_csrf(request, form)
+    duration = _int_or_none(form.get("duration"))
+    if duration is None or duration < 0:
+        raise BadRequest("invalid duration")
+    if not request.app.state.shares.set_expiry(share_id, None if duration == 0 else int(time.time()) + duration):
+        raise NotFound(f"share key not found: {share_id}")
+    return _redirect("/admin/shares")
+
+
+@router.post("/admin/shares/{share_id}/revoke")
+async def admin_shares_revoke(request: Request, share_id: int) -> RedirectResponse:
+    """Invalidate a share key immediately."""
+    _require_owner(request)
+    _check_csrf(request, await request.form())
+    if not request.app.state.shares.revoke(share_id):
+        raise NotFound(f"share key not found: {share_id}")
+    return _redirect("/admin/shares")
+
+
+@router.post("/admin/shares/{share_id}/restore")
+async def admin_shares_restore(request: Request, share_id: int) -> RedirectResponse:
+    """Un-revoke a share key (reactivates it)."""
+    _require_owner(request)
+    _check_csrf(request, await request.form())
+    if not request.app.state.shares.restore(share_id):
+        raise NotFound(f"share key not found: {share_id}")
+    return _redirect("/admin/shares")
+
+
+@router.post("/admin/shares/{share_id}/delete")
+async def admin_shares_delete(request: Request, share_id: int) -> RedirectResponse:
+    """Hard-delete a share key."""
+    _require_owner(request)
+    _check_csrf(request, await request.form())
+    if not request.app.state.shares.delete(share_id):
+        raise NotFound(f"share key not found: {share_id}")
+    return _redirect("/admin/shares")

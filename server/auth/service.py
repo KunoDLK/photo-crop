@@ -26,33 +26,52 @@ from fastapi import Request
 from ..config import Settings
 from ..errors import TooManyRequests
 from ..rights.store import RightsStore
+from ..shares.store import ShareStore
 
 COOKIE_NAME = "bv_session"
 SESSION_TTL = 30 * 86400  # seconds; ~30 days
+#: Cookie prefix carrying share keys once their keyed URLs have been opened,
+#: so every request in the browser (tiles, API, listings) carries the grants
+#: even if the client-side query propagation ever fails. One cookie per key
+#: (``bv_share_<hash>``, named by :func:`shares.store.share_cookie_name`) so
+#: several share links can be held at once, each with Max-Age equal to its
+#: key's remaining life.
+SHARE_COOKIE = "bv_share"
 _PBKDF2_ITERATIONS = 200_000
 _RATE_WINDOW = 300  # seconds a failed attempt counts against an IP
 
 
 @dataclass(frozen=True)
 class Viewer:
-    """The requester's identity: owner, a granted account, or anonymous.
+    """The requester's identity: owner, a granted account, or anonymous —
+    optionally carrying one or more time-limited share grants.
 
     Attributes:
-        kind: ``owner``, ``account`` or ``anonymous``.
+        kind: ``owner``, ``account``, ``anonymous`` or ``share``.
         username: Login name for owner/account viewers.
         user_id: Rights-DB user row id for account viewers.
         grants: Book ids the account is explicitly granted (accounts only).
+        share_grants: ``(book, page|None)`` pairs from valid share tokens —
+            the grant rides on top of the session identity (``kind="share"``
+            alone is the pure-token viewer used when there is no session).
+            Multiple grants can be held at once (several keyed links opened),
+            and each covers exactly its own book, or one page of it.
     """
 
     kind: str
     username: str | None = None
     user_id: int | None = None
     grants: frozenset[str] = frozenset()
+    share_grants: frozenset[tuple[str, str | None]] = frozenset()
 
     @property
     def authenticated(self) -> bool:
-        """True for owner and account viewers."""
-        return self.kind != "anonymous"
+        """True for owner and account viewers.
+
+        A ``share`` token is a capability, not an identity: its holder is not
+        signed in and appears anonymous to ``/api/me``.
+        """
+        return self.kind in ("owner", "account")
 
 
 def _hash_password(password: str) -> str:
@@ -88,11 +107,16 @@ def _verify_password(password: str, stored: str) -> bool:
 
 
 class AuthService:
-    """Session minting/verification, owner + account login, per-IP rate limits."""
+    """Session minting/verification, owner + account login, per-IP rate limits.
 
-    def __init__(self, settings: Settings, store: RightsStore) -> None:
+    Share keys are resolved through the :class:`~shares.store.ShareStore`
+    (server-authoritative, revocable), never minted or verified locally.
+    """
+
+    def __init__(self, settings: Settings, store: RightsStore, shares: ShareStore) -> None:
         self._settings = settings
         self._store = store
+        self._shares = shares
         self._secret = self._load_secret(settings)
         self._lock = threading.Lock()
         self._failures: dict[str, list[float]] = {}
@@ -186,6 +210,28 @@ class AuthService:
             )
         return None
 
+    # ------------------------------------------------------------- share keys
+
+    def request_share_keys(self, request: Request) -> list[str]:
+        """Every share key the request carries, query or cookies.
+
+        The query may repeat ``key`` (the client appends all held keys) and the
+        browser sends one ``bv_share_*`` cookie per opened keyed link. Unknown
+        or revoked keys are filtered by the store's resolution, so the list may
+        contain stale or garbage values harmlessly.
+
+        Args:
+            request: FastAPI request.
+
+        Returns:
+            All ``?key=`` values plus all ``bv_share``-prefixed cookie values.
+        """
+        keys = list(request.query_params.getlist("key"))
+        for name, value in request.cookies.items():
+            if name == SHARE_COOKIE or name.startswith(SHARE_COOKIE + "_"):
+                keys.append(value)
+        return keys
+
     # ------------------------------------------------------------- login
 
     def login(self, ip: str | None, username: str, password: str) -> Viewer | None:
@@ -261,16 +307,31 @@ class AuthService:
         return hmac.compare_digest(form_token, self.csrf_token(request))
 
     def viewer_from_request(self, request: Request) -> Viewer:
-        """Resolve the Viewer from the request's session cookie.
+        """Resolve the Viewer for a request: session identity + share grants.
 
-        Anonymous when the cookie is absent or invalid. Fails closed.
+        The session cookie decides the identity (owner/account/anonymous).
+        Every valid share key the request carries — repeated ``?key=`` params
+        and all ``bv_share_*`` cookies — is then looked up in the share store
+        and *added* to that identity as a ``(book, page)`` grant, so any
+        number of opened share links can be held at once. Each grant elevates
+        exactly its own location in every region without ever shadowing an
+        authenticated session (an owner keeps owner access, an account keeps
+        its grants). Unknown, revoked, or expired keys fail closed: no grant.
         """
         token = request.cookies.get(COOKIE_NAME)
-        if token:
-            viewer = self.verify_session(token)
-            if viewer is not None:
-                return viewer
-        return Viewer(kind="anonymous")
+        viewer = self.verify_session(token) if token else None
+        if viewer is None:
+            viewer = Viewer(kind="anonymous")
+        grants = self._shares.resolve_grants(self.request_share_keys(request))
+        if grants:
+            viewer = Viewer(
+                kind=viewer.kind,
+                username=viewer.username,
+                user_id=viewer.user_id,
+                grants=viewer.grants,
+                share_grants=grants,
+            )
+        return viewer
 
 
 def current_viewer(request: Request) -> Viewer:

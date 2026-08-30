@@ -391,6 +391,52 @@ html:not(.no-js) body:has(#stats:not([hidden])) #status {
   font-size: 13px;
 }
 .share-actions button:hover { background: var(--border); }
+.share-warning {
+  max-width: 300px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  background: color-mix(in srgb, #f59e0b 16%, var(--bg));
+  border: 1px solid color-mix(in srgb, #f59e0b 40%, var(--border));
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.share-options {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.share-options[hidden] { display: none; }
+.share-options-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+}
+.share-options-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.share-opt {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.share-opt:hover { background: var(--border); }
+.share-opt.selected {
+  background: color-mix(in srgb, var(--accent, #a5b4fc) 30%, var(--bg));
+  border-color: var(--accent, #a5b4fc);
+}
+.share-valid {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--text) 70%, transparent);
+}
 
 /* ------------------------------------------------------ access (auth/region)
    Sign-in banner (a floating pill under the toolbar), cell badges, and the

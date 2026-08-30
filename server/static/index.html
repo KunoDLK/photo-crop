@@ -86,12 +86,20 @@
   </div>
 </div>
 
-<!-- Share modal: current URL as a QR code + copy confirmation. -->
+<!-- Share modal: current URL as QR + copy confirmation, a warning for
+     private/region-locked works, and a time-limited keyed-link option row
+     (owner/granted viewers only). -->
 <div id="share-panel" class="share-panel" hidden>
   <img id="share-qr" alt="QR code of this page">
   <div class="share-status">
     <span class="share-tick" id="share-tick">✓</span>
     <span id="share-text">URL copied to clipboard</span>
+  </div>
+  <div id="share-warning" class="share-warning" hidden></div>
+  <div id="share-options" class="share-options" hidden>
+    <div class="share-options-title">Share link access</div>
+    <div class="share-options-row" id="share-options-row"></div>
+    <div id="share-valid" class="share-valid" hidden></div>
   </div>
   <div class="share-actions">
     <button id="btn-share-ok">Okay</button>

@@ -30,6 +30,7 @@ from .books import dimensions, scanner
 from .errors import NotFound
 from .pages import DESCRIPTION, SITE_TITLE, esc, render_fragment
 from .rights.policy import FULL
+from .shares.store import share_cookie_name
 from .tiles import decoder, encoder, geometry, resampler
 
 router = APIRouter(tags=["social"])
@@ -105,6 +106,12 @@ def spa_response(request: Request) -> HTMLResponse:
     a location id and renders that book's page grid or a page's OCR text with
     prev/next links. Every other path gets the plain shell (the client re-reads
     it at startup).
+
+    When the path carries a valid ``?key=`` share token, the token is also
+    stored in a session-scoped cookie (``bv_share``) sized to the token's own
+    lifetime, so every subsequent request in the browser carries the grant
+    automatically — even if the client-side query propagation never runs
+    (stale cached JS, restored tabs, links that dropped the query).
     """
     try:
         content, meta = render_fragment(request)
@@ -117,7 +124,24 @@ def spa_response(request: Request) -> HTMLResponse:
     if meta.get("robots"):
         # Private locations must not be indexed at all.
         headers["X-Robots-Tag"] = meta["robots"]
-    return HTMLResponse(html, headers=headers)
+    response = HTMLResponse(html, headers=headers)
+    key = request.query_params.get("key")
+    if key:
+        ttl = request.app.state.shares.ttl_of(key)
+        if ttl is not None and ttl > 0:
+            settings = request.app.state.settings
+            # One cookie per key (bv_share_<hash>) so several share links can
+            # be held in the browser without overwriting each other.
+            response.set_cookie(
+                key=share_cookie_name(key),
+                value=key,
+                max_age=ttl,
+                httponly=True,
+                secure=settings.session_cookie_secure,
+                samesite="lax",
+                path="/",
+            )
+    return response
 
 
 def _stitch_preview(

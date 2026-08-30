@@ -6,6 +6,8 @@
  * (no manual IndexedDB here).
  */
 
+import * as state from "../state.js";
+
 /**
  * Build the absolute URL for a tile (versioned by the page file's mtime).
  *
@@ -18,13 +20,22 @@
  * Provider images (``source !== "archive"``, e.g. the fractal generator) use
  * the generic ``/pv/`` route instead; the book id is the namespace key the
  * server registry resolves to the owning source.
+ *
+ * A share key is appended to the URL so tile requests carry the same
+ * capability as the page that launched them.
  */
 export function tileUrl(book, page, version, level, tx, ty, blurred = false, source = "archive") {
+  let url;
   if (source !== "archive") {
-    return `/pv/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${version}/${level}/${tx}/${ty}.jpg`;
+    url = `/pv/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${version}/${level}/${tx}/${ty}.jpg`;
+  } else {
+    const stem = blurred ? "bx" : "rt";
+    url = `/${stem}/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${version}/${level}/${tx}/${ty}.jpg`;
   }
-  const stem = blurred ? "bx" : "rt";
-  return `/${stem}/${encodeURIComponent(book)}/${encodeURIComponent(page)}/${version}/${level}/${tx}/${ty}.jpg`;
+  if (state.shareKeys.length) {
+    url += "?" + state.shareKeys.map((k) => "key=" + encodeURIComponent(k)).join("&");
+  }
+  return url;
 }
 
 /**

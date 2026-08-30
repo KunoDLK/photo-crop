@@ -90,6 +90,7 @@ def _shell(title: str, body: str, active: str | None = None, csrf: str = "", nav
             ("holders", "/admin/holders", "Rights holders"),
             ("pages", "/admin/pages", "Page rights"),
             ("users", "/admin/users", "Users"),
+            ("shares", "/admin/shares", "Share links"),
         ]
         links = "".join(
             f'<a href="{href}"{" class=\"active\"" if active == key else ""}>{label}</a>'
@@ -454,3 +455,94 @@ def users(csrf: str, users: list[dict], books: list[dict], grants: dict[int, set
         f"<h2>Accounts</h2><table><tr><th>Account</th><th>Grants</th><th>Actions</th></tr>{''.join(rows)}</table>"
     )
     return _shell("Accounts", body, active="users", csrf=csrf)
+
+def _fmt_ts(ts: int | None) -> str:
+    """A short UTC date-time for an epoch, or '' for None."""
+    if ts is None:
+        return ""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+def shares(csrf: str, rows: list[dict], books: list[dict]) -> str:
+    """Share-link manager: create, list, extend, revoke/restore, delete."""
+    from datetime import datetime, timezone
+
+    now = int(datetime.now(tz=timezone.utc).timestamp())
+    duration_opts = "".join(
+        f'<option value="{d}">{label}</option>'
+        for d, label in ((3600, "1 hour"), (86400, "1 day"), (604800, "7 days"), (2592000, "30 days"))
+    )
+    add = (
+        '<form method="post" action="/admin/shares" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        f'{_hidden_csrf(csrf)}'
+        f'<select name="book" required>{_options([(b.id, b.name) for b in books], first="Choose book…")}</select>'
+        '<input name="page" placeholder="Page (blank = whole book)" size="28">'
+        f'<select name="duration">{duration_opts}<option value="0">No expiry</option></select>'
+        '<input name="note" placeholder="Note (optional)" size="24">'
+        "<button>Create share link</button></form>"
+    )
+    table_rows = []
+    for r in rows:
+        revoked = r["revoked_at"] is not None
+        expired = not revoked and r["expires_at"] is not None and r["expires_at"] <= now
+        if revoked:
+            badge = '<span class="badge private">Revoked</span>'
+        elif expired:
+            badge = '<span class="badge" style="background:#e4e4e7;color:#52525b">Expired</span>'
+        else:
+            badge = '<span class="badge public">Active</span>'
+        scope = esc(r["page"]) if r["page"] else '<span class="note">whole book</span>'
+        key_id = f'{r["key_hash"][:10]}…'
+        expiry = (
+            _fmt_ts(r["expires_at"])
+            if r["expires_at"] is not None
+            else '<span class="note">never</span>'
+        )
+        extend = (
+            f'<form method="post" action="/admin/shares/{esc(r["id"])}/extend" style="display:inline">'
+            f'{_hidden_csrf(csrf)}'
+            f'<select name="duration">{duration_opts}<option value="0">Never expires</option></select>'
+            "<button>Extend</button></form>"
+        )
+        if revoked:
+            action = (
+                f'<form method="post" action="/admin/shares/{esc(r["id"])}/restore" style="display:inline">'
+                f"{_hidden_csrf(csrf)}<button>Restore</button></form>"
+            )
+        else:
+            action = (
+                f'<form method="post" action="/admin/shares/{esc(r["id"])}/revoke" style="display:inline">'
+                f"{_hidden_csrf(csrf)}<button>Revoke</button></form>"
+            )
+        action += (
+            f'<form method="post" action="/admin/shares/{esc(r["id"])}/delete" style="display:inline">'
+            f"{_hidden_csrf(csrf)}<button onclick=\"return confirm('Delete this share key?')\">Delete</button></form>"
+        )
+        table_rows.append(
+            "<tr>"
+            f"<td><strong>{esc(key_id)}</strong><br><span class=\"note\">id {esc(r['id'])}</span></td>"
+            f"<td>{esc(r['book'])}</td>"
+            f"<td>{scope}</td>"
+            f"<td>{badge}</td>"
+            f"<td>{_fmt_ts(r['created_at'])}<br><span class=\"note\">{esc(r['created_by'])}</span></td>"
+            f"<td>{expiry}</td>"
+            f"<td>{_fmt_ts(r['last_used_at']) or '<span class=\"note\">never</span>'}</td>"
+            f"<td>{esc(r['note']) or '<span class=\"note\">—</span>'}</td>"
+            f"<td>{extend}{action}</td>"
+            "</tr>"
+        )
+    body = (
+        "<h1>Share links</h1>"
+        '<p class="note">Keys are random 32-byte secrets stored hashed. A shared '
+        "URL is <code>/&lt;location-id&gt;?key=&lt;key&gt;</code>; the recipient's "
+        "browser keeps it in a cookie until it expires. Revoking a key cuts access "
+        "immediately; extending it resets the expiry from now.</p>"
+        f"<h2>Create share link</h2>{add}"
+        "<h2>Keys</h2>"
+        "<table><tr><th>Key</th><th>Book</th><th>Page</th><th>Status</th>"
+        "<th>Created</th><th>Expires</th><th>Last used</th><th>Note</th><th>Actions</th></tr>"
+        f"{''.join(table_rows) or '<tr><td colspan=\"9\"><span class=\"note\">No share keys yet.</span></td></tr>'}"
+        "</table>"
+    )
+    return _shell("Share links", body, active="shares", csrf=csrf)

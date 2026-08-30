@@ -29,6 +29,8 @@ from .qr import router as qr_router
 from .rights.geo import RegionDetector
 from .rights.policy import Policy
 from .rights.store import RightsStore
+from .shares.router import router as shares_router
+from .shares.store import ShareStore
 from .sources import router as sources_router
 from .sources.base import SourceRegistry
 from .sources.fractal import FractalSource
@@ -87,7 +89,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.locations = LocationRegistry(settings.cache_dir / "locations.json")
     app.state.catalog = Catalog(settings.archive_root, settings.tile_size)
     app.state.rights = RightsStore(settings.rights_db)
-    app.state.auth = AuthService(settings, app.state.rights)
+    app.state.shares = ShareStore(settings.rights_db)
+    app.state.auth = AuthService(settings, app.state.rights, app.state.shares)
     app.state.region = RegionDetector(settings.default_region, settings.dev_region_header)
     app.state.policy = Policy(app.state.rights)
     # The image-source hook: registered sources own their book ids and render
@@ -102,6 +105,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(social.router)
     app.include_router(qr_router)
     app.include_router(auth_router.router)
+    app.include_router(shares_router)
     app.include_router(admin_router.router)
     app.include_router(sources_router.router)
 
