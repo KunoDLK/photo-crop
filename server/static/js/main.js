@@ -24,9 +24,58 @@ import * as help from "./help.js";
 import * as share from "./share.js";
 import * as login from "./login.js";
 import * as access from "./access.js";
+import * as notifications from "./notifications.js";
 import * as fullscreen from "./fullscreen.js";
 import { queryParam } from "./util.js";
 
+// ---------------------------------------------------------- share notices
+
+// Share keys whose "active until …" notice was already queued, so re-emits of
+// share-keys-changed never announce the same link twice.
+let announcedShares = new Set();
+
+/**
+ * Queue one notification per held share key that hasn't been announced yet.
+ * They go to the back of the queue, so urgent status notices (login, region)
+ * always display first.
+ */
+function announceShares() {
+  for (const key of state.shareKeys) {
+    if (announcedShares.has(key)) continue;
+    announcedShares.add(key);
+    const info = state.shareInfo.get(key);
+    if (info) notifications.enqueue(shareLine(info));
+  }
+}
+
+/** "Book Name" / "Book Name • Page 7" from current state, ids as fallback. */
+function shareLabel(info) {
+  let book = info.book;
+  for (const im of state.images) {
+    if (im.kind === "book" && im.bookId === info.book) {
+      book = im.name;
+      break;
+    }
+  }
+  if (!info.page) return book;
+  for (const im of state.images) {
+    if (im.kind === "page" && im.bookId === info.book && im.pageId === info.page) {
+      return `${book} • Page ${im.order}`;
+    }
+  }
+  return `${book} • ${info.page}`;
+}
+
+/** "Share link for X is active until …" / "… is shared" (no expiry). */
+function shareLine(info) {
+  const label = shareLabel(info);
+  if (!info.expires_at) return `Share link for ${label} is shared`;
+  const when = new Date(info.expires_at * 1000).toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+  return `Share link for ${label} is active until ${when}`;
+}
 async function bootstrap() {
   const viewEl = document.getElementById("view");
   const leftEl = document.getElementById("left");
@@ -49,21 +98,29 @@ async function bootstrap() {
     history.replaceState(null, "", location.pathname);
   }
 
-  // Drop revoked/expired keys from the held set in the background (the server
-  // ignores them regardless, so this is hygiene, not access control).
+  // Drop revoked/expired keys from the held set in the background; the
+  // /api/share/info call also refreshes each live key's cookie, so a
+  // server-side expiry extension reaches this browser after the original
+  // cookie lapsed. (The server ignores stale keys regardless, so this is
+  // hygiene, not access control.) The captured metadata feeds the share
+  // notices, announced from the back of the notification queue.
   (async () => {
     try {
       const { fetchShareInfo } = await import("./api/shares.js");
       const live = [];
       for (const k of state.shareKeys) {
         const info = await fetchShareInfo(k);
-        if (info.valid) live.push(k);
+        if (info.valid) {
+          live.push(k);
+          state.setShareInfo(k, info);
+        }
       }
       if (live.length !== state.shareKeys.length) {
         state.setShareKeys(live);
         try { sessionStorage.setItem("bv.shareKeys", JSON.stringify(live)); } catch (e) { /* storage unavailable */ }
       }
     } catch (e) { /* network hiccup: keys stay, server still filters */ }
+    announceShares();
   })();
 
   // Keep tile resource-timing entries long enough for the cache-hit readout to
@@ -95,6 +152,11 @@ async function bootstrap() {
   help.init();
   share.init();
   login.init();
+  notifications.init();
+
+  // New share keys (e.g. minted from the Share panel) get their own queued
+  // notice; the boot-time announcements come from the validation above.
+  state.on("share-keys-changed", () => announceShares());
   // Resolve the viewer identity before the initial navigation so the boot-time
   // auth-changed event (below) is never mistaken for a login/logout.
   await access.init();

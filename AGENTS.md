@@ -58,7 +58,10 @@ budget), `PAGE_CACHE_BYTES` (decoded-page RAM budget), `PAGE_IDLE_SECONDS` (defa
 0 = no downscale, lang, conf threshold 25), `RIGHTS_DB_PATH` + `ARCHIVE_USERNAME`/`ARCHIVE_PASSWORD` +
 `SESSION_SECRET`/`SESSION_COOKIE_SECURE`/`LOGIN_RATE_LIMIT` + `DEFAULT_REGION`/
 `DEV_REGION_HEADER` + `BLUR_STRENGTH`/`BLUR_DARKNESS` (rights/auth/admin; see the Rights
-section), `HOST`, `PORT`.
+section), `PUBLIC_BASE_URL` (absolute public base URL for canonical links, OG image URLs,
+and the sitemap — set it in production so non-proxied requests can never poison the
+sitemap cache with `http://` URLs; empty falls back to `X-Forwarded-Proto`/
+`X-Forwarded-Host`, then the request itself), `HOST`, `PORT`.
 
 ### Errors — `server/errors.py`
 
@@ -259,7 +262,13 @@ crawler-facing HTML.
   (`nav.navigateToPath`), so users never see a full reload.
 - OG meta: `og:title` varies by location (site name / book name / `Book • Page N`),
   `og:description` is a fixed site blurb, `og:image` is an absolute URL built from
-  `request.base_url` (picks up the public hostname behind the Cloudflare tunnel).
+  `pages._public_base` — `settings.public_base_url` when set, else the
+  `X-Forwarded-Proto`/`X-Forwarded-Host` headers from the Cloudflare tunnel, else
+  the request itself. The same helper backs the canonical links and the sitemap,
+  so every public URL is `https://` regardless of how the origin was reached
+  (a non-proxied request must never poison the sitemap's in-process cache).
+- `server/static/robots.txt` advertises the sitemap; Cloudflare's managed
+  AI-crawler blocklist is prepended at the edge, so the origin file stays minimal.
 - Page HTML uses `OCRService.get_page_ocr_cached` — a pure cache read that never
   enqueues or blocks, so crawler requests never trigger OCR work.
 - **Access gating**: every content route resolves the policy for the requester's
@@ -403,10 +412,14 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   "Unavailable in your region until …" text, shown only for blurred pages
   zoomed in near page size — the dark tint itself is canvas-painted by
   `render.js`, so hundreds of unavailable pages cost nothing at overview zoom);
-  top banner shows the sign-in status or a region-unavailable count (it
-  auto-slides away after a few seconds and returns on any content change).
-  Listings carry per-page `access` and per-book `visibility`, so the client
-  never resolves policy itself.
+  pushes the sign-in status / region-unavailable line into the notification
+  queue as an urgent message. Listings carry per-page `access` and per-book
+  `visibility`, so the client never resolves policy itself.
+- `notifications.js` — transient message queue for the status banner:
+  `enqueue` appends to the back (routine notices), `enqueueNext` jumps to the
+  front (urgent state), a handler displays one message at a time with a 4 s
+  auto-dismiss. Status lines (login/logout, region) come from access.js;
+  main.js queues one line per held share link at boot.
 - `login.js` — toolbar lock button opens a modal: username/password form for
   anonymous viewers, "Signed in as … / Log out" for authenticated ones. Login
   updates `state.viewer` (event `auth-changed`) and reloads the current

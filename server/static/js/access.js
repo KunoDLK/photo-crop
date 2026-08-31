@@ -8,27 +8,25 @@
  * render.js (cheap at any zoom); this module adds the "Unavailable in your
  * region…" text only when such a page is zoomed in near page size, plus a
  * badge on private books; the top banner reports the session and
- * region-limited counts. The banner auto-slides away after a few seconds and
- * returns on any content change (login, navigation, layout). Also owns the
- * boot-time ``/api/me`` fetch that publishes ``state.viewer``.
+ * region-limited counts. Status lines go through the notification queue
+ * (notifications.js) as urgent messages, so they display as soon as the
+ * current one finishes; boot-time share-link notices follow at the back.
+ * Also owns the boot-time ``/api/me`` fetch that publishes ``state.viewer``.
  */
 
 import * as state from "./state.js";
+import * as notifications from "./notifications.js";
 import { fetchMe } from "./api/auth.js";
 import { BLUR_TEXT_VIEWPORT_FRACTION } from "./config.js";
 
 let sceneEl = null;
-let bannerEl = null;
 let labels = new Map(); // image id -> "Unavailable…" text element (zoomed-in pages only)
 let badges = []; // { el } — private pills per cell
 let dirty = false;
 let lastTransform = "";
 
-// The banner slides up after this long showing the same content; any change
-// to its text (or a navigation or login) brings it back and restarts the
-// timer, so a repeated message on a new screen is never skipped.
-const BANNER_DISMISS_MS = 4000;
-let bannerTimer = null;
+// Re-evaluation counter: any content change (login, navigation, layout) bumps
+// it so a repeated status line is pushed to the queue again on a new screen.
 let bannerEpoch = 0;
 let lastBannerSig = null;
 
@@ -42,7 +40,6 @@ let lastBannerSig = null;
  */
 export async function init() {
   sceneEl = document.getElementById("access-scene");
-  bannerEl = document.getElementById("access-banner");
   if (!sceneEl) return;
 
   state.on("images-changed", () => { dirty = true; bannerEpoch++; });
@@ -153,55 +150,37 @@ function refreshLabels() {
 }
 
 /**
- * The banner under the toolbar: signed-in status, or a region notice when the
- * current book has pages the viewer cannot see in full. Auto-dismisses by
- * sliding up after BANNER_DISMISS_MS; any content change (login, navigation,
- * layout) brings it back and restarts the timer.
+ * Push the current status — signed-in line, or a region-unavailable notice —
+ * into the notification queue. Runs every frame, so the signature check
+ * ensures repeated calls never re-enqueue the same message; only content or
+ * epoch changes (login, navigation, layout) actually emit. Status is urgent,
+ * so it uses enqueueNext and displays as soon as the current notification
+ * finishes; boot-time share-link notices (queued at the back) follow it.
  */
 function updateBanner() {
-  if (!bannerEl) return;
-  const v = state.viewer;
-  if (v && v.authenticated) {
-    bannerEl.textContent = "Signed in as " + v.username + (v.is_owner ? " (owner)" : "");
-    bannerEl.hidden = false;
-  } else {
-    let blurred = 0;
-    let until = null;
-    for (const im of state.images) {
-      if (im.kind !== "page" || !im.access || im.access.status !== "blurred") continue;
-      blurred++;
-      if (im.access.until && (!until || im.access.until < until)) until = im.access.until;
-    }
-    if (blurred > 0) {
-      const n = blurred === state.images.length
-        ? "These pages are unavailable in your region"
-        : `${blurred} page${blurred === 1 ? " is" : "s are"} unavailable in your region`;
-      bannerEl.textContent = n + (until ? ` until ${until}` : "");
-      bannerEl.hidden = false;
-    } else {
-      bannerEl.hidden = true;
-    }
-  }
-  // updateBanner() runs every frame; only re-arm the dismiss timer when the
-  // banner's visibility or content actually changed.
-  const sig = (bannerEl.hidden ? "h" : "v") + bannerEpoch + "|" + bannerEl.textContent;
-  if (sig !== lastBannerSig) {
-    lastBannerSig = sig;
-    armBannerDismiss();
-  }
+  const text = statusText();
+  const sig = bannerEpoch + "|" + (text || "");
+  if (sig === lastBannerSig) return;
+  lastBannerSig = sig;
+  if (text) notifications.enqueueNext(text);
 }
 
-/**
- * (Re)start the slide-away timer: restore the banner (clearing the
- * ``dismissed`` class so it reappears), then schedule the ``dismissed`` class.
- */
-function armBannerDismiss() {
-  clearTimeout(bannerTimer);
-  bannerTimer = null;
-  bannerEl.classList.remove("dismissed");
-  if (bannerEl.hidden) return;
-  bannerTimer = setTimeout(() => {
-    bannerTimer = null;
-    bannerEl.classList.add("dismissed");
-  }, BANNER_DISMISS_MS);
+/** The banner line for the current session/region, or null when silent. */
+function statusText() {
+  const v = state.viewer;
+  if (v && v.authenticated) {
+    return "Signed in as " + v.username + (v.is_owner ? " (owner)" : "");
+  }
+  let blurred = 0;
+  let until = null;
+  for (const im of state.images) {
+    if (im.kind !== "page" || !im.access || im.access.status !== "blurred") continue;
+    blurred++;
+    if (im.access.until && (!until || im.access.until < until)) until = im.access.until;
+  }
+  if (blurred === 0) return null;
+  const n = blurred === state.images.length
+    ? "These pages are unavailable in your region"
+    : `${blurred} page${blurred === 1 ? " is" : "s are"} unavailable in your region`;
+  return n + (until ? ` until ${until}` : "");
 }

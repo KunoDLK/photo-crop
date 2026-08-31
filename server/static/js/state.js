@@ -77,7 +77,7 @@ export function setViewer(v) {
 
 /**
  * Held share tokens (from keyed URLs opened in this tab; also restored from
- * sessionStorage). Each grants its own book/page, so several share links can
+ * localStorage). Each grants its own book/page, so several share links can
  * be active at once without dropping earlier ones. Every held key is appended
  * to content requests (the server verifies each and merges the valid grants);
  * the server-side bv_share_* cookies carry the same grants on every request.
@@ -86,11 +86,27 @@ export let shareKeys = [];
 export function addShareKey(key) {
   if (!key || shareKeys.includes(key)) return;
   shareKeys = [...shareKeys, key];
+  emit("share-keys-changed", shareKeys);
+}
+
+/**
+ * Metadata for held share keys (key -> {book, page, expires_at}), captured by
+ * the boot-time /api/share/info validation so the notification layer can label
+ * each active share link. Kept in step with ``shareKeys``.
+ */
+export let shareInfo = new Map();
+export function setShareInfo(key, info) {
+  shareInfo.set(key, info);
 }
 
 /** Replace the held key set wholesale (used after validating/pruning). */
 export function setShareKeys(keys) {
-  shareKeys = keys.filter((k) => !!k);
+  const next = keys.filter((k) => !!k);
+  shareKeys = next;
+  for (const key of [...shareInfo.keys()]) {
+    if (!next.includes(key)) shareInfo.delete(key);
+  }
+  emit("share-keys-changed", shareKeys);
 }
 
 // ------------------------------------------------------------------ event bus
@@ -122,6 +138,7 @@ export function emit(event, payload) {
 //   "focus-changed"    — the focused image changed (arg: image or null)
 //   "auth-changed"     — viewer identity changed after login/logout/me fetch
 //                        (arg: viewer profile or null)
+//   "share-keys-changed" — the held share-key set changed (arg: array of keys)
 //   "viewport-resized" — the canvas changed size enough that the view was
 //                        re-fit (rotation, browser bars); subscribers should
 //                        reconcile tile targets
