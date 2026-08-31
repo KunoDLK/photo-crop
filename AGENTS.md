@@ -79,8 +79,9 @@ All domain errors should use these, never bare HTTP exceptions.
   and groups non-conventional filenames into a trailing "extra" group.
 - `naming.py` — page convention `^(\d+)_(\d+)-(.*)$` (e.g. `2_001-Page.jpg`) → group/order/name.
   Non-matching files become "extra" pages with a synthetic trailing group.
-- `dimensions.py` — header-only dims via Pillow (`Image.open().size`, no decode), so
-  listings stay fast over thousands of pages.
+- `dimensions.py` — header-only dims via Pillow (`Image.open().size`, no decode),
+  with EXIF orientation applied (axes swapped for tags 5-8) so listings stay fast
+  over thousands of pages and always agree with the decoded pixels.
 - `locations.py` — persistent base62 short-ID registry for `(book, page)` pairs, used in
   the URL path as share links (`/93050a0`). Persisted as JSON at
   `cache_dir/locations.json`; survives restarts; ID collision handled by incrementing.
@@ -99,7 +100,9 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
 - `resampler.py` — the only module aware of acceleration: OpenCL via `cv2.UMat` when
   available, else CPU `INTER_AREA`. Callers always use `resize_area` and never check the
   backend themselves.
-- `decoder.py` — `cv2.imdecode` → BGR uint8 ndarray.
+- `decoder.py` — `cv2.imdecode` → BGR uint8 ndarray, then rotated/flipped per EXIF
+  orientation so stored pixels always match the listing dims (a portrait photo
+  stored landscape is decoded portrait; tiles and OCR agree).
 - `encoder.py` — progressive (SOF2) JPEG via OpenCV.
 - `cache.py` — diskcache-backed LRU of encoded tiles, byte-limited; key includes the page
   mtime ("version"), so re-saved pages get fresh keys and stale tiles are never served.
