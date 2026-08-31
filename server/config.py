@@ -56,6 +56,14 @@ class Settings(BaseSettings):
         blur_levels_from_coarsest: The blur plane is built this many levels in
             from the coarsest pyramid level (default 3), capping its resolution
             so fine blur tiles are cheap upscales of one seamless plane.
+        public_base_url: Absolute base URL of the public site (e.g.
+            ``https://archive.example.com``) used for canonical links, Open
+            Graph image URLs, and the sitemap. Empty (default) derives it from
+            the request, trusting ``X-Forwarded-Proto``/``X-Forwarded-Host``
+            from the reverse proxy (Cloudflare tunnel) and falling back to the
+            request itself — which is unreliable when non-proxied requests
+            (health checks, local testing) hit the origin and poison the
+            sitemap cache with ``http://`` URLs. Set this in production.
         host: Bind address.
         port: Bind port.
     """
@@ -86,6 +94,7 @@ class Settings(BaseSettings):
     dev_region_header: bool = False
     blur_strength: float = 20.0
     blur_levels_from_coarsest: int = 3
+    public_base_url: str = ""
     host: str = "0.0.0.0"
     port: int = 8000
 
