@@ -14,11 +14,12 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..auth.service import Viewer, current_viewer
 from ..errors import BadRequest, NotFound, Unauthorized
-from .store import SHARE_DURATIONS
+from .store import SHARE_DURATIONS, share_cookie_name
 
 router = APIRouter(tags=["shares"])
 
@@ -87,12 +88,15 @@ def create_share_endpoint(
 def share_info_endpoint(
     request: Request,
     key: str = Query(min_length=1),
-) -> dict:
+) -> JSONResponse:
     """Validate a share key and return its metadata.
 
     Possession of the key is the credential, so no session is required. This
     is also the one endpoint that records the key's last use (for the admin
-    manager); per-request viewer resolution never writes.
+    manager) and re-arms its ``bv_share_<hash>`` cookie with the current
+    remaining life, so a key the admin extended keeps its browser grant even
+    after the original cookie lapsed; per-request viewer resolution never
+    writes.
 
     Args:
         request: FastAPI request (to reach ``app.state.shares``).
@@ -100,20 +104,34 @@ def share_info_endpoint(
 
     Returns:
         ``{"valid": false}`` for unknown, revoked, or expired keys, else
-        ``{"valid": true, "book", "page", "expires_at", "revoked"}``.
+        ``{"valid": true, "book", "page", "expires_at", "revoked"}`` plus a
+        re-armed grant cookie for the key.
     """
     store = request.app.state.shares
     row = store.lookup(key)
     now = int(time.time())
     if row is None or row["revoked_at"] is not None:
-        return {"valid": False}
+        return JSONResponse({"valid": False})
     if row["expires_at"] is not None and row["expires_at"] <= now:
-        return {"valid": False}
+        return JSONResponse({"valid": False})
     store.touch(key)
-    return {
+    ttl = store.ttl_of(key)
+    settings = request.app.state.settings
+    response = JSONResponse({
         "valid": True,
         "book": row["book"],
         "page": row["page"],
         "expires_at": row["expires_at"],
         "revoked": False,
-    }
+    })
+    if ttl is not None:
+        response.set_cookie(
+            key=share_cookie_name(key),
+            value=key,
+            max_age=ttl,
+            httponly=True,
+            secure=settings.session_cookie_secure,
+            samesite="lax",
+            path="/",
+        )
+    return response

@@ -84,26 +84,28 @@ async function bootstrap() {
   // stores each valid key in its own bv_share_<hash> cookie on page load, so
   // the secrets can leave the address bar: strip the URL (keeping them out of
   // history and referrers) while retaining all held keys in memory for the
-  // requests that carry them, and stash them in sessionStorage so reloads
-  // keep working even in a cookie-blocking browser. Several links can be open
-  // at once — each key is added to the held set, never replacing the others.
+  // requests that carry them, and stash them in localStorage so the grant
+  // survives tab closes and browser restarts. The boot-time validation below
+  // drops expired/revoked keys and re-arms each live key's cookie, so a share
+  // the admin extended keeps working on the next visit. Several links can be
+  // open at once — each key is added to the held set, never replacing others.
   try {
-    const stored = JSON.parse(sessionStorage.getItem("bv.shareKeys") || "[]");
+    const stored = JSON.parse(localStorage.getItem("bv.shareKeys") || "[]");
     if (Array.isArray(stored)) for (const k of stored) state.addShareKey(k);
   } catch (e) { /* storage unavailable */ }
   const urlKey = queryParam("key");
   if (urlKey) {
     state.addShareKey(urlKey);
-    try { sessionStorage.setItem("bv.shareKeys", JSON.stringify(state.shareKeys)); } catch (e) { /* storage unavailable */ }
+    try { localStorage.setItem("bv.shareKeys", JSON.stringify(state.shareKeys)); } catch (e) { /* storage unavailable */ }
     history.replaceState(null, "", location.pathname);
   }
 
   // Drop revoked/expired keys from the held set in the background; the
-  // /api/share/info call also refreshes each live key's cookie, so a
-  // server-side expiry extension reaches this browser after the original
-  // cookie lapsed. (The server ignores stale keys regardless, so this is
-  // hygiene, not access control.) The captured metadata feeds the share
-  // notices, announced from the back of the notification queue.
+  // /api/share/info call also re-arms each live key's cookie with its current
+  // remaining life, so a server-side expiry extension reaches this browser
+  // even after the original cookie lapsed. (The server ignores stale keys
+  // regardless, so this is hygiene, not access control.) The captured
+  // metadata feeds the share notices, announced from the back of the queue.
   (async () => {
     try {
       const { fetchShareInfo } = await import("./api/shares.js");
@@ -117,7 +119,7 @@ async function bootstrap() {
       }
       if (live.length !== state.shareKeys.length) {
         state.setShareKeys(live);
-        try { sessionStorage.setItem("bv.shareKeys", JSON.stringify(live)); } catch (e) { /* storage unavailable */ }
+        try { localStorage.setItem("bv.shareKeys", JSON.stringify(live)); } catch (e) { /* storage unavailable */ }
       }
     } catch (e) { /* network hiccup: keys stay, server still filters */ }
     announceShares();

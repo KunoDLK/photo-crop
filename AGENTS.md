@@ -401,11 +401,13 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   read from keyed URLs at boot and held as a **set** (`state.shareKeys`) — each
   new link is added, never replacing earlier ones — stripped from the address
   bar via `history.replaceState` (history/referrers stay clean; `url.js`
-  writes key-free paths), stashed in `sessionStorage` (`bv.shareKeys`) as a
+  writes key-free paths), stashed in `localStorage` (`bv.shareKeys`) as a
   reload fallback, and appended as repeated `key=` params to every content
   request (`util.withKey` for listings/OCR/search/locations, `api/tiles.js`
   for tiles). The per-key server-side `bv_share_*` cookies cover reloads and
-  any client that drops the query. A keyed session is never indexed and never
+  any client that drops the query; the boot-time validation re-arms each live
+  key's cookie and drops expired/revoked keys. A keyed session is never
+  indexed and never
   counts as logged in.
 - `access.js` — access UX: boot-time `/api/me` fetch → `state.viewer`; renders
   per-image DOM elements inside the OCR scene (Private badges, and the
@@ -471,8 +473,11 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
 - **The key leaves the address bar**: on a keyed page load the client strips
   `?key=` from the URL (`history.replaceState`, so it never sits in history or
   referrers), keeps all held keys in memory for request propagation, and
-  stashes them in `sessionStorage` (`bv.shareKeys`, an array) as a reload
-  fallback for cookie-blocking browsers. The keys still travel as repeated
+  stashes them in `localStorage` (`bv.shareKeys`, an array) so the grant
+  survives tab closes and browser restarts. The boot-time `/api/share/info`
+  validation prunes expired/revoked keys and re-arms each live key's
+  `bv_share_*` cookie, so an admin-extended share keeps working on the next
+  visit. The keys still travel as repeated
   `key=` params on the client's content requests and in the `og:image` URL
   (crawlers need it) — that is what keeps every failure mode working.
 - **Keys live in the URL**: browser history, HTTP logs, and the `og:image`
