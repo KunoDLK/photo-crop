@@ -968,6 +968,14 @@ function boxClampCenter(b) {
   b.cy = clamp(b.cy, -minOy, state.ih - maxOy);
 }
 
+function quarterTurn(b, dir) {
+  const t = b.w;
+  b.w = b.h;
+  b.h = t;
+  b.rot = ((b.rot + dir * 90) % 360 + 360) % 360;
+  boxClampCenter(b);
+}
+
 function drawBoxes() {
   for (let i = 0; i < state.boxes.length; i++) {
     const b = state.boxes[i];
@@ -1479,9 +1487,9 @@ function refreshList() {
     };
     rotActs.appendChild(mk("−0.1°", () => { b.rot = (b.rot - 0.1 + 360) % 360; updateThumb(i); updRot(); requestRender(); }));
     rotActs.appendChild(mk("+0.1°", () => { b.rot = (b.rot + 0.1) % 360; updateThumb(i); updRot(); requestRender(); }));
-    rotActs.appendChild(mk("↺ 90°", () => { b.rot = (b.rot - 90 + 360) % 360; updateThumb(i); updRot(); requestRender(); }));
+    rotActs.appendChild(mk("↺ 90°", () => { quarterTurn(b, -1); updateThumb(i); updRot(); requestRender(); }));
     rotActs.appendChild(mk("180°", () => { b.rot = (b.rot + 180) % 360; updateThumb(i); updRot(); requestRender(); }));
-    rotActs.appendChild(mk("↻ 90°", () => { b.rot = (b.rot + 90) % 360; updateThumb(i); updRot(); requestRender(); }));
+    rotActs.appendChild(mk("↻ 90°", () => { quarterTurn(b, 1); updateThumb(i); updRot(); requestRender(); }));
     rotRow.appendChild(rotLbl);
     rotRow.appendChild(rotActs);
 
