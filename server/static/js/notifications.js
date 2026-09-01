@@ -16,7 +16,7 @@ let timer = null;
 let showing = false;
 
 /** How long each notification stays visible before sliding away. */
-const DISPLAY_MS = 4000;
+const DISPLAY_MS = 2000;
 
 /** Find the banner element. Safe to call once the DOM is ready. */
 export function init() {
