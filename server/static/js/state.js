@@ -139,6 +139,8 @@ export function emit(event, payload) {
 //   "auth-changed"     — viewer identity changed after login/logout/me fetch
 //                        (arg: viewer profile or null)
 //   "share-keys-changed" — the held share-key set changed (arg: array of keys)
+//   "mode-changed"       — the colour mode changed (arg: mode id); the canvas
+//                          background and cross overlay re-read their colours
 //   "viewport-resized" — the canvas changed size enough that the view was
 //                        re-fit (rotation, browser bars); subscribers should
 //                        reconcile tile targets

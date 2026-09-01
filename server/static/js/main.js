@@ -26,6 +26,7 @@ import * as login from "./login.js";
 import * as access from "./access.js";
 import * as notifications from "./notifications.js";
 import * as fullscreen from "./fullscreen.js";
+import * as modes from "./modes.js";
 import * as crosses from "./crosses.js";
 import { queryParam } from "./util.js";
 
@@ -80,6 +81,10 @@ function shareLine(info) {
 async function bootstrap() {
   const viewEl = document.getElementById("view");
   const leftEl = document.getElementById("left");
+
+  // Restore the persisted colour mode before anything paints, so the canvas
+  // and lattice use the right palette from frame one (no flash of grey).
+  modes.init();
 
   // Share tokens (?key=) elevate this session to their books. The server
   // stores each valid key in its own bv_share_<hash> cookie on page load, so
