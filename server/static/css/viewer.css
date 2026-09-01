@@ -16,6 +16,13 @@
     --accent: #4fb8ee;
   }
 }
+/* Canvas + cross-lattice palette defaults: the renderer and cross overlay read
+   these (the colour-mode selector overrides them via data-mode). */
+:root {
+  --canvas-bg: #808080;   /* grey (default) */
+  --cross: #404040;
+  --cross-alt: var(--cross); /* second lattice colour; same by default */
+}
 * { box-sizing: border-box; }
 html, body {
   height: 100%;
@@ -171,7 +178,7 @@ html:not(.no-js) .menu-btn {
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
-  background: #808080;
+  background: var(--canvas-bg, #808080);
 }
 html:not(.no-js) .left {
   position: fixed;

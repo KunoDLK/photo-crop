@@ -135,6 +135,32 @@ export const VIRTUAL_MIN_LEVEL = -52;
 export const MAX_SCALE = 2 ** 52;
 
 /**
+ * Cross/arrow lattice overlay (crosses.js): a multi-level lattice of crosses
+ * at the layout's grid junctions. Level 0 is the layout lattice itself; each
+ * level deeper halves the pitch (midpoint subdivision), keeping roughly a 3x3
+ * grid of glyphs on screen at every zoom. When the image content leaves the
+ * viewport the glyphs morph into arrows pointing back at it.
+ */
+
+/** On-screen glyph arm length as a fraction of the density target. */
+export const GLYPH_FRAC = 0.025;
+
+/** Density target: min(viewport) / DENSITY_DIV ≈ a 3x3 glyph grid. */
+export const DENSITY_DIV = 3;
+
+/** Timed fade (s) when crossing between lattice levels (smoothstep). */
+export const PATTERN_FADE_S = 0.4;
+
+/** Easing time constant (s) for the cross -> arrow morph ramp. */
+export const MORPH_TAU_S = 0.25;
+
+/** Easing time constant (s) for the arrow direction dial lag. */
+export const DIR_TAU_S = 0.35;
+
+/** Deepest lattice subdivision level (pitch = base pitch * 2^level). */
+export const MIN_PATTERN_LEVEL = -24;
+
+/**
  * Share-link durations (seconds) offered as buttons in the share panel's
  * option row. Each press mints a fresh server-signed ``?key=`` token; the
  * first button ("No share") is always the plain link.

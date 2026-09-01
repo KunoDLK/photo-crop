@@ -26,6 +26,7 @@ import * as login from "./login.js";
 import * as access from "./access.js";
 import * as notifications from "./notifications.js";
 import * as fullscreen from "./fullscreen.js";
+import * as crosses from "./crosses.js";
 import { queryParam } from "./util.js";
 
 // ---------------------------------------------------------- share notices
@@ -142,6 +143,7 @@ async function bootstrap() {
   scheduler.init({ cache, queue, requestRender: render.requestRender });
 
   render.initRenderer(viewEl, leftEl);
+  crosses.init();
   interaction.init({ scheduler, nav });
   interaction.installInteraction(viewEl);
   fullscreen.init({ viewEl });
