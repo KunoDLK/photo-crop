@@ -4,10 +4,12 @@
  * Draws a multi-level lattice of crosses into the main canvas, aligned to the
  * layout's grid. Level 0 puts a cross at every point where four image cells
  * meet (the junctions in the gaps between rows/columns, plus the outer frame);
- * each deeper level halves the pitch by inserting midpoints, so roughly a 3x3
- * grid of glyphs stays on screen at every zoom. When the image content leaves
- * the viewport the crosses morph into arrows pointing back at its nearest
- * edge/corner (easing ramps ported from tmp/cross_arrow_test.html).
+ * zooming in subdivides by inserting midpoints (roughly a 3x3 glyph grid stays
+ * on screen), and zooming out holds one cross per image corner until the
+ * spacing would drop below ~4x the glyph size, then decimates to every
+ * 2nd/4th/... junction line so the glyphs never merge. When the image content
+ * leaves the viewport the crosses morph into arrows pointing back at its
+ * nearest edge/corner (easing ramps ported from tmp/cross_arrow_test.html).
  *
  * Rendering batches every visible glyph into one path per active level at
  * device resolution (1px strokes, fixed on-screen glyph size), so the overlay
@@ -19,9 +21,9 @@ import * as state from "./state.js";
 import * as render from "./render.js";
 import { getCss, clamp } from "./util.js";
 import {
-  CELL, LABEL_H,
-  GLYPH_FRAC, DENSITY_DIV, PATTERN_FADE_S, MORPH_TAU_S, DIR_TAU_S,
-  MIN_PATTERN_LEVEL,
+  CELL, CELL_GAP, LABEL_H,
+  GLYPH_PX, DENSITY_DIV, MIN_PATTERN_SPACING, MAX_PATTERN_LEVEL,
+  PATTERN_FADE_S, MORPH_TAU_S, DIR_TAU_S, MIN_PATTERN_LEVEL,
 } from "./config.js";
 
 // ---------------------------------------------------------------- geometry
@@ -74,8 +76,8 @@ function glyphGeometry(p) {
 
 // Base line sets (sorted scene coordinates) for the current layout: X = cell
 // column boundaries, Y = row junctions + outer frame. Subdivision levels
-// insert midpoints, so the coarser lattice is always a subset of the finer
-// and crossfading levels never blink at shared points.
+// insert midpoints, so the finer lattice is always a subset of the base and
+// crossfading levels never blink at shared points.
 let xBase = [];
 let yBase = [];
 let basePitch = 0;   // min base pitch (scene units), drives the level index
@@ -83,6 +85,16 @@ let pitchX = 0;      // per-axis base pitches: the checkerboard cell size the
 let pitchY = 0;      // cross colours alternate over (see draw())
 let contentRect = null; // bbox of the image draw rects (arrow target)
 let hasLattice = false;
+
+// Zoom-out decimation uses perfectly uniform lattices taken from the image
+// grid's own spec (the cell pitch), anchored at the first junction near the
+// top-left and extending infinitely past the content — so the grid stays
+// regular even across group-boundary gaps, where the base lattice itself is
+// irregular.
+const X_ANCHOR = CELL + CELL_GAP / 2;          // first column-gap centre
+const X_PITCH = CELL + CELL_GAP;               // one cell column
+const Y_ANCHOR = LABEL_H + CELL + CELL_GAP / 2; // first row-gap centre
+const Y_PITCH = CELL + LABEL_H + CELL_GAP;      // one cell row (label included)
 
 /**
  * Lattice line set from a bag of edge coordinates: the frame edges plus a
@@ -154,12 +166,14 @@ function rebuildContentRect() {
  *
  * Each base interval is split into 2^-lv equal parts; the pattern extends
  * past the ends at the edge intervals' pitch. The visible window prunes the
- * result to a handful of lines no matter how deep the level.
+ * result to a handful of lines no matter how deep the level. The finer
+ * lattice is always a subset of the base, so crossfades never blink.
  */
 function lineRange(base, lv, a, b) {
   const out = [];
   const n = base.length;
   if (!n || b < a) return out;
+
   const sub = Math.pow(2, -lv);
   // Extension below base[0] at the first interval's pitch (ascending order).
   if (n >= 2 && a < base[0]) {
@@ -185,6 +199,23 @@ function lineRange(base, lv, a, b) {
     const hi = Math.floor((b - base[n - 1]) * sub / d);
     for (let m = lo; m <= hi; m++) out.push(base[n - 1] + m * d / sub);
   }
+  return out;
+}
+
+/**
+ * Zoom-out decimation (lv > 0): a perfectly uniform lattice taken from the
+ * image grid's own spec — anchor at the first junction, pitch = the cell
+ * pitch doubled per level — extending infinitely past the content. Using the
+ * cell pitch (not the irregular base intervals) keeps the grid regular even
+ * across group-boundary gaps, so no lines bunch up or double-remove at the
+ * edges of the image groups.
+ */
+function uniformRange(anchor, pitch, lv, a, b) {
+  const out = [];
+  const p = pitch * (1 << lv);
+  const m0 = Math.ceil((a - anchor) / p);
+  const m1 = Math.floor((b - anchor) / p);
+  for (let m = m0; m <= m1; m++) out.push(anchor + m * p);
   return out;
 }
 
@@ -258,10 +289,25 @@ function tick(now) {
 
     // Binary level switch: crossing the zoom threshold fades to the next level
     // with a timed animation instead of a zoom-proportional crossfade.
+    //
+    // Zoomed in, the pitch subdivides (binary halving) to keep ~3x3 glyphs on
+    // screen. Zoomed out, level 0 is held — one cross per image corner — as
+    // long as the on-screen spacing stays above ~4x the glyph size; only when
+    // it would drop below that does the lattice switch to a coarser uniform
+    // grid (the cell pitch doubled per level, anchored top-left and extended
+    // past the content), so the glyphs never merge and the grid stays regular
+    // even across group gaps. The chosen level is a pure function of the
+    // scale, so zooming back in restores the finer lattice (both directions
+    // animate through the same fade).
     const vpw = state.viewport.w, vph = state.viewport.h;
     const D = Math.max(1, Math.min(vpw, vph)) / DENSITY_DIV;
-    const L = Math.log2(D / (basePitch * state.view.scale));
-    const targetLevel = clamp(Math.floor(L), MIN_PATTERN_LEVEL, 0);
+    const pitch = basePitch * state.view.scale; // on-screen base spacing
+    let targetLevel;
+    if (pitch >= D) {
+      targetLevel = clamp(Math.floor(Math.log2(D / pitch)), MIN_PATTERN_LEVEL, 0);
+    } else {
+      targetLevel = clamp(Math.ceil(Math.log2(MIN_PATTERN_SPACING / pitch)), 0, MAX_PATTERN_LEVEL);
+    }
     if (fadeTo >= 0) {
       if (targetLevel === level) {
         // Zoomed back before the fade finished: animate back to level.
@@ -373,8 +419,9 @@ export function draw(ctx) {
     return [rax, ray, rbx, rby];
   });
 
-  const D = Math.max(1, Math.min(vpw, vph)) / DENSITY_DIV;
-  const Gs = (GLYPH_FRAC * D) / GLYPH_ARM; // screen px per glyph-frame unit
+  // Fixed on-screen glyph size (CSS px): the same visual size on every
+  // display; only the lattice spacing scales with the viewport.
+  const Gs = GLYPH_PX / GLYPH_ARM; // screen px per glyph-frame unit
 
   const levels = [];
   if (fadeTo >= 0) {
@@ -388,8 +435,12 @@ export function draw(ctx) {
   ctx.lineCap = "butt";
   for (const [lv, alpha] of levels) {
     if (alpha <= 0.004) continue;
-    const xLines = lineRange(xBase, lv, x0, x1);
-    const yLines = lineRange(yBase, lv, y0, y1);
+    const xLines = lv > 0
+      ? uniformRange(X_ANCHOR, X_PITCH, lv, x0, x1)
+      : lineRange(xBase, lv, x0, x1);
+    const yLines = lv > 0
+      ? uniformRange(Y_ANCHOR, Y_PITCH, lv, y0, y1)
+      : lineRange(yBase, lv, y0, y1);
     if (!xLines.length || !yLines.length) continue;
     ctx.globalAlpha = alpha;
     // Two passes so the glyphs can alternate between the two cross colours

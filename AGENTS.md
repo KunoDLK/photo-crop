@@ -452,11 +452,14 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
 - `crosses.js` — cross/arrow lattice overlay, drawn into the main canvas under
   the images. Level 0 puts a cross at every point where four image cells meet
   (the layout's grid junctions, derived from `state.images` on
-  `images-changed`); deeper levels subdivide the lattice by midpoint insertion
-  so a ~3x3 glyph grid stays on screen at any zoom (binary level switch with a
-  timed crossfade, complementary alphas at shared points). When the content
-  leaves the viewport the crosses morph into arrows pointing back at its
-  nearest edge/corner (easing ramps ported from `tmp/cross_arrow_test.html`).
+  `images-changed`); zooming in subdivides the lattice by midpoint insertion so
+  a ~3x3 glyph grid stays on screen, and zooming out holds one cross per image
+  corner until the spacing would drop below ~4x the glyph size, then decimates
+  to every 2nd/4th/... junction line so the glyphs never merge (binary level
+  switch with a timed crossfade, complementary alphas at shared points). When
+  the content leaves the viewport the crosses morph into arrows pointing back
+  at its nearest edge/corner (easing ramps ported from
+  `tmp/cross_arrow_test.html`).
   One batched path per active level, 1px strokes at device resolution, so it
   stays cheap at every zoom; its own rAF loop only requests renders while the
   morph/direction/fade is actually moving.
