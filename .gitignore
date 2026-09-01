@@ -1,3 +1,7 @@
 .agents.md
 __pycache__/
 *.py[cod]
+
+tmp/
+dev/archive/
+dev/cache/
