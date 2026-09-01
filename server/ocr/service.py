@@ -43,8 +43,11 @@ class OCRService:
         self._pending: set[str] = set()
         self._events: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
-        self._worker = threading.Thread(target=self._run, daemon=True, name="ocr-worker")
-        self._worker.start()
+        # OCR disabled (local dev/test without the engine): no worker, empty
+        # results — an OCR request must never decode a full page and fail.
+        if settings.ocr_enabled:
+            self._worker = threading.Thread(target=self._run, daemon=True, name="ocr-worker")
+            self._worker.start()
 
     # ------------------------------------------------------------- caching
 
@@ -138,6 +141,8 @@ class OCRService:
         so this returns as fast as possible even mid-search. Callers should run
         it via ``asyncio.to_thread`` so the event loop stays free.
         """
+        if not self.settings.ocr_enabled:
+            return OCRPage(page_id=page, width=0, height=0, version=0, lines=[], words=[])
         version = self._page_version(book, page)
         path = self._cache_path(book, page, version)
         cached = self._load(path)
@@ -160,6 +165,8 @@ class OCRService:
         uncached page simply renders without text, and the background worker
         may fill the cache later. Never enqueues and never blocks.
         """
+        if not self.settings.ocr_enabled:
+            return None
         try:
             version = self._page_version(book, page)
             cached = self._load(self._cache_path(book, page, version))
@@ -185,6 +192,8 @@ class OCRService:
             ``(matches, pending)`` — matching pages found so far, and the count
             of pages still queued/uncached that may match later.
         """
+        if not self.settings.ocr_enabled:
+            return [], 0
         q = query.strip()
         if regex:
             rx = re.compile(q, re.IGNORECASE)

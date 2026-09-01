@@ -36,6 +36,10 @@ class Settings(BaseSettings):
             sparse/freeform text. Freeform scans read better with 11.
         ocr_conf_threshold: Minimum word confidence (0-100) to keep a word;
             freeform output runs at lower confidences, so 25-30 keeps more.
+        ocr_enabled: Master switch for OCR. When false the OCR endpoints return
+            empty results and the worker thread never starts — used by local
+            dev/test instances that lack the OCR engine (without it, every OCR
+            request would decode a full page and fail).
         rights_db_path: SQLite rights database; defaults to ``cache_dir/rights.db``.
         archive_username: Owner login name (env ``ARCHIVE_USERNAME``).
         archive_password: Owner password; empty disables owner login.
@@ -84,6 +88,7 @@ class Settings(BaseSettings):
     ocr_lang: str = "eng"
     ocr_psm: int = 11
     ocr_conf_threshold: int = 25
+    ocr_enabled: bool = True
     rights_db_path: Path | None = None
     archive_username: str = "admin"
     archive_password: str = ""
