@@ -29,12 +29,26 @@ now covers the server.
 
 - **Run the server** (from the repo root, package-relative imports require this):
   `python -m server.main` (equivalently `uvicorn server.main:app`). Honors `HOST`/`PORT`.
+- **Local dev instance** (`python -m dev.run`, default `http://127.0.0.1:8765`):
+  runs the viewer on localhost **without touching the prod Docker container**
+  (prod listens on 8471). Generates a small sample archive into `dev/archive`
+  (three books: a 2-group book with an "extra" page, a mixed-orientation book,
+  and a 1000-page stress book for client-stability testing) and seeds
+  `dev/cache/rights.db` so every sample page is fully public — the owner login
+  for testing admin/shares is `admin`/`devpass`. Flags: `--port`,
+  `--force-sample` (regenerate), `--no-sample`. State lives entirely under
+  `dev/` (gitignored); the prod container, `/archive`, and its rights DB are
+  never read or written. The dev instance sets `OCR_ENABLED=false` (see
+  `dev/config.py`): rapidocr is absent on this machine, and an OCR request
+  without it would decode a full page and 500 — which the client retries every
+  frame, flooding the server and starving tile fetches. Disabled, the OCR
+  endpoints return empty results instead.
 - **Deps**: `pip install -r server/requirements.txt`. Includes fastapi, uvicorn, pydantic,
   opencv-contrib-python-headless, numpy, pillow, diskcache, rapidocr + onnxruntime.
 - **Docker**: `docker build -f server/Dockerfile .` (runs `python -m server.main`;
   installs the OpenCL ICD loader; NVIDIA OpenCL is
   injected at runtime with `--gpus all`, otherwise it transparently falls back to CPU).
-- **JS syntax checks**: `node` is NOT installed. Use `bun` (`/home/kuno/.bin/bun`).
+- **JS syntax checks**: `node` is NOT installed. Use `bun` (`/home/kuno/.bun/bin/bun`).
   The viewer is plain browser ES modules, so a quick import/syntax smoke test is
   `bun build server/static/js/main.js --outdir /tmp/check --target browser`.
 - **No tests, no linter config, no Makefile, no pyproject.toml** exist. There is no test
@@ -352,7 +366,10 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   stale tiles are dropped. Emits `images-changed` / `images-removed`.
 - `tiles/tileCache.js` — decoded ImageBitmap LRU keyed `id:level:tx:ty`; the root tile
   (whole image, level `max_level`) is **pinned** so every image renders instantly on first
-  appearance. `pruneImage` keeps only the pinned root when an image scrolls off-screen;
+  appearance; `pinnedBytes` tracks the reserved footprint and is **excluded from the
+  eviction thresholds**, so working (non-pinned) tiles always keep the full budget to
+  themselves and a grid of pinned roots can never starve refinement. `pruneImage`
+  keeps only the pinned root when an image scrolls off-screen;
   `pruneToLevel` drops finer/coarser leftovers once the target level is complete.
 - `tiles/queue.js` — priority fetch queue, `MAX_INFLIGHT` concurrent, nearest-to-cursor
   first. Network I/O only; no policy.
@@ -360,9 +377,12 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   tiles, prune off-screen images, choose a **global coarsening offset K** across all
   visible images (same on-screen tile size everywhere, under the budget), then request the
   next refinement step per area (at most `PROGRESSIVE_STEP` levels finer than the finest
-  cached ancestor). Zoom-in is budget-limited; zoom-out requests freely because each
-  coarse tile arrival frees its fine descendants. `PREFETCH_NEIGHBORS` warms root tiles
-  of adjacent images when idle.
+  cached ancestor). Refinement is **not** byte-gated: it may transiently overshoot the
+  decoded-cache budget because each finer tile that arrives covers (and later prunes) its
+  coarser underlay, and eviction ignores pinned roots — working tiles always keep the full
+  budget to themselves, so only truly excessive sets get reclaimed (logged). Zoom-in is
+  budget-limited; zoom-out requests freely because each coarse tile arrival frees its fine
+  descendants. `PREFETCH_NEIGHBORS` warms root tiles of adjacent images when idle.
 - `tiles/levelSelect.js` — per-image 1:1 base level (never show a 256 px tile smaller than
   256 device px) plus the shared coarsening offset K.
 - `compositor.js` — draws one image from cached tiles coarse→fine so finer tiles overpaint
@@ -429,6 +449,23 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   anonymous viewers, "Signed in as … / Log out" for authenticated ones. Login
   updates `state.viewer` (event `auth-changed`) and reloads the current
   location so private books appear. Enter submits, Escape dismisses (keys.js).
+- `crosses.js` — cross/arrow lattice overlay, drawn into the main canvas under
+  the images. Level 0 puts a cross at every point where four image cells meet
+  (the layout's grid junctions, derived from `state.images` on
+  `images-changed`); deeper levels subdivide the lattice by midpoint insertion
+  so a ~3x3 glyph grid stays on screen at any zoom (binary level switch with a
+  timed crossfade, complementary alphas at shared points). When the content
+  leaves the viewport the crosses morph into arrows pointing back at its
+  nearest edge/corner (easing ramps ported from `tmp/cross_arrow_test.html`).
+  One batched path per active level, 1px strokes at device resolution, so it
+  stays cheap at every zoom; its own rAF loop only requests renders while the
+  morph/direction/fade is actually moving.
+- `modes.js` — colour modes (grey, black, K&S, light): a radio group in the ☰
+  menu (each option previews a swatch of canvas bg + cross colour; the radios
+  are not buttons, so the menu stays open while selecting) and the B key cycle
+  through them. Sets `data-mode` on `<html>`, which drives the
+  `--canvas-bg`/`--cross` CSS vars the renderer and crosses.js read; persists
+  the choice in localStorage (`bv.mode`) and applies it before first paint.
 - `fullscreen.js` — two paths to reclaimed screen space. Desktop/iPad: the
   Fullscreen API via a toolbar button (hidden where unsupported, e.g. iPhone
   Safari; Shift+F also toggles it). iPhone Safari/Chrome: the browser bars can
