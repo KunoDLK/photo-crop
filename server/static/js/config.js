@@ -135,6 +135,48 @@ export const VIRTUAL_MIN_LEVEL = -52;
 export const MAX_SCALE = 2 ** 52;
 
 /**
+ * Cross/arrow lattice overlay (crosses.js): a multi-level lattice of crosses
+ * at the layout's grid junctions. Level 0 is the layout lattice itself; each
+ * level deeper halves the pitch (midpoint subdivision), keeping roughly a 3x3
+ * grid of glyphs on screen at every zoom. When the image content leaves the
+ * viewport the glyphs morph into arrows pointing back at it.
+ */
+
+/**
+ * On-screen glyph arm length in CSS px. Fixed rather than viewport-relative so
+ * glyphs render the same visual size on every display (CSS px approximate the
+ * same physical size across devices); only the lattice *spacing* scales with
+ * the viewport via DENSITY_DIV.
+ */
+export const GLYPH_PX = 6;
+
+/** Density target: min(viewport) / DENSITY_DIV ≈ a 3x3 glyph grid. */
+export const DENSITY_DIV = 3;
+
+/**
+ * Zoom-out decimation trigger: when the on-screen spacing of the current
+ * lattice would drop below ~4x the glyph arm (24px), step up to a coarser
+ * level (every 2nd/4th/... junction line) so the glyphs stay clearly
+ * separated and never merge into a grid.
+ */
+export const MIN_PATTERN_SPACING = 4 * GLYPH_PX;
+
+/** Coarsest lattice level when zooming out (every 2^level-th junction line). */
+export const MAX_PATTERN_LEVEL = 20;
+
+/** Timed fade (s) when crossing between lattice levels (smoothstep). */
+export const PATTERN_FADE_S = 0.4;
+
+/** Easing time constant (s) for the cross -> arrow morph ramp. */
+export const MORPH_TAU_S = 0.5;
+
+/** Easing time constant (s) for the arrow direction dial lag. */
+export const DIR_TAU_S = 0.35;
+
+/** Deepest lattice subdivision level (pitch = base pitch * 2^level). */
+export const MIN_PATTERN_LEVEL = -24;
+
+/**
  * Share-link durations (seconds) offered as buttons in the share panel's
  * option row. Each press mints a fresh server-signed ``?key=`` token; the
  * first button ("No share") is always the plain link.

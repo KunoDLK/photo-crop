@@ -28,7 +28,7 @@ from starlette.responses import HTMLResponse, Response
 
 from .books import dimensions, scanner
 from .errors import NotFound
-from .pages import DESCRIPTION, SITE_TITLE, esc, render_fragment
+from .pages import DESCRIPTION, SITE_TITLE, esc, render_fragment, _public_base
 from .rights.policy import FULL
 from .shares.store import share_cookie_name
 from .tiles import decoder, encoder, geometry, resampler
@@ -302,7 +302,7 @@ async def sitemap_endpoint(request: Request) -> Response:
     catalog = request.app.state.catalog
     locations = request.app.state.locations
     rights = request.app.state.rights
-    base = str(request.base_url).rstrip("/")
+    base = _public_base(request)
 
     entries = [f"  <url><loc>{base}/</loc><priority>1.0</priority></url>"]
     try:

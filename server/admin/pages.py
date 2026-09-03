@@ -80,6 +80,62 @@ _SCROLL_JS = """
 """
 
 
+# "Copy link" needs JS (clipboard access), so the shares page carries its own
+# small script: POST a fresh key for the row, then copy its URL. Degrades
+# gracefully — with JS disabled the button simply does nothing.
+_SHARES_JS = """
+<script>
+(function () {
+  var CSRF = "__CSRF__";
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (err) {}
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(function () { return legacyCopy(text); });
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+  var buttons = document.querySelectorAll("button.share-copy");
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].addEventListener("click", function () {
+      var btn = this;
+      var label = btn.textContent;
+      btn.disabled = true;
+      fetch("/admin/shares/" + btn.getAttribute("data-id") + "/copy", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "_csrf=" + encodeURIComponent(CSRF),
+      })
+        .then(function (r) {
+          return r.json().then(function (d) { return { ok: r.ok, d: d }; });
+        })
+        .then(function (res) {
+          if (!res.ok || !res.d.url) throw new Error((res.d && res.d.error) || "failed");
+          return copyText(res.d.url).then(function (ok) {
+            btn.textContent = ok ? "Copied" : "Copy failed";
+          });
+        })
+        .catch(function () { btn.textContent = "Copy failed"; })
+        .then(function () {
+          setTimeout(function () { btn.disabled = false; btn.textContent = label; }, 1600);
+        });
+    });
+  }
+})();
+</script>
+"""
+
+
 def _shell(title: str, body: str, active: str | None = None, csrf: str = "", nav: bool = True) -> str:
     """Wrap page body in the shared admin shell with the section nav."""
     nav_html = ""
@@ -505,6 +561,12 @@ def shares(csrf: str, rows: list[dict], books: list[dict]) -> str:
             f'<select name="duration">{duration_opts}<option value="0">Never expires</option></select>'
             "<button>Extend</button></form>"
         )
+        copy = ""
+        if not revoked:
+            copy = (
+                f'<button type="button" class="share-copy" data-id="{esc(r["id"])}" '
+                'title="Mints a fresh key with the same duration and copies its URL">Copy link</button>'
+            )
         if revoked:
             action = (
                 f'<form method="post" action="/admin/shares/{esc(r["id"])}/restore" style="display:inline">'
@@ -529,20 +591,23 @@ def shares(csrf: str, rows: list[dict], books: list[dict]) -> str:
             f"<td>{expiry}</td>"
             f"<td>{_fmt_ts(r['last_used_at']) or '<span class=\"note\">never</span>'}</td>"
             f"<td>{esc(r['note']) or '<span class=\"note\">—</span>'}</td>"
-            f"<td>{extend}{action}</td>"
+            f"<td>{copy}{extend}{action}</td>"
             "</tr>"
         )
     body = (
         "<h1>Share links</h1>"
-        '<p class="note">Keys are random 32-byte secrets stored hashed. A shared '
-        "URL is <code>/&lt;location-id&gt;?key=&lt;key&gt;</code>; the recipient's "
-        "browser keeps it in a cookie until it expires. Revoking a key cuts access "
-        "immediately; extending it resets the expiry from now.</p>"
+        '<p class="note">Keys are random 32-byte secrets stored hashed, so the '
+        "key itself never comes back; a shared URL is "
+        "<code>/&lt;location-id&gt;?key=&lt;key&gt;</code>. "
+        "<strong>Copy link</strong> mints a fresh key with the same duration "
+        "and copies its URL (it appears as a new row). Revoking a key cuts "
+        "access immediately; extending it resets the expiry from now.</p>"
         f"<h2>Create share link</h2>{add}"
         "<h2>Keys</h2>"
         "<table><tr><th>Key</th><th>Book</th><th>Page</th><th>Status</th>"
         "<th>Created</th><th>Expires</th><th>Last used</th><th>Note</th><th>Actions</th></tr>"
         f"{''.join(table_rows) or '<tr><td colspan=\"9\"><span class=\"note\">No share keys yet.</span></td></tr>'}"
         "</table>"
+        + _SHARES_JS.replace("__CSRF__", esc(csrf))
     )
     return _shell("Share links", body, active="shares", csrf=csrf)

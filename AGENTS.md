@@ -29,12 +29,26 @@ now covers the server.
 
 - **Run the server** (from the repo root, package-relative imports require this):
   `python -m server.main` (equivalently `uvicorn server.main:app`). Honors `HOST`/`PORT`.
+- **Local dev instance** (`python -m dev.run`, default `http://127.0.0.1:8765`):
+  runs the viewer on localhost **without touching the prod Docker container**
+  (prod listens on 8471). Generates a small sample archive into `dev/archive`
+  (three books: a 2-group book with an "extra" page, a mixed-orientation book,
+  and a 1000-page stress book for client-stability testing) and seeds
+  `dev/cache/rights.db` so every sample page is fully public — the owner login
+  for testing admin/shares is `admin`/`devpass`. Flags: `--port`,
+  `--force-sample` (regenerate), `--no-sample`. State lives entirely under
+  `dev/` (gitignored); the prod container, `/archive`, and its rights DB are
+  never read or written. The dev instance sets `OCR_ENABLED=false` (see
+  `dev/config.py`): rapidocr is absent on this machine, and an OCR request
+  without it would decode a full page and 500 — which the client retries every
+  frame, flooding the server and starving tile fetches. Disabled, the OCR
+  endpoints return empty results instead.
 - **Deps**: `pip install -r server/requirements.txt`. Includes fastapi, uvicorn, pydantic,
   opencv-contrib-python-headless, numpy, pillow, diskcache, rapidocr + onnxruntime.
 - **Docker**: `docker build -f server/Dockerfile .` (runs `python -m server.main`;
   installs the OpenCL ICD loader; NVIDIA OpenCL is
   injected at runtime with `--gpus all`, otherwise it transparently falls back to CPU).
-- **JS syntax checks**: `node` is NOT installed. Use `bun` (`/home/kuno/.bin/bun`).
+- **JS syntax checks**: `node` is NOT installed. Use `bun` (`/home/kuno/.bun/bin/bun`).
   The viewer is plain browser ES modules, so a quick import/syntax smoke test is
   `bun build server/static/js/main.js --outdir /tmp/check --target browser`.
 - **No tests, no linter config, no Makefile, no pyproject.toml** exist. There is no test
@@ -58,7 +72,10 @@ budget), `PAGE_CACHE_BYTES` (decoded-page RAM budget), `PAGE_IDLE_SECONDS` (defa
 0 = no downscale, lang, conf threshold 25), `RIGHTS_DB_PATH` + `ARCHIVE_USERNAME`/`ARCHIVE_PASSWORD` +
 `SESSION_SECRET`/`SESSION_COOKIE_SECURE`/`LOGIN_RATE_LIMIT` + `DEFAULT_REGION`/
 `DEV_REGION_HEADER` + `BLUR_STRENGTH`/`BLUR_DARKNESS` (rights/auth/admin; see the Rights
-section), `HOST`, `PORT`.
+section), `PUBLIC_BASE_URL` (absolute public base URL for canonical links, OG image URLs,
+and the sitemap — set it in production so non-proxied requests can never poison the
+sitemap cache with `http://` URLs; empty falls back to `X-Forwarded-Proto`/
+`X-Forwarded-Host`, then the request itself), `HOST`, `PORT`.
 
 ### Errors — `server/errors.py`
 
@@ -76,8 +93,9 @@ All domain errors should use these, never bare HTTP exceptions.
   and groups non-conventional filenames into a trailing "extra" group.
 - `naming.py` — page convention `^(\d+)_(\d+)-(.*)$` (e.g. `2_001-Page.jpg`) → group/order/name.
   Non-matching files become "extra" pages with a synthetic trailing group.
-- `dimensions.py` — header-only dims via Pillow (`Image.open().size`, no decode), so
-  listings stay fast over thousands of pages.
+- `dimensions.py` — header-only dims via Pillow (`Image.open().size`, no decode),
+  with EXIF orientation applied (axes swapped for tags 5-8) so listings stay fast
+  over thousands of pages and always agree with the decoded pixels.
 - `locations.py` — persistent base62 short-ID registry for `(book, page)` pairs, used in
   the URL path as share links (`/93050a0`). Persisted as JSON at
   `cache_dir/locations.json`; survives restarts; ID collision handled by incrementing.
@@ -96,7 +114,9 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
 - `resampler.py` — the only module aware of acceleration: OpenCL via `cv2.UMat` when
   available, else CPU `INTER_AREA`. Callers always use `resize_area` and never check the
   backend themselves.
-- `decoder.py` — `cv2.imdecode` → BGR uint8 ndarray.
+- `decoder.py` — `cv2.imdecode` → BGR uint8 ndarray, then rotated/flipped per EXIF
+  orientation so stored pixels always match the listing dims (a portrait photo
+  stored landscape is decoded portrait; tiles and OCR agree).
 - `encoder.py` — progressive (SOF2) JPEG via OpenCV.
 - `cache.py` — diskcache-backed LRU of encoded tiles, byte-limited; key includes the page
   mtime ("version"), so re-saved pages get fresh keys and stale tiles are never served.
@@ -259,7 +279,13 @@ crawler-facing HTML.
   (`nav.navigateToPath`), so users never see a full reload.
 - OG meta: `og:title` varies by location (site name / book name / `Book • Page N`),
   `og:description` is a fixed site blurb, `og:image` is an absolute URL built from
-  `request.base_url` (picks up the public hostname behind the Cloudflare tunnel).
+  `pages._public_base` — `settings.public_base_url` when set, else the
+  `X-Forwarded-Proto`/`X-Forwarded-Host` headers from the Cloudflare tunnel, else
+  the request itself. The same helper backs the canonical links and the sitemap,
+  so every public URL is `https://` regardless of how the origin was reached
+  (a non-proxied request must never poison the sitemap's in-process cache).
+- `server/static/robots.txt` advertises the sitemap; Cloudflare's managed
+  AI-crawler blocklist is prepended at the edge, so the origin file stays minimal.
 - Page HTML uses `OCRService.get_page_ocr_cached` — a pure cache read that never
   enqueues or blocks, so crawler requests never trigger OCR work.
 - **Access gating**: every content route resolves the policy for the requester's
@@ -340,7 +366,10 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   stale tiles are dropped. Emits `images-changed` / `images-removed`.
 - `tiles/tileCache.js` — decoded ImageBitmap LRU keyed `id:level:tx:ty`; the root tile
   (whole image, level `max_level`) is **pinned** so every image renders instantly on first
-  appearance. `pruneImage` keeps only the pinned root when an image scrolls off-screen;
+  appearance; `pinnedBytes` tracks the reserved footprint and is **excluded from the
+  eviction thresholds**, so working (non-pinned) tiles always keep the full budget to
+  themselves and a grid of pinned roots can never starve refinement. `pruneImage`
+  keeps only the pinned root when an image scrolls off-screen;
   `pruneToLevel` drops finer/coarser leftovers once the target level is complete.
 - `tiles/queue.js` — priority fetch queue, `MAX_INFLIGHT` concurrent, nearest-to-cursor
   first. Network I/O only; no policy.
@@ -348,9 +377,12 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   tiles, prune off-screen images, choose a **global coarsening offset K** across all
   visible images (same on-screen tile size everywhere, under the budget), then request the
   next refinement step per area (at most `PROGRESSIVE_STEP` levels finer than the finest
-  cached ancestor). Zoom-in is budget-limited; zoom-out requests freely because each
-  coarse tile arrival frees its fine descendants. `PREFETCH_NEIGHBORS` warms root tiles
-  of adjacent images when idle.
+  cached ancestor). Refinement is **not** byte-gated: it may transiently overshoot the
+  decoded-cache budget because each finer tile that arrives covers (and later prunes) its
+  coarser underlay, and eviction ignores pinned roots — working tiles always keep the full
+  budget to themselves, so only truly excessive sets get reclaimed (logged). Zoom-in is
+  budget-limited; zoom-out requests freely because each coarse tile arrival frees its fine
+  descendants. `PREFETCH_NEIGHBORS` warms root tiles of adjacent images when idle.
 - `tiles/levelSelect.js` — per-image 1:1 base level (never show a 256 px tile smaller than
   256 device px) plus the shared coarsening offset K.
 - `compositor.js` — draws one image from cached tiles coarse→fine so finer tiles overpaint
@@ -392,25 +424,51 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   read from keyed URLs at boot and held as a **set** (`state.shareKeys`) — each
   new link is added, never replacing earlier ones — stripped from the address
   bar via `history.replaceState` (history/referrers stay clean; `url.js`
-  writes key-free paths), stashed in `sessionStorage` (`bv.shareKeys`) as a
+  writes key-free paths), stashed in `localStorage` (`bv.shareKeys`) as a
   reload fallback, and appended as repeated `key=` params to every content
   request (`util.withKey` for listings/OCR/search/locations, `api/tiles.js`
   for tiles). The per-key server-side `bv_share_*` cookies cover reloads and
-  any client that drops the query. A keyed session is never indexed and never
+  any client that drops the query; the boot-time validation re-arms each live
+  key's cookie and drops expired/revoked keys. A keyed session is never
+  indexed and never
   counts as logged in.
 - `access.js` — access UX: boot-time `/api/me` fetch → `state.viewer`; renders
   per-image DOM elements inside the OCR scene (Private badges, and the
   "Unavailable in your region until …" text, shown only for blurred pages
   zoomed in near page size — the dark tint itself is canvas-painted by
   `render.js`, so hundreds of unavailable pages cost nothing at overview zoom);
-  top banner shows the sign-in status or a region-unavailable count (it
-  auto-slides away after a few seconds and returns on any content change).
-  Listings carry per-page `access` and per-book `visibility`, so the client
-  never resolves policy itself.
+  pushes the sign-in status / region-unavailable line into the notification
+  queue as an urgent message. Listings carry per-page `access` and per-book
+  `visibility`, so the client never resolves policy itself.
+- `notifications.js` — transient message queue for the status banner:
+  `enqueue` appends to the back (routine notices), `enqueueNext` jumps to the
+  front (urgent state), a handler displays one message at a time with a 4 s
+  auto-dismiss. Status lines (login/logout, region) come from access.js;
+  main.js queues one line per held share link at boot.
 - `login.js` — toolbar lock button opens a modal: username/password form for
   anonymous viewers, "Signed in as … / Log out" for authenticated ones. Login
   updates `state.viewer` (event `auth-changed`) and reloads the current
   location so private books appear. Enter submits, Escape dismisses (keys.js).
+- `crosses.js` — cross/arrow lattice overlay, drawn into the main canvas under
+  the images. Level 0 puts a cross at every point where four image cells meet
+  (the layout's grid junctions, derived from `state.images` on
+  `images-changed`); zooming in subdivides the lattice by midpoint insertion so
+  a ~3x3 glyph grid stays on screen, and zooming out holds one cross per image
+  corner until the spacing would drop below ~4x the glyph size, then decimates
+  to every 2nd/4th/... junction line so the glyphs never merge (binary level
+  switch with a timed crossfade, complementary alphas at shared points). When
+  the content leaves the viewport the crosses morph into arrows pointing back
+  at its nearest edge/corner (easing ramps ported from
+  `tmp/cross_arrow_test.html`).
+  One batched path per active level, 1px strokes at device resolution, so it
+  stays cheap at every zoom; its own rAF loop only requests renders while the
+  morph/direction/fade is actually moving.
+- `modes.js` — colour modes (grey, black, K&S, light): a radio group in the ☰
+  menu (each option previews a swatch of canvas bg + cross colour; the radios
+  are not buttons, so the menu stays open while selecting) and the B key cycle
+  through them. Sets `data-mode` on `<html>`, which drives the
+  `--canvas-bg`/`--cross` CSS vars the renderer and crosses.js read; persists
+  the choice in localStorage (`bv.mode`) and applies it before first paint.
 - `fullscreen.js` — two paths to reclaimed screen space. Desktop/iPad: the
   Fullscreen API via a toolbar button (hidden where unsupported, e.g. iPhone
   Safari; Shift+F also toggles it). iPhone Safari/Chrome: the browser bars can
@@ -458,8 +516,11 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
 - **The key leaves the address bar**: on a keyed page load the client strips
   `?key=` from the URL (`history.replaceState`, so it never sits in history or
   referrers), keeps all held keys in memory for request propagation, and
-  stashes them in `sessionStorage` (`bv.shareKeys`, an array) as a reload
-  fallback for cookie-blocking browsers. The keys still travel as repeated
+  stashes them in `localStorage` (`bv.shareKeys`, an array) so the grant
+  survives tab closes and browser restarts. The boot-time `/api/share/info`
+  validation prunes expired/revoked keys and re-arms each live key's
+  `bv_share_*` cookie, so an admin-extended share keeps working on the next
+  visit. The keys still travel as repeated
   `key=` params on the client's content requests and in the `og:image` URL
   (crawlers need it) — that is what keeps every failure mode working.
 - **Keys live in the URL**: browser history, HTTP logs, and the `og:image`

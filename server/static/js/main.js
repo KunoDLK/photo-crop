@@ -24,46 +24,111 @@ import * as help from "./help.js";
 import * as share from "./share.js";
 import * as login from "./login.js";
 import * as access from "./access.js";
+import * as notifications from "./notifications.js";
 import * as fullscreen from "./fullscreen.js";
+import * as modes from "./modes.js";
+import * as crosses from "./crosses.js";
 import { queryParam } from "./util.js";
 
+// ---------------------------------------------------------- share notices
+
+// Share keys whose "active until …" notice was already queued, so re-emits of
+// share-keys-changed never announce the same link twice.
+let announcedShares = new Set();
+
+/**
+ * Queue one notification per held share key that hasn't been announced yet.
+ * They go to the back of the queue, so urgent status notices (login, region)
+ * always display first.
+ */
+function announceShares() {
+  for (const key of state.shareKeys) {
+    if (announcedShares.has(key)) continue;
+    announcedShares.add(key);
+    const info = state.shareInfo.get(key);
+    if (info) notifications.enqueue(shareLine(info));
+  }
+}
+
+/** "Book Name" / "Book Name • Page 7" from current state, ids as fallback. */
+function shareLabel(info) {
+  let book = info.book;
+  for (const im of state.images) {
+    if (im.kind === "book" && im.bookId === info.book) {
+      book = im.name;
+      break;
+    }
+  }
+  if (!info.page) return book;
+  for (const im of state.images) {
+    if (im.kind === "page" && im.bookId === info.book && im.pageId === info.page) {
+      return `${book} • Page ${im.order}`;
+    }
+  }
+  return `${book} • ${info.page}`;
+}
+
+/** "Share link for X is active until …" / "… is shared" (no expiry). */
+function shareLine(info) {
+  const label = shareLabel(info);
+  if (!info.expires_at) return `Share link for ${label} is shared`;
+  const when = new Date(info.expires_at * 1000).toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+  return `Share link for ${label} is active until ${when}`;
+}
 async function bootstrap() {
   const viewEl = document.getElementById("view");
   const leftEl = document.getElementById("left");
+
+  // Restore the persisted colour mode before anything paints, so the canvas
+  // and lattice use the right palette from frame one (no flash of grey).
+  modes.init();
 
   // Share tokens (?key=) elevate this session to their books. The server
   // stores each valid key in its own bv_share_<hash> cookie on page load, so
   // the secrets can leave the address bar: strip the URL (keeping them out of
   // history and referrers) while retaining all held keys in memory for the
-  // requests that carry them, and stash them in sessionStorage so reloads
-  // keep working even in a cookie-blocking browser. Several links can be open
-  // at once — each key is added to the held set, never replacing the others.
+  // requests that carry them, and stash them in localStorage so the grant
+  // survives tab closes and browser restarts. The boot-time validation below
+  // drops expired/revoked keys and re-arms each live key's cookie, so a share
+  // the admin extended keeps working on the next visit. Several links can be
+  // open at once — each key is added to the held set, never replacing others.
   try {
-    const stored = JSON.parse(sessionStorage.getItem("bv.shareKeys") || "[]");
+    const stored = JSON.parse(localStorage.getItem("bv.shareKeys") || "[]");
     if (Array.isArray(stored)) for (const k of stored) state.addShareKey(k);
   } catch (e) { /* storage unavailable */ }
   const urlKey = queryParam("key");
   if (urlKey) {
     state.addShareKey(urlKey);
-    try { sessionStorage.setItem("bv.shareKeys", JSON.stringify(state.shareKeys)); } catch (e) { /* storage unavailable */ }
+    try { localStorage.setItem("bv.shareKeys", JSON.stringify(state.shareKeys)); } catch (e) { /* storage unavailable */ }
     history.replaceState(null, "", location.pathname);
   }
 
-  // Drop revoked/expired keys from the held set in the background (the server
-  // ignores them regardless, so this is hygiene, not access control).
+  // Drop revoked/expired keys from the held set in the background; the
+  // /api/share/info call also re-arms each live key's cookie with its current
+  // remaining life, so a server-side expiry extension reaches this browser
+  // even after the original cookie lapsed. (The server ignores stale keys
+  // regardless, so this is hygiene, not access control.) The captured
+  // metadata feeds the share notices, announced from the back of the queue.
   (async () => {
     try {
       const { fetchShareInfo } = await import("./api/shares.js");
       const live = [];
       for (const k of state.shareKeys) {
         const info = await fetchShareInfo(k);
-        if (info.valid) live.push(k);
+        if (info.valid) {
+          live.push(k);
+          state.setShareInfo(k, info);
+        }
       }
       if (live.length !== state.shareKeys.length) {
         state.setShareKeys(live);
-        try { sessionStorage.setItem("bv.shareKeys", JSON.stringify(live)); } catch (e) { /* storage unavailable */ }
+        try { localStorage.setItem("bv.shareKeys", JSON.stringify(live)); } catch (e) { /* storage unavailable */ }
       }
     } catch (e) { /* network hiccup: keys stay, server still filters */ }
+    announceShares();
   })();
 
   // Keep tile resource-timing entries long enough for the cache-hit readout to
@@ -83,6 +148,7 @@ async function bootstrap() {
   scheduler.init({ cache, queue, requestRender: render.requestRender });
 
   render.initRenderer(viewEl, leftEl);
+  crosses.init();
   interaction.init({ scheduler, nav });
   interaction.installInteraction(viewEl);
   fullscreen.init({ viewEl });
@@ -95,6 +161,11 @@ async function bootstrap() {
   help.init();
   share.init();
   login.init();
+  notifications.init();
+
+  // New share keys (e.g. minted from the Share panel) get their own queued
+  // notice; the boot-time announcements come from the validation above.
+  state.on("share-keys-changed", () => announceShares());
   // Resolve the viewer identity before the initial navigation so the boot-time
   // auth-changed event (below) is never mistaken for a login/logout.
   await access.init();

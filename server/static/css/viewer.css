@@ -16,6 +16,26 @@
     --accent: #4fb8ee;
   }
 }
+/* Canvas + cross-lattice palette, driven by the colour-mode selector (modes.js).
+   The canvas background renderer and the cross overlay read these; the chrome
+   stays system-themed. `data-mode` is set before first paint, so no flash. */
+:root {
+  --canvas-bg: #808080;   /* grey (default) */
+  --cross: #404040;
+  --cross-alt: var(--cross); /* second lattice colour; same by default */
+}
+:root[data-mode="black"] { --canvas-bg: #000000; }
+:root[data-mode="kuno"] {
+  /* K&S: shadow grey canvas, crosses alternating dusty olive / sarah pink
+     (sampled from the Brand-Guidline palette). */
+  --canvas-bg: #191b24;
+  --cross: #76983e;
+  --cross-alt: #F6B6B8;
+}
+:root[data-mode="light"] {
+  --canvas-bg: #f2f2f2;   /* light theme background */
+  --cross: #404040;
+}
 * { box-sizing: border-box; }
 html, body {
   height: 100%;
@@ -157,6 +177,71 @@ html:not(.no-js) .menu-btn {
   min-height: 40px;
 }
 
+/* Colour-mode radio group (modes.js): one row per mode, each with a swatch
+   tile previewing the canvas bg + cross colour. Radios (not buttons) keep the
+   ☰ menu open while selecting. */
+.mode-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mode-picker-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.mode-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mode-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+.mode-radio:hover { background: var(--border); }
+.mode-radio:has(input:checked) {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.mode-radio:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.mode-radio input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.mode-swatch {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  flex: none;
+  border: 1px solid rgba(127, 127, 127, 0.45);
+}
+.mode-swatch i {
+  position: absolute;
+  inset: 0;
+  /* A small plus in currentColor, previewing the cross colour. */
+  background-image:
+    linear-gradient(currentColor, currentColor),
+    linear-gradient(currentColor, currentColor);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 10px 2px, 2px 10px;
+}
+.mode-radio-name { flex: 1; }
+
 .tile-budget { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; justify-content: space-between; }
 .tile-budget input {
   width: 64px;
@@ -171,7 +256,7 @@ html:not(.no-js) .menu-btn {
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
-  background: #808080;
+  background: var(--canvas-bg, #808080);
 }
 html:not(.no-js) .left {
   position: fixed;

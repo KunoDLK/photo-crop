@@ -17,6 +17,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 from ..auth.service import SESSION_TTL, COOKIE_NAME, AuthService
 from ..errors import BadRequest, NotFound, TooManyRequests, Unauthorized
+from ..pages import _public_base
 from . import pages
 
 router = APIRouter(tags=["admin"])
@@ -512,6 +513,35 @@ async def admin_shares_create(request: Request) -> RedirectResponse:
     note = (form.get("note") or "").strip() or None
     state.shares.create(book, page, duration, "admin", note)
     return _redirect("/admin/shares")
+
+
+@router.post("/admin/shares/{share_id}/copy")
+async def admin_shares_copy(request: Request, share_id: int) -> dict:
+    """Mint a fresh key for the same location and return its share URL.
+
+    Keys are stored hashed, so an existing key's plaintext can never be
+    recovered; "copy" therefore re-issues the share as a brand-new key with
+    the same duration and hands back the full ``/…?key=…`` URL for the
+    clipboard (the new key shows up as its own row in the list).
+    """
+    _require_owner(request)
+    _check_csrf(request, await request.form())
+    state = request.app.state
+    row = state.shares.get(share_id)
+    if row is None:
+        raise NotFound(f"share key not found: {share_id}")
+    ttl = None  # never-expiring keys copy as never-expiring
+    if row["expires_at"] is not None:
+        ttl = row["expires_at"] - row["created_at"]
+        if ttl <= 0:
+            raise BadRequest("share key has no usable duration")
+    note = f"copy of #{share_id}"
+    if row["note"]:
+        note += f" ({row['note']})"
+    key = state.shares.create(row["book"], row["page"], ttl, "admin", note)
+    loc_id = state.locations.get_id(row["book"], row["page"])
+    url = f"{_public_base(request)}/{loc_id}?key={key}"
+    return {"url": url}
 
 
 @router.post("/admin/shares/{share_id}/extend")

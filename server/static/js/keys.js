@@ -1,7 +1,8 @@
 /**
  * Keyboard shortcuts.
  *
- * F = fit overview, R = reload, D = toggle tile debug, H = hide the toolbar
+ * F = fit overview, R = reload, D = toggle tile debug, B = cycle colour mode,
+ * H = hide the toolbar
  * chrome for clean screenshots, Space = toggle 1:1 / fit-page, arrow keys
  * navigate between images, Backspace/Escape returns to the root book list when
  * inside a book. Ctrl/Meta combos (Ctrl+F search, Ctrl+G name filter, browser
@@ -13,6 +14,7 @@ import * as state from "./state.js";
 import { clearSearch } from "./ocr/search.js";
 import { clearNameFilter } from "./nameFilter.js";
 import { toggleTileDebug } from "./ui.js";
+import { cycle as cycleMode } from "./modes.js";
 import { isOpen as shareOpen, close as closeShare } from "./share.js";
 import { isOpen as loginOpen, close as closeLogin } from "./login.js";
 import { toggleFullscreen, toggleChromeHidden } from "./fullscreen.js";
@@ -63,6 +65,8 @@ export function installKeys() {
       if (nav) nav.reload();
     } else if (e.key === "d" || e.key === "D") {
       toggleTileDebug();
+    } else if (e.key === "b" || e.key === "B") {
+      cycleMode();
     } else if (e.key === "h" || e.key === "H") {
       // Hide the toolbar chrome (back, title, ☰ menu, pills) for screenshots.
       toggleChromeHidden();

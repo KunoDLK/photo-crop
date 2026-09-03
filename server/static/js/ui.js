@@ -140,10 +140,12 @@ export function updateStats() {
   const ready = state.images.filter((im) => im.status === "ready").length;
   const onScreen = scheduler.onScreenCachedCount();
   const committed = scheduler.committedCount();
+  const totalTiles = onScreen + cache.pinned.size; // per the requested definition
   const { total, hits } = queue.stats;
   const hitPct = total ? Math.round((hits / total) * 100) : 0;
   el.textContent =
     `img ready ${ready}/${state.images.length}  tiles onScreen ${onScreen}  ` +
+    `total ${totalTiles}  ` +
     `committed ${committed}/${MAX_DISPLAYED_TILES}  inflight ${queue.inflightCount}  ` +
     `queued ${queue.queuedCount}  cache ${hitPct}% (${hits}/${total})  ` +
     `load ${(loadElapsed / 1000).toFixed(2)}s`;

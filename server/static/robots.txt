@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://archive.kunodlk.com/sitemap.xml

@@ -32,10 +32,26 @@ def esc(text) -> str:
     return html_mod.escape(str(text), quote=True)
 
 
+def _public_base(request: Request) -> str:
+    """Absolute base URL of the public site, ``https://host`` without a slash.
+
+    ``settings.public_base_url`` wins when configured (deterministic across
+    every request, so the sitemap cache can never be poisoned with ``http://``
+    URLs by a non-proxied request). Otherwise the ``X-Forwarded-Proto``/
+    ``X-Forwarded-Host`` headers set by the Cloudflare tunnel are trusted, with
+    the request's own scheme/host as a last resort for local development.
+    """
+    settings = request.app.state.settings
+    if settings.public_base_url:
+        return settings.public_base_url.rstrip("/")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    return f"{proto}://{host}"
+
+
 def _og_root_image_url(request: Request) -> str:
     """Absolute URL of the site-root OG image (a static asset)."""
-    base = str(request.base_url).rstrip("/")
-    return f"{base}/og-root.jpg"
+    return f"{_public_base(request)}/og-root.jpg"
 
 
 def _og_image_url(request: Request, book: str, page: str, mtime: int) -> str:
@@ -55,8 +71,7 @@ def _og_image_url(request: Request, book: str, page: str, mtime: int) -> str:
     Returns:
         The absolute ``/og/...`` preview URL, keyed when applicable.
     """
-    base = str(request.base_url).rstrip("/")
-    url = f"{base}/og/{quote(book)}/{quote(page)}/{mtime}.jpg"
+    url = f"{_public_base(request)}/og/{quote(book)}/{quote(page)}/{mtime}.jpg"
     if _viewer_of(request).share_grants:
         key = request.query_params.get("key")
         if key:
@@ -83,9 +98,8 @@ def _book_meta(request: Request, book_id: str, pages, blurred: bool = False) -> 
 
 def _canonical(request: Request) -> str:
     """Absolute URL of the current path (the one true URL for this location)."""
-    base = str(request.base_url).rstrip("/")
     path = request.url.path.rstrip("/")
-    return base + (path or "/")
+    return _public_base(request) + (path or "/")
 
 
 def _viewer_of(request: Request):

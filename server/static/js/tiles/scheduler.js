@@ -230,6 +230,11 @@ export function reconcile() {
 
   // Lazy: only count on-screen cached tiles when zoom-in actually needs the
   // budget check (during pan/zoom-out it is unnecessary and would just cost CPU).
+  // The decoded-cache byte budget is NOT gated here: refinement may overshoot
+  // it transiently, because each finer tile that arrives covers (and later
+  // prunes) its coarser underlay, and the cache's own eviction ignores pinned
+  // roots — so working tiles always have the full budget to themselves and
+  // only truly excessive sets (visible in a logged eviction) get reclaimed.
   let rendered = -1;
   for (const req of desired) {
     if (queue.has(req.key)) continue;

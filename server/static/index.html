@@ -37,6 +37,10 @@
       <input id="name-search-input" type="text" placeholder="Filter by file name…" autocomplete="off" spellcheck="false">
       <button id="name-search-clear" hidden aria-label="Clear name filter">✕</button>
     </div>
+    <div class="mode-picker" id="mode-picker">
+      <span class="mode-picker-label">Colour</span>
+      <div class="mode-radios" id="mode-radios" role="radiogroup" aria-label="Colour mode"></div>
+    </div>
     <label class="tile-budget">Tiles
       <input id="tile-budget" type="number" min="4" max="1024" step="4" value="100">
     </label>
@@ -116,6 +120,7 @@
     <div><kbd>Ctrl</kbd>+<kbd>G</kbd></div><span>filter by file name / page number</span>
     <div><kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>F</kbd></div><span>search text (OCR)</span>
     <div><kbd>F</kbd> · <kbd>R</kbd> · <kbd>D</kbd></div><span>overview · reload · tile debug</span>
+    <div><kbd>B</kbd></div><span>cycle colour mode</span>
     <div><kbd>H</kbd></div><span>hide toolbar for screenshots</span>
     <div><kbd>←</kbd>/<kbd>→</kbd></div><span>previous / next page</span>
     <div><kbd>Esc</kbd> / <kbd>Backspace</kbd></div><span>clear search / back</span>

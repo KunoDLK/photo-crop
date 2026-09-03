@@ -36,6 +36,10 @@ class Settings(BaseSettings):
             sparse/freeform text. Freeform scans read better with 11.
         ocr_conf_threshold: Minimum word confidence (0-100) to keep a word;
             freeform output runs at lower confidences, so 25-30 keeps more.
+        ocr_enabled: Master switch for OCR. When false the OCR endpoints return
+            empty results and the worker thread never starts — used by local
+            dev/test instances that lack the OCR engine (without it, every OCR
+            request would decode a full page and fail).
         rights_db_path: SQLite rights database; defaults to ``cache_dir/rights.db``.
         archive_username: Owner login name (env ``ARCHIVE_USERNAME``).
         archive_password: Owner password; empty disables owner login.
@@ -56,6 +60,14 @@ class Settings(BaseSettings):
         blur_levels_from_coarsest: The blur plane is built this many levels in
             from the coarsest pyramid level (default 3), capping its resolution
             so fine blur tiles are cheap upscales of one seamless plane.
+        public_base_url: Absolute base URL of the public site (e.g.
+            ``https://archive.example.com``) used for canonical links, Open
+            Graph image URLs, and the sitemap. Empty (default) derives it from
+            the request, trusting ``X-Forwarded-Proto``/``X-Forwarded-Host``
+            from the reverse proxy (Cloudflare tunnel) and falling back to the
+            request itself — which is unreliable when non-proxied requests
+            (health checks, local testing) hit the origin and poison the
+            sitemap cache with ``http://`` URLs. Set this in production.
         host: Bind address.
         port: Bind port.
     """
@@ -76,6 +88,7 @@ class Settings(BaseSettings):
     ocr_lang: str = "eng"
     ocr_psm: int = 11
     ocr_conf_threshold: int = 25
+    ocr_enabled: bool = True
     rights_db_path: Path | None = None
     archive_username: str = "admin"
     archive_password: str = ""
@@ -86,6 +99,7 @@ class Settings(BaseSettings):
     dev_region_header: bool = False
     blur_strength: float = 20.0
     blur_levels_from_coarsest: int = 3
+    public_base_url: str = ""
     host: str = "0.0.0.0"
     port: int = 8000
 

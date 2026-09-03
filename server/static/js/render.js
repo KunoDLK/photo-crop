@@ -10,6 +10,7 @@ import { TILE, LABEL_FONT, LABEL_H, LEVEL_COLORS } from "./config.js";
 import * as state from "./state.js";
 import * as viewport from "./viewport.js";
 import * as compositor from "./compositor.js";
+import * as crosses from "./crosses.js";
 import * as ocrOverlay from "./ocr/overlay.js";
 import * as access from "./access.js";
 import { drawHighlights } from "./ocr/search.js";
@@ -21,6 +22,7 @@ let ctx = null;
 let dpr = 1;
 let needRender = false;
 let cache = null;
+let canvasBg = "#808080"; // canvas fill, from the colour-mode CSS variable
 let debugLayer = null; // offscreen tint layer for the tile-debug overlay
 let debugCtx = null;
 let refitTimer = null; // debounced viewport-change handler
@@ -35,6 +37,11 @@ export function initDebug(deps) {
 export function initRenderer(viewEl, leftEl) {
   canvas = viewEl;
   ctx = canvas.getContext("2d");
+  canvasBg = getCss("--canvas-bg") || "#808080";
+  state.on("mode-changed", () => {
+    canvasBg = getCss("--canvas-bg") || "#808080";
+    requestRender();
+  });
   new ResizeObserver(() => {
     resizeCanvas(leftEl);
     // After a large viewport change (rotation, or the browser bars collapsing
@@ -84,10 +91,14 @@ function render() {
   if (!vpw || !vph || !ctx) return;
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = "#808080";
+  ctx.fillStyle = canvasBg;
   ctx.fillRect(0, 0, vpw, vph);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
+
+  // Cross/arrow lattice under the images: visible only in the gaps between
+  // cells and in empty space, never over page content.
+  crosses.draw(ctx);
 
   const sc = state.view.scale;
   for (const im of state.images) {
