@@ -3,7 +3,7 @@
 Decoded pages are large (a 74MP page is ~220MB, more once downscaled levels are
 built); this cache bounds how many live in memory and, crucially, drops pages
 after a short idle period so RAM falls back to near-zero when nothing is being
-generated. The encoded-tile disk cache (see :mod:`cache`) handles persistence.
+generated. The encoded-tile disk cache (see :mod:`sqlite_cache`) handles persistence.
 """
 from __future__ import annotations
 

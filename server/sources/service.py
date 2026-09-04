@@ -13,7 +13,7 @@ import asyncio
 
 from ..config import Settings
 from ..errors import NotFound
-from ..tiles import cache as encoded_cache
+from ..tiles import sqlite_cache as encoded_cache
 from ..tiles import encoder
 from ..tiles.locks import KeyedLock
 from .base import SourceRegistry, TileRequest
@@ -98,5 +98,7 @@ class SourceTileService:
             data = encoder.encode_progressive_jpeg(
                 bgr, self.settings.jpeg_quality, self.settings.jpeg_progressive
             )
-            self.tiles.put(key, data)
+            # Provider levels are zoom-native: 0 = whole image on one tile,
+            # so zoom is simply ``-level`` (evicted deepest-first).
+            self.tiles.put(key, data, zoom=-level)
             return data, False
