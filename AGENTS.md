@@ -44,7 +44,7 @@ now covers the server.
   frame, flooding the server and starving tile fetches. Disabled, the OCR
   endpoints return empty results instead.
 - **Deps**: `pip install -r server/requirements.txt`. Includes fastapi, uvicorn, pydantic,
-  opencv-contrib-python-headless, numpy, pillow, diskcache, rapidocr + onnxruntime.
+  opencv-contrib-python-headless, numpy, pillow, rapidocr + onnxruntime.
 - **Docker**: `docker build -f server/Dockerfile .` (runs `python -m server.main`;
   installs the OpenCL ICD loader; NVIDIA OpenCL is
   injected at runtime with `--gpus all`, otherwise it transparently falls back to CPU).
@@ -118,8 +118,15 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
   orientation so stored pixels always match the listing dims (a portrait photo
   stored landscape is decoded portrait; tiles and OCR agree).
 - `encoder.py` — progressive (SOF2) JPEG via OpenCV.
-- `cache.py` — diskcache-backed LRU of encoded tiles, byte-limited; key includes the page
-  mtime ("version"), so re-saved pages get fresh keys and stale tiles are never served.
+- `sqlite_cache.py` — own SQLite tile store (`tiles.db` under the cache dir; WAL,
+  one connection per thread), byte-limited with a **background janitor thread** that
+  deletes over budget. Each row records `creation_time`, `access_time`, and a `zoom`
+  level (0 = whole image on one tile, inverted from the pyramid level via
+  `max_level - level`; provider tiles pass `-level`); eviction is **zoom-first,
+  access-time-second** — deepest-zoom tiles least recently accessed go first, so
+  coarse overview tiles are evicted last (no special-casing). `put()` never deletes
+  inline: it wakes the janitor, which batches deletions down to 95% of the budget.
+  Schema `user_version` mismatches **wipe and recreate** the tables — never migrate.
   Keys carry a `t/` vs `x<gen>/` prefix for real vs blurred tiles (the generation bumps
   whenever blur rendering changes, so old blur bytes are never served without a manual
   wipe); the router resolves the policy first and never crosses variants, so a real tile

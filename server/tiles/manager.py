@@ -17,7 +17,7 @@ from ..books.scanner import page_path
 from ..config import Settings
 from ..errors import BadRequest
 from . import blur as blur_util
-from . import cache as encoded_cache
+from . import sqlite_cache as encoded_cache
 from . import decoder, encoder, geometry
 from . import page_cache as decoded_cache
 from .locks import KeyedLock
@@ -103,20 +103,27 @@ class TileService:
             cached = self.tiles.get(key)
             if cached is not None:
                 return cached, True
-            data = await asyncio.to_thread(
+            data, max_level = await asyncio.to_thread(
                 self._render_tile, book, page, version, level, tx, ty, blur
             )
-            self.tiles.put(key, data)
+            # zoom inverts the tile level: the whole-image tile (level
+            # ``max_level``) is zoom 0 and is evicted last.
+            self.tiles.put(key, data, zoom=max_level - level)
             return data, False
 
     def _render_tile(
         self, book: str, page: str, version: int, level: int, tx: int, ty: int,
         blur: bool = False,
-    ) -> bytes:
+    ) -> tuple[bytes, int]:
         """Decode/build the mipmap level, crop, resample, and encode one tile.
 
         Runs on a worker thread (called via ``asyncio.to_thread``); performs no
         encoded-tile caching itself — the caller stores the result.
+
+        Returns:
+            A ``(jpeg_bytes, max_level)`` pair: the encoded tile and the page's
+            pyramid depth, so the caller can invert the level into a cache
+            zoom (``max_level - level``).
         """
         path = page_path(self.settings.archive_root, book, page)
         mip = self._get_mipmap(book, page, version, path)
@@ -148,8 +155,11 @@ class TileService:
             )
         canvas = np.zeros((self.settings.tile_size, self.settings.tile_size, 3), dtype=np.uint8)
         canvas[0 : crop.h, 0 : crop.w] = region
-        return encoder.encode_progressive_jpeg(
-            canvas, self.settings.jpeg_quality, self.settings.jpeg_progressive
+        return (
+            encoder.encode_progressive_jpeg(
+                canvas, self.settings.jpeg_quality, self.settings.jpeg_progressive
+            ),
+            mip.max_level,
         )
 
     def _get_blur_plane(self, mip: PageMipmap) -> np.ndarray:
