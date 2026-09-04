@@ -27,10 +27,12 @@ from .mipmap import PageMipmap
 class TileService:
     """Generates (and caches) encoded tiles for the tile HTTP route."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, page_cache: decoded_cache.PageCache | None = None,
+    ) -> None:
         self.settings = settings
         self.tiles = encoded_cache.TileCache(settings.cache_dir, settings.cache_bytes)
-        self.pages = decoded_cache.PageCache(
+        self.pages = page_cache or decoded_cache.PageCache(
             settings.page_cache_bytes, idle_seconds=settings.page_idle_seconds
         )
         self.locks = KeyedLock()

@@ -125,6 +125,25 @@ class ImageSource(ABC):
         """Change signature for this source's listings (ids + versions)."""
         return self.key
 
+    def tile_zoom(self, level: int) -> int | None:
+        """Cache eviction depth for a rendered tile at ``level``.
+
+        Sources whose level 0 is the whole image (fractal-style, levels run
+        ``0, -1, -2, ...``) leave this as ``None`` and the tile service stores
+        ``-level`` (0 = whole image, evicted last). A source that reuses the
+        archive-style pyramid (``0`` = 1:1 up to a positive ``max_level``)
+        overrides this with ``max_level - level`` so eviction still prefers
+        deep zoom tiles over overview tiles.
+
+        Args:
+            level: The pyramid level of the requested tile.
+
+        Returns:
+            The tile's depth from the whole-image level, or ``None`` for the
+            provider default.
+        """
+        return None
+
 
 class SourceRegistry:
     """Ordered collection of :class:`ImageSource` providers.

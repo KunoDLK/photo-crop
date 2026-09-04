@@ -34,9 +34,11 @@ from .shares.store import ShareStore
 from .sources import router as sources_router
 from .sources.base import SourceRegistry
 from .sources.fractal import FractalSource
+from .sources.mosaic import MosaicManifest, MosaicSource
 from .sources.service import SourceTileService
 from .tiles import router as tiles_router
 from .tiles.manager import TileService
+from .tiles.page_cache import PageCache
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -84,7 +86,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Book viewer tile server", version="1.0.0")
     app.state.settings = settings
-    app.state.tiles = TileService(settings)
+    # One decoded-image RAM LRU shared by every provider (archive pages and
+    # mosaic cell sources), so they compete for a single byte budget.
+    page_cache = PageCache(settings.page_cache_bytes, idle_seconds=settings.page_idle_seconds)
+    app.state.tiles = TileService(settings, page_cache)
     app.state.ocr = OCRService(settings)
     app.state.locations = LocationRegistry(settings.cache_dir / "locations.json")
     app.state.catalog = Catalog(settings.archive_root, settings.tile_size)
@@ -94,8 +99,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.region = RegionDetector(settings.default_region, settings.dev_region_header)
     app.state.policy = Policy(app.state.rights)
     # The image-source hook: registered sources own their book ids and render
-    # tiles on demand (the fractal generator is the reference implementation).
-    app.state.sources = SourceRegistry([FractalSource()])
+    # tiles on demand (the fractal generator is the reference implementation;
+    # a mosaic source joins in when its manifest is configured and built).
+    sources = [FractalSource()]
+    if settings.mosaic_manifest and settings.mosaic_manifest.is_file():
+        sources.append(
+            MosaicSource(MosaicManifest.load(settings.mosaic_manifest), page_cache=page_cache)
+        )
+    app.state.sources = SourceRegistry(sources)
     app.state.source_tiles = SourceTileService(settings, app.state.sources)
 
     register_error_handlers(app)

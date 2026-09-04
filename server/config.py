@@ -26,6 +26,9 @@ class Settings(BaseSettings):
         jpeg_progressive: Emit progressive (SOF2) JPEGs.
         opencl: Whether to attempt OpenCL-accelerated resampling.
         ocr_cache_dir: Directory backing the on-disk OCR result cache (JSON).
+        mosaic_manifest: Path to a mosaic source ``manifest.json``; when set
+            (and the file exists) a mosaic image source joins the source
+            registry and owns its book id.
         ocr_max_dim: Long-edge pixel target OCR downscales pages to before
             Tesseract; ``0`` (default) disables downscaling entirely — full-res
             OCR, slower but more accurate on small/freeform text. Scans are
@@ -84,6 +87,7 @@ class Settings(BaseSettings):
     jpeg_progressive: bool = True
     opencl: bool = True
     ocr_cache_dir: Path = Path("/archive/cache/ocr")
+    mosaic_manifest: Path | None = None
     ocr_max_dim: int = 0
     ocr_lang: str = "eng"
     ocr_psm: int = 11

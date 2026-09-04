@@ -51,6 +51,8 @@ class LocalDev:
             "CACHE_DIR": str(self.cache_dir),
             "OCR_CACHE_DIR": str(self.cache_dir / "ocr"),
             "RIGHTS_DB_PATH": str(self.cache_dir / "rights.db"),
+            # Mosaic source manifest (built by dev/mosaic_build.py).
+            "MOSAIC_MANIFEST": str(self.root / "dev" / "mosaic" / "manifest.json"),
             # Plain-http localhost: no Secure cookies, region header enabled.
             "SESSION_COOKIE_SECURE": "false",
             "DEV_REGION_HEADER": "true",
@@ -60,10 +62,11 @@ class LocalDev:
             # Owner login for testing admin + share links.
             "ARCHIVE_USERNAME": "admin",
             "ARCHIVE_PASSWORD": "devpass",
-            # Deterministic CPU rendering, small caches.
+            # Deterministic CPU rendering; cache budgets match the production
+            # container (CACHE_GB=8, PAGE_CACHE_BYTES=6 GiB).
             "OPENCL": "false",
-            "CACHE_GB": "1",
-            "PAGE_CACHE_BYTES": str(512 * 1024 * 1024),
+            "CACHE_GB": "8",
+            "PAGE_CACHE_BYTES": str(6 * 1024 * 1024 * 1024),
             # No rapidocr on the dev machine: OCR off, so the endpoints return
             # empty instead of decoding a full page and 500ing.
             "OCR_ENABLED": "false",

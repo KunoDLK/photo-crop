@@ -98,5 +98,12 @@ class SourceTileService:
             data = encoder.encode_progressive_jpeg(
                 bgr, self.settings.jpeg_quality, self.settings.jpeg_progressive
             )
-            self.tiles.put(key, data)
+            # Cache eviction depth comes from the source (fractal-style
+            # sources default to ``-level``; archive-style sources invert
+            # against their own max level) so deep zoom tiles are evicted
+            # first regardless of the level convention.
+            zoom = source.tile_zoom(level)
+            if zoom is None:
+                zoom = -level
+            self.tiles.put(key, data, zoom=zoom)
             return data, False
