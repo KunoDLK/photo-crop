@@ -36,10 +36,13 @@ class FractalSource(ImageSource):
     """
 
     key = "fractal"
-    #: Never store or reuse fractal bytes: re-render on every request. The
-    #: Cache-Control header stays the public-immutable default so browsers
-    #: and edge caches may still hold the identical bytes.
-    cacheable = False
+    #: Store and reuse rendered tiles in the shared SQLite tile cache. Renders
+    #: are pure functions of the tile request, so the identical bytes may be
+    #: served from disk on repeat visits (deep zoom levels are expensive to
+    #: compute). Bump :data:`VERSION` to invalidate every cached fractal tile,
+    #: and keep ``params`` at their defaults per instance — the cache key does
+    #: not carry the parameter set.
+    cacheable = True
     BOOK_ID = "fractals"
     PAGE_ID = "mandelbrot"
     WIDTH = 256
