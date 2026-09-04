@@ -15,10 +15,13 @@ batches deletions down to a low-water mark. SQLite runs in WAL mode with one
 connection per thread, so readers never block writers and the janitor shares
 the file with every request thread.
 
-Schema versioning is wipe-based, never migratory: opening a database whose
-``user_version`` does not match :data:`SCHEMA_VERSION` drops both tables and
-recreates them (a schema change or a half-written store costs the cache, never
-correctness). Old diskcache ``cache.db`` files are simply not read.
+Schema versioning is wipe-based, never migratory. The store reuses the
+``cache.db`` filename the old diskcache store used, so on startup a file whose
+``user_version`` does not match :data:`SCHEMA_VERSION` is deleted whole (WAL
+sidecars included) and recreated from scratch — a leftover diskcache-format
+cache or any stale schema is discarded automatically on the first open of a
+new build, reclaiming its space (a schema change or a half-written store costs
+the cache, never correctness).
 """
 from __future__ import annotations
 
@@ -32,8 +35,13 @@ from pathlib import Path
 BLUR_GENERATION = 3
 
 #: Schema version of the ``tiles``/``meta`` tables. Anything else on open
-#: means the database is wiped and recreated (see module docstring).
+#: means the database file is deleted and recreated (see module docstring).
 SCHEMA_VERSION = 1
+
+#: Database filename inside the cache directory. Reuses the name the old
+#: diskcache store used, so a leftover file is caught by the schema check
+#: and replaced on first open instead of lingering on disk.
+DB_FILENAME = "cache.db"
 
 #: Janitor deletes this many rows per transaction (bounds write-lock hold).
 EVICT_BATCH = 200
@@ -100,12 +108,32 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 def _init_schema(path: Path) -> None:
-    """Create or wipe-and-recreate the tile tables to match the schema version.
+    """Ensure ``path`` holds the current tile schema, wiping any other file.
 
-    Runs once per database file under an init lock. A missing or stale
-    ``user_version`` drops both tables and rebuilds them from scratch; the
-    file-level pragmas (``page_size``, ``auto_vacuum``) are asserted first,
-    harmlessly ignored when the file already carries them.
+    Runs once per database file under an init lock. A file whose
+    ``user_version`` does not match :data:`SCHEMA_VERSION` — a leftover
+    diskcache-format cache, a stale schema, or any foreign content — is
+    deleted whole (including its ``-wal``/``-shm`` sidecars) and recreated
+    from scratch, so a filename reuse never leaves foreign bytes behind.
+
+    Args:
+        path: Path to the SQLite database file.
+    """
+    if not path.exists():
+        _create_schema(path)
+        return
+    con = _connect(path)
+    try:
+        (version,) = con.execute("PRAGMA user_version").fetchone()
+    finally:
+        con.close()
+    if version != SCHEMA_VERSION:
+        _remove_database(path)
+        _create_schema(path)
+
+
+def _create_schema(path: Path) -> None:
+    """Create a fresh tile database at ``path`` (asserting file-level pragmas).
 
     Args:
         path: Path to the SQLite database file.
@@ -114,13 +142,22 @@ def _init_schema(path: Path) -> None:
     try:
         con.execute("PRAGMA page_size=4096")
         con.execute("PRAGMA auto_vacuum=FULL")
-        (version,) = con.execute("PRAGMA user_version").fetchone()
-        if version != SCHEMA_VERSION:
-            con.execute("DROP TABLE IF EXISTS tiles")
-            con.execute("DROP TABLE IF EXISTS meta")
-            con.executescript(_SCHEMA_SQL)
+        con.executescript(_SCHEMA_SQL)
     finally:
         con.close()
+
+
+def _remove_database(path: Path) -> None:
+    """Delete a database file and its WAL sidecars (missing files are fine).
+
+    Args:
+        path: Path to the SQLite database file.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            Path(f"{path}{suffix}").unlink()
+        except FileNotFoundError:
+            pass
 
 
 class _SharedCache:
@@ -267,11 +304,11 @@ class TileCache:
         """Open (creating or wiping as needed) the tile database.
 
         Args:
-            cache_dir: Directory for the tile database (``tiles.db`` inside).
+            cache_dir: Directory for the tile database (``cache.db`` inside).
             size_limit_bytes: Byte budget for stored tile data; eviction holds
                 the cache at 95% of this once the janitor catches up.
         """
-        path = cache_dir / "tiles.db"
+        path = cache_dir / DB_FILENAME
         cache_dir.mkdir(parents=True, exist_ok=True)
         key = str(path.resolve())
         with _registry_guard:

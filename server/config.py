@@ -76,7 +76,7 @@ class Settings(BaseSettings):
 
     archive_root: Path = Path("/archive/Library")
     cache_dir: Path = Path("/archive/cache")
-    cache_gb: float = 8.0
+    cache_gb: float = 4.0
     page_cache_bytes: int = 6 * 1024 * 1024 * 1024
     page_idle_seconds: float = 10.0
     tile_size: int = 256

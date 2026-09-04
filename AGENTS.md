@@ -118,7 +118,7 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
   orientation so stored pixels always match the listing dims (a portrait photo
   stored landscape is decoded portrait; tiles and OCR agree).
 - `encoder.py` — progressive (SOF2) JPEG via OpenCV.
-- `sqlite_cache.py` — own SQLite tile store (`tiles.db` under the cache dir; WAL,
+- `sqlite_cache.py` — own SQLite tile store (`cache.db` under the cache dir; WAL,
   one connection per thread), byte-limited with a **background janitor thread** that
   deletes over budget. Each row records `creation_time`, `access_time`, and a `zoom`
   level (0 = whole image on one tile, inverted from the pyramid level via
@@ -126,7 +126,10 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
   access-time-second** — deepest-zoom tiles least recently accessed go first, so
   coarse overview tiles are evicted last (no special-casing). `put()` never deletes
   inline: it wakes the janitor, which batches deletions down to 95% of the budget.
-  Schema `user_version` mismatches **wipe and recreate** the tables — never migrate.
+  The filename reuses the old diskcache store's `cache.db`, and a startup schema
+  check (`user_version`) **deletes the whole file and recreates it** on any
+  mismatch — a leftover diskcache-format cache is wiped automatically on first
+  start of a new build, never migrated.
   Keys carry a `t/` vs `x<gen>/` prefix for real vs blurred tiles (the generation bumps
   whenever blur rendering changes, so old blur bytes are never served without a manual
   wipe); the router resolves the policy first and never crosses variants, so a real tile
