@@ -3,11 +3,24 @@
 Replaces the ``diskcache``-backed LRU with an own SQLite store. Tiles are keyed
 exactly as before (``t/...`` real, ``x<gen>/...`` blurred, ``p/<source>/...``
 provider), but each row records the tile's ``zoom`` level (0 = the whole image
-on one tile; larger = deeper/finer) and its last access time. Eviction is
-**zoom-first, access-time-second**: the janitor deletes the least-recently-
-accessed tiles of the deepest zoom levels before touching shallower ones, so
-coarse overview tiles are the last to go and a freshly-written tile can never
-starve the client's overview render.
+on one tile; larger = deeper/finer), its last access time, and its parsed
+numeric coordinates. Eviction is **zoom-first, access-time-second within age
+tiers**: the janitor deletes the least-recently-accessed tiles of the deepest
+zoom levels before touching shallower ones, so coarse overview tiles are the
+last to go and a freshly-written tile can never starve the client's overview
+render.
+
+Schema v2 (wafer-scale mosaics): every tile row also carries its ``ns``
+(``t`` / ``x<gen>`` / ``p``), ``book``, ``page``, ``version``, ``level``,
+``tx``, ``ty`` as indexed columns so coverage queries are range lookups, and a
+second table stores **proxy chains** — the per-cell downsampled plane pyramid
+the mosaic source renders coarse-band tiles from (see ``docs/wafer-mosaic-scaling.md``).
+One chain per cell holds one lossless PNG per proxy-band level plus the pure
+manifest geometry of its dependent tile range, so a whole-canvas tile decodes
+N tiny planes instead of N full 300 MB sources. Byte accounting spans both
+tables through triggers; eviction treats a chain as its eviction unit (whole
+chains are deleted, never single planes) and drops redundant chains (every
+dependent tile cached) before load-bearing ones, within each age tier.
 
 Deletion never runs on the request path. ``put()`` inserts and, when the cache
 is over its byte budget, wakes a per-database background janitor thread that
@@ -34,9 +47,9 @@ from pathlib import Path
 #: re-render never serves the old bytes from the disk cache (no manual wipe).
 BLUR_GENERATION = 3
 
-#: Schema version of the ``tiles``/``meta`` tables. Anything else on open
-#: means the database file is deleted and recreated (see module docstring).
-SCHEMA_VERSION = 1
+#: Schema version of the ``tiles``/``proxies``/``meta`` tables. Anything else
+#: on open means the database file is deleted and recreated (module docstring).
+SCHEMA_VERSION = 2
 
 #: Database filename inside the cache directory. Reuses the name the old
 #: diskcache store used, so a leftover file is caught by the schema check
@@ -45,6 +58,9 @@ DB_FILENAME = "cache.db"
 
 #: Janitor deletes this many rows per transaction (bounds write-lock hold).
 EVICT_BATCH = 200
+
+#: Proxy chains evaluated per janitor batch (each chain delete is one txn).
+EVICT_CHAIN_BATCH = 16
 
 #: Seconds a tile's ``access_time`` may age before a cache hit rewrites it
 #: (throttles the per-read write so hits stay cheap).
@@ -66,9 +82,17 @@ CREATE TABLE tiles (
     value         BLOB NOT NULL,
     creation_time REAL NOT NULL,
     access_time   REAL NOT NULL,
-    zoom          INTEGER NOT NULL
+    zoom          INTEGER NOT NULL,
+    ns            TEXT NOT NULL DEFAULT '',
+    book          TEXT NOT NULL DEFAULT '',
+    page          TEXT NOT NULL DEFAULT '',
+    version       INTEGER NOT NULL DEFAULT 0,
+    level         INTEGER NOT NULL DEFAULT 0,
+    tx            INTEGER NOT NULL DEFAULT 0,
+    ty            INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX idx_tiles_evict ON tiles (zoom DESC, access_time ASC);
+CREATE INDEX idx_tiles_evict  ON tiles (zoom DESC, access_time ASC);
+CREATE INDEX idx_tiles_family ON tiles (ns, book, page, version, level);
 CREATE TRIGGER tiles_bytes_insert AFTER INSERT ON tiles BEGIN
     UPDATE meta SET v = v + length(NEW.value) WHERE k = 'bytes';
     UPDATE meta SET v = v + 1 WHERE k = 'rows';
@@ -78,6 +102,37 @@ CREATE TRIGGER tiles_bytes_delete AFTER DELETE ON tiles BEGIN
     UPDATE meta SET v = v - 1 WHERE k = 'rows';
 END;
 CREATE TRIGGER tiles_bytes_update AFTER UPDATE OF value ON tiles BEGIN
+    UPDATE meta SET v = v + length(NEW.value) - length(OLD.value) WHERE k = 'bytes';
+END;
+CREATE TABLE proxies (
+    key           TEXT PRIMARY KEY,
+    chain_id      TEXT NOT NULL,
+    ns            TEXT NOT NULL,
+    book          TEXT NOT NULL,
+    page          TEXT NOT NULL,
+    version       INTEGER NOT NULL,
+    level         INTEGER NOT NULL,
+    width         INTEGER NOT NULL,
+    value         BLOB NOT NULL,
+    tx0           INTEGER NOT NULL,
+    tx1           INTEGER NOT NULL,
+    ty0           INTEGER NOT NULL,
+    ty1           INTEGER NOT NULL,
+    expected      INTEGER NOT NULL,
+    creation_time REAL NOT NULL,
+    access_time   REAL NOT NULL
+);
+CREATE INDEX idx_proxies_chain ON proxies (chain_id);
+CREATE INDEX idx_proxies_evict ON proxies (access_time);
+CREATE TRIGGER proxies_bytes_insert AFTER INSERT ON proxies BEGIN
+    UPDATE meta SET v = v + length(NEW.value) WHERE k = 'bytes';
+    UPDATE meta SET v = v + 1 WHERE k = 'rows';
+END;
+CREATE TRIGGER proxies_bytes_delete AFTER DELETE ON proxies BEGIN
+    UPDATE meta SET v = v - length(OLD.value) WHERE k = 'bytes';
+    UPDATE meta SET v = v - 1 WHERE k = 'rows';
+END;
+CREATE TRIGGER proxies_bytes_update AFTER UPDATE OF value ON proxies BEGIN
     UPDATE meta SET v = v + length(NEW.value) - length(OLD.value) WHERE k = 'bytes';
 END;
 PRAGMA user_version = %d;
@@ -160,13 +215,53 @@ def _remove_database(path: Path) -> None:
             pass
 
 
+def parse_key(key: str) -> tuple[str, str, str, int, int, int, int]:
+    """Split a tile key into its numeric-coordinate components.
+
+    Keys are ``{ns}/{book}/{page}/{version}/{level}/{tx}/{ty}`` where ``ns`` is
+    ``t`` (real archive tiles), ``x<gen>`` (blurred archive tiles), or ``p``
+    (provider tiles, whose keys carry an extra source slug between ``ns`` and
+    ``book``). Book/page ids never contain ``/``, so the split is positional.
+    A key that does not match either shape yields ``('', '', '', 0, 0, 0, 0)``
+    — such rows keep full eviction behaviour but never participate in proxy
+    redundancy queries (which only ever match well-formed families).
+
+    Args:
+        key: A tile key as produced by :meth:`TileCache.key` or the provider
+            tile service.
+
+    Returns:
+        A ``(ns, book, page, version, level, tx, ty)`` tuple.
+    """
+    parts = key.split("/")
+    try:
+        if len(parts) == 7:
+            ns, book, page = parts[0], parts[1], parts[2]
+            version, level, tx, ty = (int(p) for p in parts[3:7])
+        elif len(parts) == 8 and parts[0] == "p":
+            # Provider keys: p/<source>/<book>/<page>/<version>/<level>/<tx>/<ty>.
+            ns = "p"
+            book, page = parts[2], parts[3]
+            version, level, tx, ty = (int(p) for p in parts[4:8])
+        else:
+            return "", "", "", 0, 0, 0, 0
+    except ValueError:
+        return "", "", "", 0, 0, 0, 0
+    return ns, book, page, version, level, tx, ty
+
+
 class _SharedCache:
     """Schema init, budget, and the janitor thread for one database file."""
 
-    def __init__(self, path: Path, size_limit_bytes: int) -> None:
+    def __init__(
+        self, path: Path, size_limit_bytes: int,
+        evict_young_seconds: float = 600.0, evict_old_seconds: float = 604800.0,
+    ) -> None:
         self.path = path
         self.size_limit = size_limit_bytes
         self.low_water = max(1, int(size_limit_bytes * 0.95))
+        self.evict_young = evict_young_seconds
+        self.evict_old = max(evict_old_seconds, evict_young_seconds + 1.0)
         self.refs = 0
         self._init_lock = threading.Lock()
         self._stop = threading.Event()
@@ -196,13 +291,17 @@ class _SharedCache:
             thread.join(timeout=2.0)
 
     def cull(self, con: sqlite3.Connection) -> int:
-        """Delete over-budget tiles until the cache is at or under the low-water mark.
+        """Delete over-budget rows until the cache is at/below the low-water mark.
 
-        Rows are removed deepest-zoom first, least-recently-accessed first
-        within a zoom level; zoom-0 (whole-image) tiles sort last and are only
-        deleted once every deeper tile is gone. Each batch's size is estimated
-        from the average row size so the loop stops at the low-water mark
-        instead of overshooting to an empty cache, and each batch is its own
+        Candidates are consumed in the design's total order (E2): within each
+        age tier — stale (older than ``evict_old``), cold (older than
+        ``evict_young``), fresh (everything else) — every tile goes before
+        every proxy chain, so a tile that was evicted can be regenerated from
+        a surviving chain while a chain that was evicted forces a full-res
+        decode to come back. Tiles sort deepest-zoom first, least-recently
+        accessed first; chains delete whole (never single planes) with
+        redundant chains first (every dependent tile cached — pure redundancy)
+        and load-bearing chains last within their tier. Each batch is its own
         commit so concurrent writers slip in between batches.
 
         Args:
@@ -212,43 +311,222 @@ class _SharedCache:
             The number of rows deleted.
         """
         removed = 0
+        # Age tiers over (tiles, chains): each entry is (kind, lo, hi) age bounds.
+        stages = (
+            ("tiles", self.evict_old, None),
+            ("chains", self.evict_old, None),
+            ("tiles", self.evict_young, self.evict_old),
+            ("chains", self.evict_young, self.evict_old),
+            ("tiles", None, self.evict_young),
+            ("chains", None, self.evict_young),
+        )
         while not self._stop.is_set():
-            volume = self._volume(con)
-            if volume <= self.low_water:
+            if self._volume(con) <= self.low_water:
                 break
-            rows = self._rows(con)
-            avg = volume / rows if rows else 0.0
-            # How many rows must go to reach the low-water mark (capped at one
-            # batch); the loop re-estimates after each commit.
-            needed = int((volume - self.low_water) / avg) + 1 if avg > 0 else 1
-            limit = max(1, min(EVICT_BATCH, needed))
-            cur = con.execute(
-                "DELETE FROM tiles WHERE rowid IN ("
-                " SELECT rowid FROM tiles"
-                " ORDER BY zoom DESC, access_time ASC, rowid ASC"
-                " LIMIT ?)",
-                (limit,),
-            )
+            progressed = False
+            for kind, lo, hi in stages:
+                while not self._stop.is_set() and self._volume(con) > self.low_water:
+                    n = self._cull_batch(con, kind, lo, hi, time.time())
+                    if n == 0:
+                        break
+                    removed += n
+                    progressed = True
+            if not progressed:
+                break
+        return removed
+
+    def _cull_batch(
+        self, con: sqlite3.Connection, kind: str,
+        age_lo: float | None, age_hi: float | None, now: float,
+    ) -> int:
+        """Delete one batch of the given kind within the age band.
+
+        Args:
+            con: Connection to delete on.
+            kind: ``"tiles"`` or ``"chains"``.
+            age_lo: Exclude rows whose age is below this (None = no floor).
+            age_hi: Exclude rows whose age is at or above this (None = no cap).
+            now: Current time, shared across a cull pass.
+
+        Returns:
+            The number of rows deleted (0 when the band is exhausted).
+        """
+        if kind == "tiles":
+            return self._cull_tile_batch(con, age_lo, age_hi, now)
+        return self._cull_chain_batch(con, age_lo, age_hi, now)
+
+    def _age_sql(self, age_lo: float | None, age_hi: float | None, now: float) -> tuple[str, list]:
+        """Build the SQL age-band clause for the current tier.
+
+        Args:
+            age_lo: Minimum row age (exclusive), or None.
+            age_hi: Maximum row age (inclusive), or None.
+            now: Current time.
+
+        Returns:
+            A ``(clause, params)`` pair appended to a WHERE expression.
+        """
+        clause = f"({now} - access_time)"
+        conds: list[str] = []
+        params: list[float] = []
+        if age_lo is not None:
+            conds.append(f"{clause} > ?")
+            params.append(age_lo)
+        if age_hi is not None:
+            conds.append(f"{clause} <= ?")
+            params.append(age_hi)
+        return " AND ".join(conds) or "1", params
+
+    def _cull_tile_batch(
+        self, con: sqlite3.Connection, age_lo: float | None, age_hi: float | None, now: float,
+    ) -> int:
+        """Delete up to one batch of over-budget tiles in this age tier.
+
+        Args:
+            con: Connection to delete on.
+            age_lo: Minimum row age (exclusive), or None.
+            age_hi: Maximum row age (inclusive), or None.
+            now: Current time.
+
+        Returns:
+            The number of rows deleted (0 when the tier is exhausted).
+        """
+        volume = self._volume(con)
+        if volume <= self.low_water:
+            return 0
+        rows = self._rows(con)
+        avg = volume / rows if rows else 0.0
+        needed = int((volume - self.low_water) / avg) + 1 if avg > 0 else 1
+        limit = max(1, min(EVICT_BATCH, needed))
+        clause, params = self._age_sql(age_lo, age_hi, now)
+        cur = con.execute(
+            "DELETE FROM tiles WHERE rowid IN ("
+            f" SELECT rowid FROM tiles WHERE {clause}"
+            " ORDER BY zoom DESC, access_time ASC, rowid ASC"
+            " LIMIT ?)",
+            (*params, limit),
+        )
+        return cur.rowcount
+
+    def _chain_candidates(
+        self, con: sqlite3.Connection, age_lo: float | None, age_hi: float | None, now: float,
+        limit: int,
+    ) -> list[str]:
+        """Chain ids in an age tier, least-recently accessed first.
+
+        A chain's age is its most recently refreshed plane row's age (all rows
+        of a chain are written and touched together).
+
+        Args:
+            con: Connection to read through.
+            age_lo: Minimum chain age (exclusive), or None.
+            age_hi: Maximum chain age (inclusive), or None.
+            now: Current time.
+            limit: Maximum number of candidate chain ids.
+
+        Returns:
+            Up to ``limit`` chain ids ordered by access time.
+        """
+        conds: list[str] = []
+        params: list[float] = []
+        if age_lo is not None:
+            conds.append("(MAX(access_time)) < ?")
+            params.append(now - age_lo)
+        if age_hi is not None:
+            conds.append("(MAX(access_time)) >= ?")
+            params.append(now - age_hi)
+        having = " AND ".join(conds) if conds else "1"
+        rows = con.execute(
+            "SELECT chain_id FROM proxies GROUP BY chain_id"
+            f" HAVING {having} ORDER BY MAX(access_time) ASC, chain_id ASC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def _chain_redundant(self, con: sqlite3.Connection, chain_id: str) -> bool:
+        """True when every plane of the chain has all its dependent tiles cached.
+
+        The dependent tile set of a plane is the pure manifest geometry stored
+        on its row (G4): the level-``L`` grid tiles whose rectangle intersects
+        the cell. When every such tile row exists the chain is pure redundancy
+        (E5) — dropping it costs nothing until a tile is evicted; if any
+        dependent tile is missing the chain is load-bearing and its loss would
+        force a full-res decode, so it is evicted last within its tier.
+
+        Args:
+            con: Connection to read through.
+            chain_id: The chain to test.
+
+        Returns:
+            Whether every dependent tile of every plane is cached.
+        """
+        planes = con.execute(
+            "SELECT ns, book, page, version, level, tx0, tx1, ty0, ty1, expected"
+            " FROM proxies WHERE chain_id = ?",
+            (chain_id,),
+        ).fetchall()
+        if not planes:
+            return True  # nothing stored: nothing to protect (handled as absent)
+        for ns, book, page, version, level, tx0, tx1, ty0, ty1, expected in planes:
+            (count,) = con.execute(
+                "SELECT COUNT(*) FROM tiles WHERE ns = ? AND book = ? AND page = ?"
+                " AND version = ? AND level = ? AND tx BETWEEN ? AND ? AND ty BETWEEN ? AND ?",
+                (ns, book, page, version, level, tx0, tx1, ty0, ty1),
+            ).fetchone()
+            if count != expected:
+                return False
+        return True
+
+    def _cull_chain_batch(
+        self, con: sqlite3.Connection, age_lo: float | None, age_hi: float | None, now: float,
+    ) -> int:
+        """Delete whole chains in this age tier, redundant ones first.
+
+        Args:
+            con: Connection to delete on.
+            age_lo: Minimum chain age (exclusive), or None.
+            age_hi: Maximum chain age (inclusive), or None.
+            now: Current time.
+
+        Returns:
+            The number of proxy rows deleted (0 when the tier is exhausted).
+        """
+        candidates = self._chain_candidates(con, age_lo, age_hi, now, EVICT_CHAIN_BATCH)
+        if not candidates:
+            return 0
+        # E4: redundant chains (all dependents cached) are pure redundancy and
+        # go first; load-bearing chains survive until the tier is exhausted.
+        redundant = [c for c in candidates if self._chain_redundant(con, c)]
+        load_bearing = [c for c in candidates if c not in redundant]
+        removed = 0
+        for chain_id in (*redundant, *load_bearing):
+            if self._volume(con) <= self.low_water:
+                break
+            cur = con.execute("DELETE FROM proxies WHERE chain_id = ?", (chain_id,))
             if cur.rowcount == 0:
-                break
+                continue
             removed += cur.rowcount
+            if removed >= EVICT_BATCH:
+                break
         return removed
 
     @staticmethod
     def _volume(con: sqlite3.Connection) -> int:
-        """Total live tile bytes, from the maintained counter (self-healing).
+        """Total live tile+proxy bytes, from the maintained counter (self-healing).
 
         Args:
             con: Connection to read through.
 
         Returns:
-            ``SUM(length(value))`` over all rows.
+            ``SUM(length(value))`` over both tables.
         """
         row = con.execute("SELECT v FROM meta WHERE k = 'bytes'").fetchone()
         if row is not None:
             return int(row[0])
         total = int(con.execute(
             "SELECT COALESCE(SUM(length(value)), 0) FROM tiles"
+        ).fetchone()[0]) + int(con.execute(
+            "SELECT COALESCE(SUM(length(value)), 0) FROM proxies"
         ).fetchone()[0])
         con.execute(
             "INSERT INTO meta (k, v) VALUES ('bytes', ?)"
@@ -259,18 +537,20 @@ class _SharedCache:
 
     @staticmethod
     def _rows(con: sqlite3.Connection) -> int:
-        """Live tile count, from the maintained counter (self-healing).
+        """Live row count (tiles + proxy planes), from the maintained counter.
 
         Args:
             con: Connection to read through.
 
         Returns:
-            The number of rows in ``tiles``.
+            The number of rows in both tables.
         """
         row = con.execute("SELECT v FROM meta WHERE k = 'rows'").fetchone()
         if row is not None:
             return int(row[0])
-        total = int(con.execute("SELECT COUNT(*) FROM tiles").fetchone()[0])
+        total = int(con.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]) + int(
+            con.execute("SELECT COUNT(*) FROM proxies").fetchone()[0]
+        )
         con.execute(
             "INSERT INTO meta (k, v) VALUES ('rows', ?)"
             " ON CONFLICT(k) DO UPDATE SET v = excluded.v",
@@ -291,22 +571,30 @@ class _SharedCache:
 
 
 class TileCache:
-    """SQLite tile store with a shared background janitor.
+    """SQLite tile + proxy-chain store with a shared background janitor.
 
-    Identical public surface to the diskcache-backed cache it replaces
-    (:meth:`key`/:meth:`get`/:meth:`put`/:meth:`contains`), plus a mandatory
-    ``zoom`` on :meth:`put` so every row carries its eviction priority. All
-    instances pointing at the same database file share one schema and one
-    janitor thread.
+    Identical public surface to the cache it replaces (:meth:`key`/:meth:`get`/
+    :meth:`put`/:meth:`contains`) plus a mandatory ``zoom`` on :meth:`put` and
+    the proxy-chain API (:meth:`put_chain`/:meth:`get_chain`/:meth:`touch_chain`/
+    :meth:`delete_chain`). All instances pointing at the same database file
+    share one schema and one janitor thread.
     """
 
-    def __init__(self, cache_dir: Path, size_limit_bytes: int) -> None:
+    def __init__(
+        self, cache_dir: Path, size_limit_bytes: int,
+        evict_young_seconds: float = 600.0, evict_old_seconds: float = 604800.0,
+    ) -> None:
         """Open (creating or wiping as needed) the tile database.
 
         Args:
             cache_dir: Directory for the tile database (``cache.db`` inside).
-            size_limit_bytes: Byte budget for stored tile data; eviction holds
-                the cache at 95% of this once the janitor catches up.
+            size_limit_bytes: Byte budget for stored tile + proxy data;
+                eviction holds the cache at 95% of this once the janitor
+                catches up.
+            evict_young_seconds: Age at which a row leaves the fresh tier
+                (default 600 s).
+            evict_old_seconds: Age at which a row enters the stale tier
+                (default 7 days).
         """
         path = cache_dir / DB_FILENAME
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -314,7 +602,11 @@ class TileCache:
         with _registry_guard:
             shared = _registry.get(key)
             if shared is None:
-                shared = _SharedCache(path, size_limit_bytes)
+                shared = _SharedCache(
+                    path, size_limit_bytes,
+                    evict_young_seconds=evict_young_seconds,
+                    evict_old_seconds=evict_old_seconds,
+                )
                 _registry[key] = shared
             shared.refs += 1
         self._path = path
@@ -357,13 +649,20 @@ class TileCache:
 
     @property
     def size_bytes(self) -> int:
-        """Live tile data bytes (the number the budget is enforced against)."""
+        """Live tile + proxy data bytes (the number the budget is enforced against)."""
         return self._shared._volume(self._conn())  # noqa: SLF001 — shared by design
 
     @property
     def row_count(self) -> int:
-        """Number of cached tiles."""
+        """Number of cached tiles (proxy planes are counted separately)."""
         return int(self._conn().execute("SELECT COUNT(*) FROM tiles").fetchone()[0])
+
+    @property
+    def chain_count(self) -> int:
+        """Number of cached proxy chains."""
+        return int(
+            self._conn().execute("SELECT COUNT(DISTINCT chain_id) FROM proxies").fetchone()[0]
+        )
 
     def get(self, key: str) -> bytes | None:
         """Return cached tile bytes, or ``None`` on a miss.
@@ -395,7 +694,8 @@ class TileCache:
         Inserting over the budget never deletes inline: the janitor thread
         reclaims in the background, so tile rendering is not slowed by cache
         maintenance. Re-putting an existing key replaces it in place (byte
-        accounting netted by trigger).
+        accounting netted by trigger). The row's numeric coordinates are
+        parsed from the key so coverage/redundancy queries stay range lookups.
 
         Args:
             key: Cache key produced by :meth:`key`.
@@ -406,16 +706,22 @@ class TileCache:
                 ``-level`` for providers whose level 0 is the whole image.
         """
         now = time.time()
+        ns, book, page, version, level, tx, ty = parse_key(key)
         con = self._conn()
         con.execute(
-            "INSERT INTO tiles (key, value, creation_time, access_time, zoom)"
-            " VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO tiles (key, value, creation_time, access_time, zoom,"
+            " ns, book, page, version, level, tx, ty)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(key) DO UPDATE SET"
             " value = excluded.value,"
             " creation_time = excluded.creation_time,"
             " access_time = excluded.access_time,"
-            " zoom = excluded.zoom",
-            (key, sqlite3.Binary(data), now, now, zoom),
+            " zoom = excluded.zoom,"
+            " ns = excluded.ns, book = excluded.book, page = excluded.page,"
+            " version = excluded.version, level = excluded.level,"
+            " tx = excluded.tx, ty = excluded.ty",
+            (key, sqlite3.Binary(data), now, now, zoom,
+             ns, book, page, version, level, tx, ty),
         )
         if self._shared._volume(con) > self._shared.size_limit:  # noqa: SLF001
             self._shared.wake()
@@ -428,6 +734,107 @@ class TileCache:
         """
         row = self._conn().execute("SELECT 1 FROM tiles WHERE key = ?", (key,)).fetchone()
         return row is not None
+
+    def put_chain(
+        self, chain_id: str, ns: str, book: str, page: str, version: int,
+        planes: list[tuple[int, int, bytes, int, int, int, int, int]],
+    ) -> None:
+        """Store (or atomically replace) one cell's whole proxy chain.
+
+        One transaction deletes any previous rows of the chain and inserts
+        every plane, so a rebuild is all-or-nothing (B6): a partial chain
+        found at read time is treated as absent. Each plane row carries the
+        pure manifest geometry of its dependent tile range (G4) so eviction
+        can test redundancy without geometry or key parsing.
+
+        Args:
+            chain_id: ``proxy/<ns>/<book>/<page>/<version>/<cell>``.
+            ns: Variant namespace, ``p`` for provider tiles.
+            book: Book id of the page the planes feed.
+            page: Page id of the page the planes feed.
+            version: Page content version.
+            planes: One ``(level, width, png_bytes, tx0, tx1, ty0, ty1,
+                expected)`` tuple per proxy-band level.
+        """
+        now = time.time()
+        con = self._conn()
+        con.execute("BEGIN")
+        try:
+            con.execute("DELETE FROM proxies WHERE chain_id = ?", (chain_id,))
+            con.executemany(
+                "INSERT INTO proxies (key, chain_id, ns, book, page, version,"
+                " level, width, value, tx0, tx1, ty0, ty1, expected,"
+                " creation_time, access_time)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (f"{chain_id}/{level}", chain_id, ns, book, page, version,
+                     level, width, sqlite3.Binary(png),
+                     tx0, tx1, ty0, ty1, expected, now, now)
+                    for level, width, png, tx0, tx1, ty0, ty1, expected in planes
+                ],
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        if self._shared._volume(con) > self._shared.size_limit:  # noqa: SLF001
+            self._shared.wake()
+
+    def get_chain(self, chain_id: str) -> dict[int, tuple[int, bytes]] | None:
+        """Return the chain's planes as ``{level: (width, png_bytes)}``.
+
+        Reads never refresh the chain's ``access_time`` (E6): only chain
+        builds and tile generations do, so an idle chain ages through the
+        eviction tiers exactly when the cache needs room.
+
+        Args:
+            chain_id: The chain to read.
+
+        Returns:
+            A level-keyed map of plane rows, or ``None`` when the chain has no
+            rows at all. A partial chain (missing band levels) is the caller's
+            signal to rebuild.
+        """
+        rows = self._conn().execute(
+            "SELECT level, width, value FROM proxies WHERE chain_id = ?", (chain_id,)
+        ).fetchall()
+        if not rows:
+            return None
+        return {level: (width, value) for level, width, value in rows}
+
+    def touch_chain(self, chain_id: str) -> None:
+        """Refresh a chain's access time after a tile generation used its planes.
+
+        Throttled like tile hits so a burst of tile generations does not write
+        once per tile; a chain that stops being generated ages into the stale
+        tier on schedule (E6b).
+
+        Args:
+            chain_id: The chain that served a generated tile.
+        """
+        con = self._conn()
+        row = con.execute(
+            "SELECT MAX(access_time) FROM proxies WHERE chain_id = ?", (chain_id,)
+        ).fetchone()
+        if row is None or row[0] is None:
+            return
+        now = time.time()
+        if now - row[0] > ACCESS_REFRESH_SECONDS:
+            con.execute(
+                "UPDATE proxies SET access_time = ? WHERE chain_id = ?", (now, chain_id)
+            )
+
+    def delete_chain(self, chain_id: str) -> int:
+        """Delete every plane of a chain (the chain is the eviction unit).
+
+        Args:
+            chain_id: The chain to delete.
+
+        Returns:
+            The number of proxy rows deleted.
+        """
+        cur = self._conn().execute("DELETE FROM proxies WHERE chain_id = ?", (chain_id,))
+        return cur.rowcount
 
     def cull(self) -> int:
         """Run an eviction pass now (janitor also does this in the background).

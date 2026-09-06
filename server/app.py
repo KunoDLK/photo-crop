@@ -6,6 +6,8 @@ static viewer, and runs startup/shutdown lifecycle hooks.
 """
 from __future__ import annotations
 
+import logging
+import threading
 from pathlib import Path
 from stat import S_ISREG
 
@@ -37,6 +39,7 @@ from .sources.fractal import FractalSource
 from .sources.mosaic import MosaicSource
 from .sources.service import SourceTileService
 from .tiles import router as tiles_router
+from .tiles import sqlite_cache
 from .tiles.manager import TileService
 from .tiles.page_cache import PageCache
 
@@ -83,13 +86,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         A fully wired FastAPI app ready for uvicorn.
     """
     settings = settings or Settings()
+    _configure_mosaic_logging()
 
     app = FastAPI(title="Book viewer tile server", version="1.0.0")
     app.state.settings = settings
     # One decoded-image RAM LRU shared by every provider (archive pages and
-    # mosaic cell sources), so they compete for a single byte budget.
+    # mosaic cell sources), so they compete for a single byte budget. The one
+    # SQLite tile store (tiles + proxy chains, one janitor) is shared by the
+    # archive tile service, the provider tile service, and every mosaic source.
     page_cache = PageCache(settings.page_cache_bytes, idle_seconds=settings.page_idle_seconds)
-    app.state.tiles = TileService(settings, page_cache)
+    tile_store = sqlite_cache.TileCache(
+        settings.cache_dir, settings.cache_bytes,
+        evict_young_seconds=settings.evict_young_seconds,
+        evict_old_seconds=settings.evict_old_seconds,
+    )
+    app.state.tiles = TileService(settings, page_cache, store=tile_store)
     app.state.ocr = OCRService(settings)
     app.state.locations = LocationRegistry(settings.cache_dir / "locations.json")
     app.state.catalog = Catalog(settings.archive_root, settings.tile_size)
@@ -100,12 +111,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.policy = Policy(app.state.rights)
     # The image-source hook: registered sources own their book ids and render
     # tiles on demand (the fractal generator is the reference implementation;
-    # a mosaic source joins in when its manifest is configured and built).
+    # every configured mosaic manifest joins in as its own book).
     sources = [FractalSource()]
-    if settings.mosaic_manifest and settings.mosaic_manifest.is_file():
-        sources.append(MosaicSource(settings.mosaic_manifest, page_cache=page_cache))
+    manifest_paths = list(settings.mosaic_manifests)
+    if not manifest_paths and settings.mosaic_manifest:
+        manifest_paths = [settings.mosaic_manifest]
+    for manifest_path in manifest_paths:
+        if manifest_path.is_file():
+            sources.append(MosaicSource(
+                manifest_path,
+                tile_size=settings.tile_size,
+                page_cache=page_cache,
+                store=tile_store,
+                proxies_enabled=settings.mosaic_proxy_enabled,
+            ))
     app.state.sources = SourceRegistry(sources)
-    app.state.source_tiles = SourceTileService(settings, app.state.sources)
+    app.state.source_tiles = SourceTileService(settings, app.state.sources, store=tile_store)
+
+    # Optional boot-time chain warm-up (O2): one daemon thread per mosaic
+    # source builds missing chains so the first human viewer never pays the
+    # cold whole-canvas cost. Kept sequential per source and off the request
+    # path, so startup and first requests are unaffected.
+    if settings.mosaic_proxy_prewarm:
+        for source in sources:
+            if isinstance(source, MosaicSource):
+                threading.Thread(
+                    target=source.prewarm,
+                    name=f"mosaic-prewarm:{source.manifest.book}",
+                    daemon=True,
+                ).start()
 
     register_error_handlers(app)
     app.include_router(books_router.router)
@@ -120,6 +154,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.mount("/", NoCacheStaticFiles(directory=str(_static_dir()), html=True), name="static")
     return app
+
+
+def _configure_mosaic_logging() -> None:
+    """Send mosaic cold-init/prewarm summaries to stdout.
+
+    Uvicorn only configures its own loggers, so without this the mosaic
+    module's INFO lines would be swallowed by the root logger's lastResort
+    handler. One StreamHandler is attached per process; guarded so repeated
+    ``create_app`` calls (tests) do not stack handlers.
+
+    Returns:
+        None.
+    """
+    log = logging.getLogger("server.sources.mosaic")
+    if log.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(name)s: %(message)s"))
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 
 def _static_dir() -> Path:

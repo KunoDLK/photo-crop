@@ -5,5 +5,3 @@ __pycache__/
 tmp/
 dev/archive/
 dev/cache/
-dev/satellite/
-dev/mosaic/

@@ -29,9 +29,14 @@ class TileService:
 
     def __init__(
         self, settings: Settings, page_cache: decoded_cache.PageCache | None = None,
+        store: encoded_cache.TileCache | None = None,
     ) -> None:
         self.settings = settings
-        self.tiles = encoded_cache.TileCache(settings.cache_dir, settings.cache_bytes)
+        self.tiles = store or encoded_cache.TileCache(
+            settings.cache_dir, settings.cache_bytes,
+            evict_young_seconds=settings.evict_young_seconds,
+            evict_old_seconds=settings.evict_old_seconds,
+        )
         self.pages = page_cache or decoded_cache.PageCache(
             settings.page_cache_bytes, idle_seconds=settings.page_idle_seconds
         )

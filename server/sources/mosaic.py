@@ -1,6 +1,6 @@
 """A virtual page composed server-side from many separate source images.
 
-The "mosaic" image source presents a grid of independent images (e.g. a 3x3
+The "mosaic" image source presents a grid of independent images (e.g. a 31x31
 block of Sentinel-2 tiles) as one seamless zoomable page. No giant stitched
 file and no precomputed zoom proxies ever exist: every requested tile is
 rendered on demand by decoding the full-resolution source images its rectangle
@@ -8,11 +8,24 @@ overlaps, cropping each overlap, and downsampling onto the 256px output. The
 shared SQLite tile cache is what makes repeat views cheap — a tile is rendered
 once per zoom level and served from disk afterwards.
 
-The manifest (JSON) describes the virtual canvas and the placement of every
-cell::
+At the coarse end (wafer-scale canvases of hundreds of cells) full-res decodes
+would be absurd — one overview tile over N cells would cost N decodes of
+~300 MB each. So the mosaic source also maintains a **proxy chain** per cell
+in the tile store (see :mod:`~server.tiles.sqlite_cache` and
+``docs/wafer-mosaic-scaling.md``): one lossless PNG plane per coarse-band
+level, built once from a single full-res decode by successive halving. A tile
+whose overlapping cells all render sub-tile-wide (band rule G1 below) draws
+from those tiny planes instead of the sources — N PNG decodes instead of N
+full decodes. The choice is a pure function of the manifest and level, never
+of what happens to be cached, so every tile key maps to one byte stream.
+
+The manifest (JSON) describes the virtual canvas, the book id it is served
+as, and the placement of every cell::
 
     {
       "version": 1788564183968674999,
+      "book": "satellite-mosaic",
+      "name": "Satellite mosaic",
       "canvas": {"width": 32940, "height": 32940},
       "cells": [
         {"id": "30UWB", "x": 0, "y": 21960,
@@ -22,16 +35,20 @@ cell::
       ]
     }
 
-Cell ``source`` paths are resolved relative to the manifest file. Renders are
-pure functions of the tile request (the manifest and source images are
-immutable once written), so tiles cache immutably like every other source.
+``book``/``name`` default to ``satellite-mosaic``/``Satellite mosaic`` so
+older manifests keep working. Cell ``source`` paths are resolved relative to
+the manifest file. Renders are pure functions of the tile request (the
+manifest and source images are immutable once written), so tiles cache
+immutably like every other source.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -41,7 +58,21 @@ from ..errors import BadRequest, NotFound
 from ..models import AccessInfo, BookSummary, CoverInfo, ImageInfo, PageInfo
 from ..tiles import geometry
 from ..tiles.page_cache import PageCache
+from ..tiles.sqlite_cache import TileCache
 from .base import ImageSource, TileRequest
+
+#: Mosaic renders are reported at INFO on this logger (wired to stdout by the
+#: app); cold inits that build proxy chains get one summary line per render.
+logger = logging.getLogger("server.sources.mosaic")
+
+#: A render that took at least this long is logged even when it built no
+#: chains (e.g. a deep tile whose full-res decodes missed the page cache).
+LOG_RENDER_MIN_SECONDS = 1.0
+
+#: Variant namespace of provider tiles in the shared store (their keys are
+#: ``p/<source>/...``). Proxy chains must carry the same ``ns``/book/page/
+#: version family as the tiles they feed, so redundancy queries match.
+PROVIDER_NS = "p"
 
 
 @dataclass(frozen=True)
@@ -55,12 +86,19 @@ class Cell:
     height: int
     source: Path
 
+    @property
+    def size(self) -> int:
+        """Band membership and chain widths use the largest edge (G5)."""
+        return max(self.width, self.height)
+
 
 @dataclass(frozen=True)
 class MosaicManifest:
-    """The virtual canvas: overall size plus every cell's placement."""
+    """The virtual canvas: book identity, overall size, every cell's placement."""
 
     version: int
+    book: str
+    name: str
     canvas_w: int
     canvas_h: int
     cells: tuple[Cell, ...]
@@ -88,6 +126,8 @@ class MosaicManifest:
             raw = json.loads(path.read_text())
             version = int(raw["version"])
             cw, ch = raw["canvas"]["width"], raw["canvas"]["height"]
+            book = str(raw.get("book", "satellite-mosaic"))
+            name = str(raw.get("name", "Satellite mosaic"))
             cells = tuple(
                 Cell(
                     id=str(c["id"]),
@@ -101,9 +141,11 @@ class MosaicManifest:
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
             raise BadRequest(f"invalid mosaic manifest: {exc}") from exc
-        manifest = MosaicManifest(version, cw, ch, cells)
+        manifest = MosaicManifest(version, book, name, cw, ch, cells)
         if manifest.canvas_w <= 0 or manifest.canvas_h <= 0 or not manifest.cells:
             raise BadRequest("mosaic manifest needs a canvas and at least one cell")
+        if "/" in book or not book:
+            raise BadRequest("mosaic manifest book id must be a non-empty slug")
         for cell in manifest.cells:
             if (
                 cell.x < 0 or cell.y < 0
@@ -123,6 +165,95 @@ class MosaicManifest:
         ]
 
 
+def plane_geometry(cell: Cell, tile_size: int, level: int) -> tuple[int, int, int, int, int]:
+    """The pure manifest geometry of a plane's dependent tile set (G4).
+
+    A plane for ``(cell, level)`` feeds exactly the level-``level`` grid tiles
+    whose canvas rectangle intersects the cell: tile columns ``[tx0, tx1]``,
+    rows ``[ty0, ty1]``, where a level's tile edge is ``tile_size * 2**level``
+    canvas pixels. ``expected`` is the product range size — the number of
+    tiles that exist once the cell is fully rendered at that level.
+
+    Args:
+        cell: The source cell the plane belongs to.
+        tile_size: Output tile edge (``TILE``).
+        level: Pyramid level of the plane.
+
+    Returns:
+        A ``(tx0, tx1, ty0, ty1, expected)`` tuple.
+    """
+    slot = tile_size << level
+    tx0 = cell.x // slot
+    tx1 = (cell.x + cell.width - 1) // slot
+    ty0 = cell.y // slot
+    ty1 = (cell.y + cell.height - 1) // slot
+    expected = (tx1 - tx0 + 1) * (ty1 - ty0 + 1)
+    return tx0, tx1, ty0, ty1, expected
+
+
+@dataclass
+class _RenderProbe:
+    """Per-render cold-path counters, accumulated on the rendering thread.
+
+    Renders (and chain builds) run on worker threads and each request resets
+    its own probe, so concurrent requests never mix statistics. Used only for
+    the server-side cold-init log lines.
+    """
+
+    cells_drawn: int = 0
+    chains_built: int = 0
+    planes_stored: int = 0
+    plane_bytes: int = 0
+    decode_count: int = 0
+    decode_seconds: float = 0.0
+    chain_build_seconds: float = 0.0
+    skipped_chains: int = 0
+
+    def reset(self) -> None:
+        for name in self.__dataclass_fields__:  # noqa: SLF001 — dataclass helper
+            setattr(self, name, 0)
+
+
+def build_chain_planes(
+    full: np.ndarray, band_levels: set[int],
+) -> dict[int, tuple[int, bytes]]:
+    """Produce every plane of a cell's chain from one full-res decode (B2).
+
+    Planes are built by successive INTER_AREA halving so the whole chain costs
+    roughly a third of one extra full-res pass and no source pixels are ever
+    skipped. Only the band levels are kept and encoded lossless (PNG, B3) so
+    the halving chain never compounds JPEG artefacts; larger intermediates are
+    computed and discarded. The result is a pure function of the decoded image
+    and the band, so a chain rebuilt after eviction reproduces identical bytes
+    (V2).
+
+    Args:
+        full: The cell's full-resolution BGR image.
+        band_levels: Levels whose planes are stored (G2); may include 0 when
+            the whole cell is sub-tile (its full image is the level-0 plane).
+
+    Returns:
+        A ``{level: (width, png_bytes)}`` map, one entry per band level.
+    """
+    planes: dict[int, tuple[int, bytes]] = {}
+    if 0 in band_levels:
+        ok, buf = cv2.imencode(".png", full)
+        if not ok:
+            raise BadRequest("proxy plane encode failed")
+        planes[0] = (full.shape[1], buf.tobytes())
+    prev = full
+    top = max(band_levels) if band_levels else 0
+    for level in range(1, top + 1):
+        h, w = prev.shape[:2]
+        prev = cv2.resize(prev, ((w + 1) // 2, (h + 1) // 2), interpolation=cv2.INTER_AREA)
+        if level in band_levels:
+            ok, buf = cv2.imencode(".png", prev)
+            if not ok:
+                raise BadRequest("proxy plane encode failed")
+            planes[level] = (prev.shape[1], buf.tobytes())
+    return planes
+
+
 class MosaicSource(ImageSource):
     """A pluggable image source serving one virtual page from many images.
 
@@ -140,13 +271,29 @@ class MosaicSource(ImageSource):
         manifest_path: Path,
         tile_size: int = 256,
         page_cache: PageCache | None = None,
+        store: TileCache | None = None,
+        proxies_enabled: bool = True,
     ) -> None:
+        """Attach the source to a manifest and the shared decoded/store caches.
+
+        Args:
+            manifest_path: Path to ``manifest.json``.
+            tile_size: Output tile edge length.
+            page_cache: Shared decoded-image LRU (cells' full-res bitmaps).
+            store: Shared SQLite tile store; proxy chains live here. Without
+                one the source always renders from full-res decodes.
+            proxies_enabled: When false, today's behaviour: every level
+                renders from full-res decodes.
+        """
         self._manifest_path = manifest_path
         self.tile_size = tile_size
         self._page_cache = page_cache
+        self._store = store
+        self._proxies_enabled = proxies_enabled and store is not None
         self._page_id = "mosaic"
         self._decode_locks: dict[str, threading.Lock] = {}
         self._decode_locks_guard = threading.Lock()
+        self._probe_local = threading.local()
         self._load()
 
     def _load(self) -> None:
@@ -154,7 +301,7 @@ class MosaicSource(ImageSource):
         self.manifest = MosaicManifest.load(self._manifest_path)
 
     def owns(self, book_id: str) -> bool:
-        return book_id == "satellite-mosaic"
+        return book_id == self.manifest.book
 
     def refresh(self) -> None:
         """Reload the manifest so force-reloads see new/edited mosaic tiles.
@@ -179,7 +326,7 @@ class MosaicSource(ImageSource):
     def signature(self) -> str:
         """Change signature: the manifest version plus its content hash."""
         digest = hashlib.sha256()
-        digest.update(str(self.manifest.version).encode())
+        digest.update(f"{self.manifest.book}\n{self.manifest.version}".encode())
         for cell in self.manifest.cells:
             digest.update(f"{cell.id}{cell.x}{cell.y}".encode())
         return digest.hexdigest()
@@ -189,8 +336,8 @@ class MosaicSource(ImageSource):
         m = self.manifest
         return [
             BookSummary(
-                id="satellite-mosaic",
-                name="Satellite mosaic",
+                id=m.book,
+                name=m.name,
                 cover=CoverInfo(
                     page_id=self._page_id,
                     width=m.canvas_w,
@@ -232,11 +379,34 @@ class MosaicSource(ImageSource):
             width=m.canvas_w,
             height=m.canvas_h,
             max_level=m.max_level,
-            file_size=0,
+            file_size=self._source_bytes(),
             hash=f"provider:{self.key}:{self.signature}",
             access=self._access(),
             source=self.key,
         )
+
+    def _source_bytes(self) -> int:
+        """Aggregate on-disk size of every cell source image.
+
+        A mosaic has no single file; its "file size" is the sum of the source
+        images it composes (the byte budget a full stitched equivalent would
+        need). Computed once per manifest instance — cell files are immutable
+        for a given manifest version, and a reload replaces the manifest.
+
+        Returns:
+            The sum of the cell source file sizes in bytes.
+        """
+        cached = getattr(self, "_source_bytes_cache", None)
+        if cached is not None and cached[0] is self.manifest:
+            return cached[1]
+        total = 0
+        for cell in self.manifest.cells:
+            try:
+                total += cell.source.stat().st_size
+            except OSError:
+                continue
+        self._source_bytes_cache = (self.manifest, total)
+        return total
 
     def tile_zoom(self, level: int) -> int:
         """Cache eviction depth: canvas levels are archive-style (0 = 1:1)."""
@@ -266,6 +436,8 @@ class MosaicSource(ImageSource):
         if not (0 <= req.tx < cols and 0 <= req.ty < rows):
             raise BadRequest(f"tile ({req.tx},{req.ty}) out of range for level {req.level}")
 
+        started = time.perf_counter()
+        self._probe().reset()
         canvas = np.zeros((req.tile_size, req.tile_size, 3), dtype=np.uint8)
         scale = 1 << req.level  # canvas pixels per level pixel
         # The tile's rectangle in the level image, clamped to the canvas.
@@ -278,7 +450,76 @@ class MosaicSource(ImageSource):
 
         for cell in m.overlapping(c_x0, c_y0, c_x1, c_y1):
             self._draw_cell(canvas, req, cell, rect, scale)
+        self._log_render(req, started)
         return canvas
+
+    def _log_render(self, req: TileRequest, started: float) -> None:
+        """Log one summary line when a render paid a cold cost.
+
+        A "cold init" (at least one proxy chain built, e.g. the first
+        whole-canvas tile over a large mosaic) logs its total time split into
+        source decoding and chain halving/encode/store so operators see where
+        the cost went; slow renders with no chain builds (deep tiles whose
+        full-res decode missed the page cache) are logged too.
+
+        Args:
+            req: The tile request that was rendered.
+            started: ``time.perf_counter()`` at the start of the render.
+        """
+        probe = self._probe()
+        total = time.perf_counter() - started
+        if probe.chains_built == 0 and total < LOG_RENDER_MIN_SECONDS:
+            return
+        logger.info(
+            "mosaic %s book=%s level=%d tile=%d,%d: %d/%d cells, built %d chains "
+            "(%d planes, %.1f MB) in %.1fs (source decode %.1fs over %d, "
+            "halve+encode+store %.1fs)",
+            "cold init" if probe.chains_built else "slow render",
+            req.book, req.level, req.tx, req.ty,
+            probe.cells_drawn, len(self.manifest.cells),
+            probe.chains_built, probe.planes_stored, probe.plane_bytes / 1048576.0,
+            total, probe.decode_seconds, probe.decode_count,
+            probe.chain_build_seconds,
+        )
+
+    def _uses_plane(self, cell: Cell, level: int) -> bool:
+        """Band membership (G1): render from a proxy plane iff the cell's
+        footprint is narrower than one tile at this level.
+
+        Args:
+            cell: The source image.
+            level: Pyramid level.
+
+        Returns:
+            Whether level ``level`` falls in the cell's proxy band.
+        """
+        return cell.size < (self.tile_size << level)
+
+    def _band_levels(self, cell: Cell) -> frozenset[int]:
+        """Every level whose render would draw this cell from a plane (G2).
+
+        Args:
+            cell: The source image.
+
+        Returns:
+            The proxy band: ``{0..max_level}`` where ``cell.size < TILE << L``
+            (level 0 joins the band only for sub-tile cells).
+        """
+        max_level = self.manifest.max_level
+        return frozenset(
+            level for level in range(max_level + 1)
+            if self._uses_plane(cell, level)
+        )
+
+    def _chain_id(self, cell: Cell) -> str:
+        """Cache key of the cell's proxy chain (version-scoped, per page)."""
+        m = self.manifest
+        return f"proxy/{PROVIDER_NS}/{m.book}/{self._page_id}/{m.version}/{cell.id}"
+
+    def _chain_family(self) -> tuple[str, str, str, int]:
+        """The tile-store family of this page's rows (ns, book, page, version)."""
+        m = self.manifest
+        return PROVIDER_NS, m.book, self._page_id, m.version
 
     def _draw_cell(
         self,
@@ -288,13 +529,15 @@ class MosaicSource(ImageSource):
         rect: geometry.Rect,
         scale: int,
     ) -> None:
-        """Decode one cell and resample its overlap onto the output tile.
+        """Resample one cell's overlap onto the output tile.
 
         Level pixels are exactly ``2**level`` canvas pixels wide, so every
         level pixel a cell touches maps back to one output column; consecutive
-        cells abut with no gaps and no overlap. Decoded cell bitmaps live in
-        the shared decoded-image LRU (same cache and budget as archive page
-        mipmaps), so panning and zooming reuse resident sources.
+        cells abut with no gaps and no overlap. In the proxy band the cell is
+        drawn from its chain's level plane (tiny PNG decode); in the deep band
+        from the full-res bitmap in the shared decoded-image LRU (same cache
+        and budget as archive page mipmaps), so panning and zooming reuse
+        resident sources.
 
         Args:
             canvas: The output tile being painted (BGR uint8).
@@ -311,6 +554,7 @@ class MosaicSource(ImageSource):
         k1 = min(rect.y + rect.h, (cell.y + cell.height + scale_m1) >> req.level)
         if j0 >= j1 or k0 >= k1:
             return
+        self._probe().cells_drawn += 1
 
         # The cell's full-resolution pixels behind those output pixels.
         fx0 = min(cell.width, max(0, j0 * scale - cell.x))
@@ -320,24 +564,168 @@ class MosaicSource(ImageSource):
         if fx0 >= fx1 or fy0 >= fy1:
             return
 
-        image = self._cell_image(cell)
-        region = image[fy0:fy1, fx0:fx1]
+        if self._uses_plane(cell, req.level):
+            plane = self._plane(cell, req.level)
+            if plane is not None:
+                # Plane pixel i covers cell-local source pixels
+                # [i*2**L, (i+1)*2**L) (R3): fx/fy are already cell-local, so
+                # crop the overlap out of the plane and let the shared resize
+                # step absorb the boundary sliver.
+                px0 = fx0 >> req.level
+                px1 = (fx1 + scale_m1) >> req.level
+                py0 = fy0 >> req.level
+                py1 = (fy1 + scale_m1) >> req.level
+                region = plane[py0:py1, px0:px1]
+            else:
+                region = None
+        else:
+            region = None
+
+        if region is None:  # deep band (or proxy fallback): full-res source
+            image = self._cell_image(cell)
+            region = image[fy0:fy1, fx0:fx1]
         out_w, out_h = j1 - j0, k1 - k0
         if region.shape[1] != out_w or region.shape[0] != out_h:
             region = cv2.resize(region, (out_w, out_h), interpolation=cv2.INTER_AREA)
         canvas[k0 - rect.y : k1 - rect.y, j0 - rect.x : j1 - rect.x] = region
 
+    def _plane(self, cell: Cell, level: int) -> np.ndarray | None:
+        """The cell's decoded plane for one band level, building its chain first.
+
+        A chain build decodes the full-res source exactly once (B2/B5: through
+        the shared decoded-image LRU), stores every band plane atomically
+        (B6), and runs under the cell's decode lock so concurrent misses wait
+        and re-check before building (B4).
+
+        Args:
+            cell: The source image.
+            level: A band level of ``cell``.
+
+        Returns:
+            The decoded BGR plane, or ``None`` when the source has no store
+            attached (the caller falls back to a full-res render).
+        """
+        store = self._store
+        if store is None:
+            return None
+        chain_id = self._chain_id(cell)
+        planes = self._ensure_chain(cell, chain_id)
+        if planes is None or level not in planes:
+            return None
+        # The render that is about to be generated uses this plane (E6b):
+        # generation refreshes the chain, cache hits never reach this point.
+        store.touch_chain(chain_id)
+        _, png = planes[level]
+        image = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise NotFound(f"mosaic proxy plane undecodable: {chain_id}")
+        return image
+
+    def _ensure_chain(self, cell: Cell, chain_id: str) -> dict[int, tuple[int, bytes]] | None:
+        """Return the cell's complete chain, building it if missing or partial.
+
+        Args:
+            cell: The source image.
+            chain_id: The chain's cache key.
+
+        Returns:
+            The chain's ``{level: (width, png)}`` map, or ``None`` when the
+            source has no store attached.
+        """
+        store = self._store
+        if store is None:
+            return None
+        band = self._band_levels(cell)
+        planes = store.get_chain(chain_id)
+        if planes is not None and all(level in planes for level in band):
+            return planes
+        with self._cell_lock(cell):
+            planes = store.get_chain(chain_id)
+            if planes is not None and all(level in planes for level in band):
+                return planes
+            full = self._cell_image_locked(cell)
+            build_started = time.perf_counter()
+            built = build_chain_planes(full, set(band))
+            ns, book, page, version = self._chain_family()
+            rows = []
+            for level, (width, png) in sorted(built.items()):
+                tx0, tx1, ty0, ty1, expected = plane_geometry(cell, self.tile_size, level)
+                rows.append((level, width, png, tx0, tx1, ty0, ty1, expected))
+            store.put_chain(chain_id, ns, book, page, version, rows)
+            probe = self._probe()
+            probe.chains_built += 1
+            probe.chain_build_seconds += time.perf_counter() - build_started
+            probe.planes_stored += len(rows)
+            probe.plane_bytes += sum(len(row[2]) for row in rows)
+            return built
+
+    def prewarm(self) -> None:
+        """Build chains for every manifest cell not yet in the store (O2).
+
+        Runs on a caller-managed background thread (the app starts one when
+        ``mosaic_proxy_prewarm`` is set); each cell decodes once through the
+        shared decoded-image LRU and its chain is skipped when already stored.
+        Progress and a final summary are logged on the mosaic logger. Cells
+        sharing one source file still decode per cell here — the offline dev
+        prewarmer (``dev/wafer_mosaic.py --prewarm``) dedupes by source.
+        """
+        store = self._store
+        if store is None or not self._proxies_enabled:
+            return
+        probe = self._probe()
+        probe.reset()
+        m = self.manifest
+        started = time.perf_counter()
+        logger.info("mosaic prewarm start book=%s cells=%d", m.book, len(m.cells))
+        for n, cell in enumerate(m.cells, 1):
+            if not self._band_levels(cell):
+                probe.skipped_chains += 1
+                continue
+            built_before = probe.chains_built
+            self._ensure_chain(cell, self._chain_id(cell))
+            if probe.chains_built == built_before:
+                probe.skipped_chains += 1
+            if n % 200 == 0:
+                logger.info(
+                    "mosaic prewarm book=%s %d/%d cells (built %d, %d cached, %.1fs)",
+                    m.book, n, len(m.cells), probe.chains_built, probe.skipped_chains,
+                    time.perf_counter() - started,
+                )
+        logger.info(
+            "mosaic prewarm done book=%s cells=%d: built %d chains (%d planes, "
+            "%.1f MB) in %.1fs (source decode %.1fs over %d), %d already cached",
+            m.book, len(m.cells), probe.chains_built, probe.planes_stored,
+            probe.plane_bytes / 1048576.0, time.perf_counter() - started,
+            probe.decode_seconds, probe.decode_count, probe.skipped_chains,
+        )
+
+    def _probe(self) -> _RenderProbe:
+        """This thread's cold-path counter (reset at each render start)."""
+        probe = getattr(self._probe_local, "stats", None)
+        if probe is None:
+            probe = _RenderProbe()
+            self._probe_local.stats = probe
+        return probe
+
     def _cell_key(self, cell: Cell) -> str:
         """Shared-cache key for one cell's decoded bitmap (version-scoped)."""
         return f"mosaic:{self.manifest.version}:{cell.id}"
 
+    def _cell_lock(self, cell: Cell) -> threading.Lock:
+        """The per-cell decode lock (created on first use, shared by renders
+        and chain builds so a cell decodes once under concurrent requests).
+
+        Args:
+            cell: The source image.
+
+        Returns:
+            The cell's threading lock.
+        """
+        with self._decode_locks_guard:
+            return self._decode_locks.setdefault(cell.id, threading.Lock())
+
     def _cell_image(self, cell: Cell) -> np.ndarray:
         """The cell's decoded full-resolution BGR image, from the shared LRU.
-
-        When no shared cache is attached (standalone use), the image is
-        decoded on every call. Otherwise the decoded bitmap is cached in the
-        shared decoded-image LRU under a per-cell lock, so concurrent tiles of
-        the same cell decode it once.
 
         Args:
             cell: The source image.
@@ -348,22 +736,34 @@ class MosaicSource(ImageSource):
         Raises:
             errors.NotFound: If the source file is missing or undecodable.
         """
+        with self._cell_lock(cell):
+            return self._cell_image_locked(cell)
+
+    def _cell_image_locked(self, cell: Cell) -> np.ndarray:
+        """Decode one cell assuming the caller holds its decode lock.
+
+        Args:
+            cell: The source image.
+
+        Returns:
+            The BGR uint8 image (cached in the shared LRU when attached).
+
+        Raises:
+            errors.NotFound: If the source file is missing or undecodable.
+        """
         cache = self._page_cache
         key = self._cell_key(cell)
         if cache is not None:
             image = cache.get(key)
             if image is not None:
                 return image
-        with self._decode_locks_guard:
-            lock = self._decode_locks.setdefault(cell.id, threading.Lock())
-        with lock:
-            if cache is not None:
-                image = cache.get(key)
-                if image is not None:
-                    return image
-            image = cv2.imread(str(cell.source), cv2.IMREAD_COLOR)
-            if image is None:
-                raise NotFound(f"mosaic cell source undecodable: {cell.source}")
-            if cache is not None:
-                cache.put(key, image, size_bytes=image.nbytes)
-            return image
+        started = time.perf_counter()
+        image = cv2.imread(str(cell.source), cv2.IMREAD_COLOR)
+        probe = self._probe()
+        probe.decode_seconds += time.perf_counter() - started
+        probe.decode_count += 1
+        if image is None:
+            raise NotFound(f"mosaic cell source undecodable: {cell.source}")
+        if cache is not None:
+            cache.put(key, image, size_bytes=image.nbytes)
+        return image

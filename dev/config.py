@@ -8,6 +8,7 @@ only secrets defined here are throwaway dev credentials.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,8 +52,14 @@ class LocalDev:
             "CACHE_DIR": str(self.cache_dir),
             "OCR_CACHE_DIR": str(self.cache_dir / "ocr"),
             "RIGHTS_DB_PATH": str(self.cache_dir / "rights.db"),
-            # Mosaic source manifest (built by dev/mosaic_build.py).
-            "MOSAIC_MANIFEST": str(self.root / "dev" / "mosaic" / "manifest.json"),
+            # Mosaic source manifests: the demo (built by dev/mosaic_build.py)
+            # and, when present, the wafer-scale fixture (dev/wafer_mosaic.py).
+            "MOSAIC_MANIFESTS": json.dumps([
+                str(p) for p in (
+                    self.root / "dev" / "archive" / "mosaic" / "manifest.json",
+                    self.root / "dev" / "archive" / "wafer" / "manifest.json",
+                ) if p.is_file()
+            ]),
             # Plain-http localhost: no Secure cookies, region header enabled.
             "SESSION_COOKIE_SECURE": "false",
             "DEV_REGION_HEADER": "true",

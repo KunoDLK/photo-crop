@@ -22,10 +22,17 @@ from .base import SourceRegistry, TileRequest
 class SourceTileService:
     """Caches and serves encoded tiles produced by registered image sources."""
 
-    def __init__(self, settings: Settings, registry: SourceRegistry) -> None:
+    def __init__(
+        self, settings: Settings, registry: SourceRegistry,
+        store: encoded_cache.TileCache | None = None,
+    ) -> None:
         self.settings = settings
         self.registry = registry
-        self.tiles = encoded_cache.TileCache(settings.cache_dir, settings.cache_bytes)
+        self.tiles = store or encoded_cache.TileCache(
+            settings.cache_dir, settings.cache_bytes,
+            evict_young_seconds=settings.evict_young_seconds,
+            evict_old_seconds=settings.evict_old_seconds,
+        )
         self.locks = KeyedLock()
 
     @staticmethod

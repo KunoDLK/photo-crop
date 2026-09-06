@@ -28,7 +28,20 @@ class Settings(BaseSettings):
         ocr_cache_dir: Directory backing the on-disk OCR result cache (JSON).
         mosaic_manifest: Path to a mosaic source ``manifest.json``; when set
             (and the file exists) a mosaic image source joins the source
-            registry and owns its book id.
+            registry and owns its book id (legacy single-manifest knob).
+        mosaic_manifests: Every mosaic ``manifest.json`` to serve, each as its
+            own book (the dev instance lists the demo and the wafer fixture).
+        mosaic_proxy_enabled: Serve mosaic coarse-band tiles from per-cell
+            proxy chains in the tile store (default True; off = every level
+            renders from full-res decodes).
+        mosaic_proxy_prewarm: Build missing proxy chains at boot on a
+            background thread (default False; the offline ``dev/wafer_mosaic.py
+            --prewarm`` dedupes better for copied-cell fixtures).
+        evict_young_seconds: Tile-store age tier boundary (600 s default): rows
+            fresher than this are evicted last.
+        evict_old_seconds: Tile-store age tier boundary (7 days default): rows
+            older than this are evicted first (proxy chains age into it when
+            their tiles are all cached).
         ocr_max_dim: Long-edge pixel target OCR downscales pages to before
             Tesseract; ``0`` (default) disables downscaling entirely — full-res
             OCR, slower but more accurate on small/freeform text. Scans are
@@ -87,7 +100,12 @@ class Settings(BaseSettings):
     jpeg_progressive: bool = True
     opencl: bool = True
     ocr_cache_dir: Path = Path("/archive/cache/ocr")
+    evict_young_seconds: float = 600.0
+    evict_old_seconds: float = 604800.0
     mosaic_manifest: Path | None = None
+    mosaic_manifests: tuple[Path, ...] = ()
+    mosaic_proxy_enabled: bool = True
+    mosaic_proxy_prewarm: bool = False
     ocr_max_dim: int = 0
     ocr_lang: str = "eng"
     ocr_psm: int = 11
