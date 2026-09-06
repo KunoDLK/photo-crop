@@ -13,7 +13,7 @@ import asyncio
 
 from ..config import Settings
 from ..errors import NotFound
-from ..tiles import cache as encoded_cache
+from ..tiles import sqlite_cache as encoded_cache
 from ..tiles import encoder
 from ..tiles.locks import KeyedLock
 from .base import SourceRegistry, TileRequest

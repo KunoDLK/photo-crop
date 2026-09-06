@@ -7,6 +7,7 @@ once and, crucially, drops them after a short idle period so RAM falls back to
 near-zero when nothing is being generated. It is shared by every image
 provider: archive pages store their decoded mipmaps and the mosaic source
 stores its decoded cell bitmaps in the same budget, one LRU, one idle sweeper.
+The encoded-tile disk cache (see :mod:`sqlite_cache`) handles persistence.
 """
 from __future__ import annotations
 
