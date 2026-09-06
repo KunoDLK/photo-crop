@@ -59,6 +59,10 @@ def list_books_endpoint(
     rights = request.app.state.rights
     policy = request.app.state.policy
     region = request.app.state.region
+    if force:
+        # A forced reload re-reads provider state too (e.g. the mosaic
+        # manifest), so edited/added tiles surface with fresh versions.
+        request.app.state.sources.refresh()
     signature, books = catalog.books(force)
     zone = region.zone_of_request(request)
     visible = []
@@ -104,6 +108,10 @@ def list_pages_endpoint(
     # Provider books (the image-source hook): sources own their access story,
     # so they are resolved before any rights/visibility checks apply.
     sources = request.app.state.sources
+    if force:
+        # A forced reload re-reads provider state (e.g. the mosaic manifest),
+        # so edited/added tiles surface with fresh page versions.
+        sources.refresh()
     result = sources.pages(book_id)
     if result is not None:
         sig, pages = result

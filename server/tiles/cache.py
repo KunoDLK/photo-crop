@@ -60,12 +60,15 @@ class TileCache:
         """
         return self._cache.get(key, default=None)
 
-    def put(self, key: str, data: bytes) -> None:
+    def put(self, key: str, data: bytes, zoom: int | None = None) -> None:
         """Store encoded tile bytes.
 
         Args:
             key: Cache key produced by :meth:`key`.
             data: Encoded JPEG bytes.
+            zoom: Eviction depth hint (0 = whole image, larger = deeper zoom)
+                accepted for API parity with the SQLite tile store; this
+                recency-based diskcache LRU ignores it.
         """
         self._cache.set(key, data)
 

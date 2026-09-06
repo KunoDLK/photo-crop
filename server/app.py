@@ -34,7 +34,7 @@ from .shares.store import ShareStore
 from .sources import router as sources_router
 from .sources.base import SourceRegistry
 from .sources.fractal import FractalSource
-from .sources.mosaic import MosaicManifest, MosaicSource
+from .sources.mosaic import MosaicSource
 from .sources.service import SourceTileService
 from .tiles import router as tiles_router
 from .tiles.manager import TileService
@@ -103,9 +103,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # a mosaic source joins in when its manifest is configured and built).
     sources = [FractalSource()]
     if settings.mosaic_manifest and settings.mosaic_manifest.is_file():
-        sources.append(
-            MosaicSource(MosaicManifest.load(settings.mosaic_manifest), page_cache=page_cache)
-        )
+        sources.append(MosaicSource(settings.mosaic_manifest, page_cache=page_cache))
     app.state.sources = SourceRegistry(sources)
     app.state.source_tiles = SourceTileService(settings, app.state.sources)
 

@@ -144,6 +144,17 @@ class ImageSource(ABC):
         """
         return None
 
+    def refresh(self) -> None:
+        """Re-read any external state (e.g. a manifest file) on a force reload.
+
+        Called by the books router when a client asks for a forced re-scan;
+        sources that read their listings from disk override this. A source
+        whose refreshed state changed must report a new :attr:`signature` and
+        page versions, so clients fetch fresh tile URLs instead of serving
+        CDN/browser-cached stale tiles.
+        """
+        return None
+
 
 class SourceRegistry:
     """Ordered collection of :class:`ImageSource` providers.
@@ -155,6 +166,11 @@ class SourceRegistry:
 
     def __init__(self, sources: list[ImageSource]) -> None:
         self._sources = list(sources)
+
+    def refresh(self) -> None:
+        """Tell every source to re-read its external state (force reload)."""
+        for source in self._sources:
+            source.refresh()
 
     def source_for_book(self, book_id: str) -> ImageSource | None:
         """Return the source that owns ``book_id``, or ``None``.

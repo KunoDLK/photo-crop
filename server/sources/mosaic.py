@@ -99,7 +99,7 @@ class MosaicManifest:
                 )
                 for c in raw["cells"]
             )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
             raise BadRequest(f"invalid mosaic manifest: {exc}") from exc
         manifest = MosaicManifest(version, cw, ch, cells)
         if manifest.canvas_w <= 0 or manifest.canvas_h <= 0 or not manifest.cells:
@@ -137,19 +137,39 @@ class MosaicSource(ImageSource):
 
     def __init__(
         self,
-        manifest: MosaicManifest,
+        manifest_path: Path,
         tile_size: int = 256,
         page_cache: PageCache | None = None,
     ) -> None:
-        self.manifest = manifest
+        self._manifest_path = manifest_path
         self.tile_size = tile_size
         self._page_cache = page_cache
         self._page_id = "mosaic"
         self._decode_locks: dict[str, threading.Lock] = {}
         self._decode_locks_guard = threading.Lock()
+        self._load()
+
+    def _load(self) -> None:
+        """(Re)read the manifest from disk into ``self.manifest``."""
+        self.manifest = MosaicManifest.load(self._manifest_path)
 
     def owns(self, book_id: str) -> bool:
         return book_id == "satellite-mosaic"
+
+    def refresh(self) -> None:
+        """Reload the manifest so force-reloads see new/edited mosaic tiles.
+
+        A rebuilt manifest carries a new version (the newest source mtime), so
+        the listing signature and page mtime change and the client re-requests
+        tiles under fresh URLs instead of CDN-cached stale ones. A manifest
+        that fails to parse (e.g. caught mid-write) leaves the current layout
+        serving; the next reload retries.
+        """
+        try:
+            manifest = MosaicManifest.load(self._manifest_path)
+        except BadRequest:
+            return
+        self.manifest = manifest
 
     def _access(self) -> AccessInfo:
         """Provider pages are unrestricted demo content: full, never region-locked."""
