@@ -60,7 +60,8 @@ once the page has loaded, so the terminal returns.
    `Del`/`Backspace` deletes the selected box. *Auto-detect* proposes boxes for photos on a
    white scanner bed.
 4. **Name & preview** — each box appears in the right-hand list with a live thumbnail and a
-   filename field; uncheck *Include* to skip a crop.
+   filename field; leave it blank and the crop is named after a random GUID, or uncheck
+   *Include* to skip it.
 5. **Export** — pick PNG or JPEG (+ quality slider), press **Export**, choose a destination
    folder (Chrome) or accept the downloads. Files are saved at full scan resolution; duplicate
    names are auto-suffixed.

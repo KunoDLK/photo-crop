@@ -369,6 +369,19 @@ function fmtDeg(v) {
   const r = Math.round(v * 100) / 100;
   return Number.isInteger(r) ? r.toFixed(0) : r.toFixed(2);
 }
+// Random per-crop default filename (RFC 4122 v4). randomUUID is only exposed
+// in secure contexts, so fall back to a Math.random build for plain-http LAN use.
+function newGuid() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  const b = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(b);
+  else for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [];
+  for (let i = 0; i < 16; i++) h.push(b[i].toString(16).padStart(2, "0"));
+  return h.slice(0, 4).join("") + "-" + h.slice(4, 6).join("") + "-" + h.slice(6, 8).join("") + "-" + h.slice(8, 10).join("") + "-" + h.slice(10, 16).join("");
+}
 
 function setToolbar(hasImg) {
   els.detect.disabled = !hasImg;
@@ -994,7 +1007,7 @@ function drawBoxes() {
     ctx.restore();
     const [lwx, lwy] = boxLocalToWorld(b, 0, -b.h / 2);
     const [ldx, ldy] = worldToDev(lwx, lwy);
-    const name = (b.name && b.name.trim()) || ("photo-" + (i + 1));
+    const name = (b.name && b.name.trim()) || b.guid || ("photo-" + (i + 1));
     ctx.font = "600 12px system-ui, sans-serif";
     ctx.fillStyle = sel ? "#1ca7e8" : "#e03030";
     ctx.textBaseline = "bottom";
@@ -1163,7 +1176,7 @@ cv.addEventListener("pointerdown", (e) => {
   } else {
     state.sel = null;
     state.mode = "draw";
-    state.boxes.push({ cx: wx, cy: wy, w: 0, h: 0, rot: 0, name: "", include: true });
+    state.boxes.push({ cx: wx, cy: wy, w: 0, h: 0, rot: 0, name: "", guid: newGuid(), include: true });
     state.sel = state.boxes.length - 1;
     state.drag = { sx: wx, sy: wy };
     refreshList();
@@ -1409,7 +1422,7 @@ async function autoDetect() {
     const y0 = clamp(Math.round(c.minY * fy - my), 0, state.ih);
     const x1 = clamp(Math.round((c.maxX + 1) * fx + mx), 0, state.iw);
     const y1 = clamp(Math.round((c.maxY + 1) * fy + my), 0, state.ih);
-    state.boxes.push({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0, rot: 0, name: "", include: true });
+    state.boxes.push({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0, rot: 0, name: "", guid: newGuid(), include: true });
   }
   state.sel = state.boxes.length ? 0 : null;
   refreshList();
@@ -1464,7 +1477,7 @@ function refreshList() {
     const name = document.createElement("input");
     name.type = "text";
     name.value = b.name;
-    name.placeholder = "photo-" + (i + 1);
+    name.placeholder = b.guid || ("photo-" + (i + 1));
     name.title = "Output filename";
     name.addEventListener("input", () => {
       b.name = name.value;
@@ -1661,7 +1674,7 @@ async function exportAll() {
   status(`Exporting 0/${inc.length}…`);
   try {
     for (const { b, i } of inc) {
-      const base = sanitizeName(b.name);
+      const base = sanitizeName(b.name) || b.guid || "photo";
       const name = uniqueName(used, base, ext);
       const blob = await cropToBlob(b, fmt, quality);
       if (dir) {
