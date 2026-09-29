@@ -7,7 +7,7 @@
 
 import { clamp } from "./util.js";
 import { MAX_SCALE } from "./config.js";
-import { view, scene } from "./state.js";
+import { view, scene, viewport as vp } from "./state.js";
 
 /** Map scene coordinates to device (CSS px) coordinates. */
 export function sceneToDev(x, y) {
@@ -26,29 +26,46 @@ export function visibleSceneRect(vpw, vph) {
   return { x0, y0, x1, y1 };
 }
 
+/**
+ * The box a fit targets. Callers pass the canvas size, but on iPhone the canvas
+ * is deliberately taller than the screen content area (it paints behind the
+ * dynamic island and the translucent URL bar, see render.js): a fit then uses
+ * the visible slice plus its offset, so pages stay fully on screen while the
+ * canvas keeps painting edge to edge behind the bars. A caller that explicitly
+ * passes its own size gets exactly that size back.
+ */
+export function fitBox(vpw = vp.w, vph = vp.h) {
+  if (vph === vp.h && vp.visibleH && vp.visibleH < vp.h) {
+    return { w: vpw, h: vp.visibleH, top: vp.visibleTop || 0 };
+  }
+  return { w: vpw, h: vph, top: 0 };
+}
+
 /** Fit the whole scene into the viewport (used for root and book fit). */
 export function fitView(vpw, vph) {
-  if (!scene.w || !scene.h || !vpw || !vph) {
+  const box = fitBox(vpw, vph);
+  if (!scene.w || !scene.h || !box.w || !box.h) {
     view.scale = 1;
     view.vx = 0;
     view.vy = 0;
     return;
   }
-  view.fitScale = Math.min(vpw / scene.w, vph / scene.h) * 0.96;
+  view.fitScale = Math.min(box.w / scene.w, box.h / scene.h) * 0.96;
   view.scale = view.fitScale;
-  view.vx = (vpw - scene.w * view.scale) / 2;
-  view.vy = (vph - scene.h * view.scale) / 2;
+  view.vx = (box.w - scene.w * view.scale) / 2;
+  view.vy = box.top + (box.h - scene.h * view.scale) / 2;
 }
 
 /** Fit a single image's draw rect into the viewport, centered. */
 export function fitViewToImage(im, vpw, vph) {
-  if (!vpw || !vph) return;
+  const box = fitBox(vpw, vph);
+  if (!box.w || !box.h) return;
   const cx = im.drawX + im.drawW / 2;
   const cy = im.drawY + im.drawH / 2;
-  const s = Math.min(vpw / im.drawW, vph / im.drawH) * 0.96;
+  const s = Math.min(box.w / im.drawW, box.h / im.drawH) * 0.96;
   view.scale = clamp(s, 0.00005, MAX_SCALE);
-  view.vx = vpw / 2 - cx * view.scale;
-  view.vy = vph / 2 - cy * view.scale;
+  view.vx = box.w / 2 - cx * view.scale;
+  view.vy = box.top + box.h / 2 - cy * view.scale;
 }
 
 /** True if an image's cell intersects the viewport. */

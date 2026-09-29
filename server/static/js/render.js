@@ -44,26 +44,72 @@ export function initRenderer(viewEl, leftEl) {
   });
   new ResizeObserver(() => {
     resizeCanvas(leftEl);
-    // After a large viewport change (rotation, or the browser bars collapsing
-    // in landscape) the view must be re-fit so content fills the whole screen
-    // again — the previously hidden safe-area regions included. Debounced so
-    // the browser's own resize animation settles before the refit runs.
-    if (refitTimer) clearTimeout(refitTimer);
-    refitTimer = setTimeout(() => {
-      refitTimer = null;
-      const w = state.viewport.w, h = state.viewport.h;
-      if (lastSize.w && (Math.abs(w - lastSize.w) > 40 || Math.abs(h - lastSize.h) > 40)) {
-        if (state.focusedImage) viewport.fitViewToImage(state.focusedImage, w, h);
-        else viewport.fitView(w, h);
-        state.emit("viewport-resized");
-      }
-      lastSize = { w, h };
-      requestRender();
-    }, 120);
+    scheduleRefit();
     requestRender();
   }).observe(leftEl);
+  // The canvas is deliberately taller than the screen content area: it paints
+  // edge to edge behind iPhone's dynamic island and translucent URL bar. Those
+  // bars move without resizing the canvas, so the visible slice is measured
+  // separately and a large change (the bars collapsing in landscape) re-fits
+  // the view — exactly what the layout-viewport resize used to drive.
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", onVisibleRegionChange, { passive: true });
+    window.visualViewport.addEventListener("scroll", onVisibleRegionChange, { passive: true });
+  }
   resizeCanvas(leftEl);
   requestRender();
+}
+
+/** Re-measure after the browser bars moved; re-fit if a lot of screen changed. */
+function onVisibleRegionChange() {
+  const before = state.viewport.visibleH;
+  measureVisibleRegion();
+  // Only a change in the area the browser bars occupy re-fits the view: the
+  // iOS keyboard shrinks the visual viewport as well, and jolting the view
+  // while the user types in a search field would gain nothing. Page zoom
+  // (desktop pinch) is the user's own magnifier — never override it.
+  if (Math.abs(state.viewport.visibleH - before) > 40
+      && !isEditingField() && !pageZoomed()) {
+    scheduleRefit();
+  }
+  requestRender();
+}
+
+/** True while a text field has focus (the on-screen keyboard is up). */
+function isEditingField() {
+  const el = document.activeElement;
+  if (!el) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+}
+
+/** True while the page itself is pinch-zoomed (visual viewport scale ≠ 1). */
+function pageZoomed() {
+  const vv = window.visualViewport;
+  return !!vv && Math.abs(vv.scale - 1) > 0.02;
+}
+
+/**
+ * Re-fit the view after a large viewport change (rotation, or the browser bars
+ * collapsing in landscape) so content fills the whole screen again — the
+ * previously hidden safe-area regions included. Debounced so the browser's own
+ * resize animation settles before the refit runs.
+ */
+function scheduleRefit() {
+  if (refitTimer) clearTimeout(refitTimer);
+  refitTimer = setTimeout(() => {
+    refitTimer = null;
+    const { w, h } = viewport.fitBox();
+    if (lastSize.w && (Math.abs(w - lastSize.w) > 40 || Math.abs(h - lastSize.h) > 40)) {
+      if (state.focusedImage) {
+        viewport.fitViewToImage(state.focusedImage, state.viewport.w, state.viewport.h);
+      } else {
+        viewport.fitView(state.viewport.w, state.viewport.h);
+      }
+      state.emit("viewport-resized");
+    }
+    lastSize = { w, h };
+    requestRender();
+  }, 120);
 }
 
 /** Request a frame (coalesced). */
@@ -82,6 +128,25 @@ export function resizeCanvas(leftEl) {
   canvas.height = Math.round(h * dpr);
   state.viewport.w = w;
   state.viewport.h = h;
+  measureVisibleRegion();
+}
+
+/**
+ * Record the slice of the canvas the user can actually see. The canvas spans
+ * the whole screen (viewport-fit=cover), so on iPhone it reaches behind the
+ * dynamic island and the translucent URL bar; the visual viewport excludes the
+ * browser bars, so fits use it and pages never end up hidden behind them.
+ * Anything the browser does not report — a page the user pinch-zoomed, or no
+ * visual viewport at all — falls back to the full canvas.
+ */
+function measureVisibleRegion() {
+  const vp = state.viewport;
+  const vv = window.visualViewport;
+  const usable = vv && !pageZoomed();
+  const h = usable && vv.height > 0 ? Math.round(vv.height) : 0;
+  const top = usable && vv.offsetTop > 0 ? Math.round(vv.offsetTop) : 0;
+  vp.visibleTop = Math.min(top, vp.h);
+  vp.visibleH = h > 0 ? Math.min(h, vp.h) : vp.h;
 }
 
 /** Draw a single frame. */

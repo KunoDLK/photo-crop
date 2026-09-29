@@ -399,7 +399,11 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   parents; recursive `tileCovered` culling; 0.5 px bleed on each tile to kill sub-pixel
   seams.
 - `viewport.js` — pure scene↔device transform math (`sceneToDev`/`devToScene`, fit
-  helpers). `render.js` — rAF loop, canvas DPR sizing, grey `#808080` background, labels,
+  helpers). Fits go through `fitBox`, which hands them the *visible* slice of the
+  canvas (`state.viewport.visibleH`/`visibleTop`) rather than the full canvas the
+  renderer paints (see fullscreen.js below), so pages stay on screen.
+  `render.js` — rAF loop, canvas DPR sizing + visible-region tracking, grey
+  `#808080` background, labels,
   tile-debug overlay; delegates per-image drawing to the compositor.
 - `interaction.js` — wheel zoom (Ctrl+wheel = pinch; the 0.036 vs 0.0012 factors matter,
   see the comment — trackpad pinches arrive as tiny ctrl+deltas), pointer pan, two-finger
@@ -491,12 +495,20 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   "immersive" mode (`html.immersive`): on coarse-pointer devices the
   toolbar/status bar tuck away after a pan/zoom burst and a touch near the top
   edge brings them back. On touch devices /
-  narrow windows the canvas is full-bleed (`#left` fixed, inset 0) and the
-  chrome floats on top of it: back/title/☰ become translucent safe-area-aware
+  narrow windows the canvas is full-bleed (a `#left` layer fixed at `inset 0`
+  with `height: 100lvh`, i.e. the large viewport) and the chrome floats on top
+  of it: back/title/☰ become translucent safe-area-aware
   pills, and the banner + status line become floating pills — content renders
-  right around the dynamic island. `viewport-fit=cover` +
-  `env(safe-area-inset-*)` paddings keep content clear of the notch/home
-  indicator when the chrome is gone.
+  right around the dynamic island, and the canvas keeps painting behind Safari's
+  translucent URL bar and past the home indicator instead of stopping at the
+  dynamic viewport edge. Because the canvas is then taller than the screen
+  content area, `render.js` tracks the visible slice (`visualViewport` →
+  `state.viewport.visibleH`/`visibleTop`) and the fit helpers (`viewport.js`
+  `fitBox`) centre pages in that slice, re-fitting when the bars collapse, so
+  pages stay fully on screen while the canvas paints edge to edge behind them.
+  `viewport-fit=cover` +
+  `env(safe-area-inset-*)` paddings keep the chrome clear of the notch/home
+  indicator (the canvas itself deliberately ignores the safe areas).
 
 ## Gotchas and non-obvious facts
 

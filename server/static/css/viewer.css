@@ -261,6 +261,13 @@ html:not(.no-js) .menu-btn {
 html:not(.no-js) .left {
   position: fixed;
   inset: 0;
+  /* Large viewport (100vh matches it on iOS): the canvas keeps painting over
+     the full screen — behind the dynamic island, under the translucent URL bar
+     and past the home indicator — instead of stopping at the dynamic viewport
+     edge when the bars are shown. The visible slice is measured in JS
+     (visualViewport) so fits still keep pages on screen; see render.js. */
+  height: 100vh;
+  height: 100lvh;
   z-index: 1;
 }
 #view {
