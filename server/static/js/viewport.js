@@ -41,6 +41,23 @@ export function fitBox(vpw = vp.w, vph = vp.h) {
   return { w: vpw, h: vph, top: 0 };
 }
 
+/**
+ * The visible slice of the canvas in device (CSS px) coordinates: the part of
+ * the full-screen canvas that no browser bar covers (see render.js). Drawing
+ * and tile culling use the whole canvas; user-facing geometry — fits, the
+ * "which page is at the centre" checks, the off-screen arrows — uses this.
+ */
+export function visibleRect() {
+  const box = fitBox();
+  return { x0: 0, y0: box.top, x1: box.w, y1: box.top + box.h };
+}
+
+/** Centre of the visible slice, in device (CSS px) coordinates. */
+export function visibleCenter() {
+  const box = fitBox();
+  return { x: box.w / 2, y: box.top + box.h / 2 };
+}
+
 /** Fit the whole scene into the viewport (used for root and book fit). */
 export function fitView(vpw, vph) {
   const box = fitBox(vpw, vph);

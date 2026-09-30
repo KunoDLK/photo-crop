@@ -401,7 +401,10 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
 - `viewport.js` — pure scene↔device transform math (`sceneToDev`/`devToScene`, fit
   helpers). Fits go through `fitBox`, which hands them the *visible* slice of the
   canvas (`state.viewport.visibleH`/`visibleTop`) rather than the full canvas the
-  renderer paints (see fullscreen.js below), so pages stay on screen.
+  renderer paints (see fullscreen.js below), so pages stay on screen;
+  `visibleRect`/`visibleCenter` expose that slice to the user-facing geometry
+  (the "which page is at the centre" checks in nav.js, the off-screen arrows in
+  crosses.js), while drawing and tile culling keep the full canvas.
   `render.js` — rAF loop, canvas DPR sizing + visible-region tracking, grey
   `#808080` background, labels,
   tile-debug overlay; delegates per-image drawing to the compositor.

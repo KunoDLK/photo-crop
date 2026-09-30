@@ -244,7 +244,7 @@ export function toggleZoomFit() {
   // 1:1: keep the scene point under the cursor fixed when the cursor is over
   // the page (same anchoring as wheel zoom), otherwise centre the image.
   state.setFocusedImage(im);
-  const vpw = state.viewport.w, vph = state.viewport.h;
+  const centre = viewport.visibleCenter();
   const oldScale = state.view.scale;
   const sx = (state.cursor.x - state.view.vx) / oldScale;
   const sy = (state.cursor.y - state.view.vy) / oldScale;
@@ -256,8 +256,8 @@ export function toggleZoomFit() {
     state.view.vx = state.cursor.x - sx * state.view.scale;
     state.view.vy = state.cursor.y - sy * state.view.scale;
   } else {
-    state.view.vx = vpw / 2 - (im.drawX + im.drawW / 2) * state.view.scale;
-    state.view.vy = vph / 2 - (im.drawY + im.drawH / 2) * state.view.scale;
+    state.view.vx = centre.x - (im.drawX + im.drawW / 2) * state.view.scale;
+    state.view.vy = centre.y - (im.drawY + im.drawH / 2) * state.view.scale;
   }
   scheduler.reconcile();
   render.requestRender();
@@ -350,11 +350,15 @@ async function showImageInfo(im) {
   }
 }
 
-/** The image whose cell contains the viewport centre, or null. */
+/**
+ * The image whose cell contains the visible centre, or null. The centre is the
+ * middle of what the user can see, not of the whole canvas: on iPhone part of
+ * the canvas sits behind the browser bars (see viewport.visibleCenter).
+ */
 function imageAtViewportCenter() {
-  const vpw = state.viewport.w, vph = state.viewport.h;
-  const sx = (vpw / 2 - state.view.vx) / state.view.scale;
-  const sy = (vph / 2 - state.view.vy) / state.view.scale;
+  const c = viewport.visibleCenter();
+  const sx = (c.x - state.view.vx) / state.view.scale;
+  const sy = (c.y - state.view.vy) / state.view.scale;
   for (let i = state.images.length - 1; i >= 0; i--) {
     const im = state.images[i];
     if (sx >= im.cellX && sx <= im.cellX + im.cell &&
@@ -370,9 +374,9 @@ function imageAtViewportCenter() {
  * Used by the settle-checker when the view is zoomed in near page size.
  */
 function imageClosestToViewportCenter() {
-  const vpw = state.viewport.w, vph = state.viewport.h;
+  const c = viewport.visibleCenter();
   const sc = state.view.scale;
-  const cx = vpw / 2, cy = vph / 2;
+  const cx = c.x, cy = c.y;
   let best = null, bestD = Infinity;
   for (const im of state.images) {
     if (im.status === "error") continue;
@@ -401,9 +405,9 @@ function imageNearPageZoom(im) {
  * canvas. Used as the target for the Space toggle when nothing is focused.
  */
 function imageNearestCursor() {
-  const vpw = state.viewport.w, vph = state.viewport.h;
-  const ox = state.cursor.x >= 0 ? state.cursor.x : vpw / 2;
-  const oy = state.cursor.y >= 0 ? state.cursor.y : vph / 2;
+  const c = viewport.visibleCenter();
+  const ox = state.cursor.x >= 0 ? state.cursor.x : c.x;
+  const oy = state.cursor.y >= 0 ? state.cursor.y : c.y;
   const sc = state.view.scale;
   let best = null, bestD = Infinity;
   for (const im of state.images) {
@@ -418,15 +422,15 @@ function imageNearestCursor() {
   return best;
 }
 
-/** True when the image's visible area covers most of the viewport. */
+/** True when the image's visible area covers most of the visible screen. */
 function imageDominant(im) {
-  const vpw = state.viewport.w, vph = state.viewport.h;
+  const box = viewport.visibleRect();
   const sc = state.view.scale;
   const [dx, dy] = viewport.sceneToDev(im.drawX, im.drawY);
   const dw = im.drawW * sc, dh = im.drawH * sc;
-  const w = Math.min(vpw, dx + dw) - Math.max(0, dx);
-  const h = Math.min(vph, dy + dh) - Math.max(0, dy);
-  return Math.max(0, w) * Math.max(0, h) >= vpw * vph * 0.5;
+  const w = Math.min(box.x1, dx + dw) - Math.max(box.x0, dx);
+  const h = Math.min(box.y1, dy + dh) - Math.max(box.y0, dy);
+  return Math.max(0, w) * Math.max(0, h) >= (box.x1 - box.x0) * (box.y1 - box.y0) * 0.5;
 }
 
 /** Update the URL path to a short id for (book, page), latest-wins. */
