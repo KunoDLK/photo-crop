@@ -36,6 +36,17 @@
   --canvas-bg: #f2f2f2;   /* light theme background */
   --cross: #404040;
 }
+/* The strips Safari keeps for itself — the "forehead" behind the dynamic
+   island and the "chin" below the floating URL bar — are painted with the root
+   background (on iOS 26 it does not composite a fixed layer into the top one,
+   and the tint it samples comes from there too). Matching the root to the
+   canvas colour makes the canvas read edge to edge in every colour mode
+   instead of showing the light/dark document background as a band. The no-JS
+   crawler view keeps the document background (html.no-js). */
+html:not(.no-js),
+html:not(.no-js) body {
+  background: var(--canvas-bg, #808080);
+}
 * { box-sizing: border-box; }
 html, body {
   height: 100%;
