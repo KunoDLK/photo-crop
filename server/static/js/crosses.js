@@ -19,6 +19,7 @@
 
 import * as state from "./state.js";
 import * as render from "./render.js";
+import * as viewport from "./viewport.js";
 import { getCss, clamp } from "./util.js";
 import {
   CELL, CELL_GAP, LABEL_H,
@@ -251,24 +252,26 @@ function refreshColors() {
   render.requestRender();
 }
 
-/** True while the content rect is entirely outside the viewport. */
+/** True while the content rect is entirely outside what the user can see. */
 function isContentOffScreen() {
   if (!contentRect) return true;
   const s = state.view.scale;
-  const x0 = -state.view.vx / s, y0 = -state.view.vy / s;
-  const x1 = (state.viewport.w - state.view.vx) / s;
-  const y1 = (state.viewport.h - state.view.vy) / s;
+  const r = viewport.visibleRect();
+  const x0 = (r.x0 - state.view.vx) / s, y0 = (r.y0 - state.view.vy) / s;
+  const x1 = (r.x1 - state.view.vx) / s;
+  const y1 = (r.y1 - state.view.vy) / s;
   return x1 < contentRect.x0 || x0 > contentRect.x1 ||
     y1 < contentRect.y0 || y0 > contentRect.y1;
 }
 
-/** Dial angle (0 = up, clockwise) from the viewport centre to the nearest
+/** Dial angle (0 = up, clockwise) from the visible centre to the nearest
  * point on the content rect; null when the centre is inside it. */
 function contentDirection() {
   if (!contentRect) return null;
   const s = state.view.scale;
-  const cx = (state.viewport.w / 2 - state.view.vx) / s;
-  const cy = (state.viewport.h / 2 - state.view.vy) / s;
+  const c = viewport.visibleCenter();
+  const cx = (c.x - state.view.vx) / s;
+  const cy = (c.y - state.view.vy) / s;
   const nx = clamp(cx, contentRect.x0, contentRect.x1);
   const ny = clamp(cy, contentRect.y0, contentRect.y1);
   const dx = nx - cx, dy = ny - cy;

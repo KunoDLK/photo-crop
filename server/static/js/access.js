@@ -16,6 +16,7 @@
 
 import * as state from "./state.js";
 import * as notifications from "./notifications.js";
+import * as viewport from "./viewport.js";
 import { fetchMe } from "./api/auth.js";
 import { BLUR_TEXT_VIEWPORT_FRACTION } from "./config.js";
 
@@ -131,6 +132,7 @@ function refreshLabels() {
   if (!sceneEl) return;
   const vpw = state.viewport.w, vph = state.viewport.h;
   if (!vpw || !vph) return;
+  const box = viewport.visibleRect();
   const sc = state.view.scale;
   for (const im of state.images) {
     if (im.kind !== "page" || !im.access || im.access.status !== "blurred") continue;
@@ -139,7 +141,7 @@ function refreshLabels() {
     const onW = im.drawW * sc;
     const onH = im.drawH * sc;
     const want = onW >= vpw * BLUR_TEXT_VIEWPORT_FRACTION
-      && dx + onW >= 0 && dx <= vpw && dy + onH >= 0 && dy <= vph;
+      && dx + onW >= box.x0 && dx <= box.x1 && dy + onH >= box.y0 && dy <= box.y1;
     const el = labels.get(im.id);
     if (want && !el) labels.set(im.id, makeBlurLabel(im));
     else if (!want && el) {

@@ -12,8 +12,14 @@ export const view = { scale: 1, vx: 0, vy: 0, fitScale: 1 };
 /** Total scene bounds (in scene px). */
 export const scene = { w: 0, h: 0 };
 
-/** Viewport (canvas) size in CSS px, updated by the renderer. */
-export const viewport = { w: 0, h: 0 };
+/**
+ * Viewport (canvas) size in CSS px, updated by the renderer. The canvas covers
+ * the whole screen — on iPhone it paints behind the dynamic island and the
+ * translucent URL bar — so `visibleH`/`visibleTop` record the slice the user can
+ * actually see (the visual viewport). Fits and centring use that slice; tile
+ * culling uses the full canvas, so content keeps painting behind the bars.
+ */
+export const viewport = { w: 0, h: 0, visibleH: 0, visibleTop: 0 };
 
 /** Current location: the root book list, or a specific book. */
 export const location = { type: "root", book: null };
