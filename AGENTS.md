@@ -521,7 +521,9 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   so `viewer.css` sets `html:not(.no-js)`/`body` background to `--canvas-bg`
   (the crawler view keeps the document background); the tile-debug stats line
   (D) prints canvas/visual-viewport/window sizes and the safe-area insets for
-  checking geometry on a real phone.
+  checking geometry on a real phone. The bottom-anchored overlays (debug bars,
+  status pill) sit above the browser bars because `render.js` publishes the
+  covered height as `--canvas-bottom-cover` on every visible-region change.
 
 ## Gotchas and non-obvious facts
 

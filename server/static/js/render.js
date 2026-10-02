@@ -27,6 +27,7 @@ let debugLayer = null; // offscreen tint layer for the tile-debug overlay
 let debugCtx = null;
 let refitTimer = null; // debounced viewport-change handler
 let lastSize = { w: 0, h: 0 };
+let lastBottomCover = -1; // last --canvas-bottom-cover published to CSS
 
 /** Provide the decoded-tile cache so the debug overlay can enumerate tiles. */
 export function initDebug(deps) {
@@ -147,6 +148,15 @@ function measureVisibleRegion() {
   const top = usable && vv.offsetTop > 0 ? Math.round(vv.offsetTop) : 0;
   vp.visibleTop = Math.min(top, vp.h);
   vp.visibleH = h > 0 ? Math.min(h, vp.h) : vp.h;
+  // Publish how much of the canvas the browser hides at the bottom (Safari's
+  // translucent URL bar plus the "chin" below it) as a CSS variable, so the
+  // bottom-anchored overlays — the debug bars and the status pill, which live
+  // inside the canvas layer — sit above the bars instead of behind them.
+  const cover = Math.max(0, vp.h - (vp.visibleTop + vp.visibleH));
+  if (cover !== lastBottomCover) {
+    lastBottomCover = cover;
+    document.documentElement.style.setProperty("--canvas-bottom-cover", cover + "px");
+  }
 }
 
 /** Draw a single frame. */

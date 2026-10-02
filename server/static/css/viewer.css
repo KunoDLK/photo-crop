@@ -319,19 +319,31 @@ html:not(.no-js) .left {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 4px 10px;
+  padding: 4px calc(10px + env(safe-area-inset-right)) 4px calc(10px + env(safe-area-inset-left));
   background: rgba(0,0,0,0.55);
   color: #fff;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+  /* The debug lines are long; wrap them instead of running off the screen
+     (in landscape the side safe areas would swallow the ends too). */
   white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
   z-index: 5;
 }
 #prof { bottom: 18px; font-size: 10px; }
-html:not(.no-js) .stats { bottom: calc(env(safe-area-inset-bottom) + 4px); }
-html:not(.no-js) #prof { bottom: calc(env(safe-area-inset-bottom) + 24px); }
+/* Keep the debug lines out of the region the browser covers at the bottom:
+   the canvas is the large viewport, so everything below the visible slice
+   (--canvas-bottom-cover, set by render.js) plus the home-indicator inset is
+   hidden behind Safari's URL bar. */
+html:not(.no-js) .stats {
+  bottom: calc(var(--canvas-bottom-cover, 0px) + env(safe-area-inset-bottom) + 4px);
+}
+html:not(.no-js) #prof {
+  bottom: calc(var(--canvas-bottom-cover, 0px) + env(safe-area-inset-bottom) + 24px);
+}
 
 #status {
   flex: 0 0 auto;
@@ -348,7 +360,7 @@ html:not(.no-js) #status {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  bottom: calc(env(safe-area-inset-bottom) + 8px);
+  bottom: calc(var(--canvas-bottom-cover, 0px) + env(safe-area-inset-bottom) + 8px);
   max-width: 90vw;
   padding: 4px 12px;
   border: none;
@@ -365,7 +377,7 @@ html:not(.no-js) #status {
 }
 /* The tile-debug bars sit at the bottom too; lift the status pill above them. */
 html:not(.no-js) body:has(#stats:not([hidden])) #status {
-  bottom: calc(env(safe-area-inset-bottom) + 52px);
+  bottom: calc(var(--canvas-bottom-cover, 0px) + env(safe-area-inset-bottom) + 52px);
 }
 
 /* ------------------------------------------------------- search + OCR overlay
