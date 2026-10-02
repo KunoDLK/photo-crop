@@ -148,5 +148,36 @@ export function updateStats() {
     `total ${totalTiles}  ` +
     `committed ${committed}/${MAX_DISPLAYED_TILES}  inflight ${queue.inflightCount}  ` +
     `queued ${queue.queuedCount}  cache ${hitPct}% (${hits}/${total})  ` +
-    `load ${(loadElapsed / 1000).toFixed(2)}s`;
+    `load ${(loadElapsed / 1000).toFixed(2)}s  [${screenDebug()}]`;
+}
+
+/**
+ * Screen geometry for the tile-debug bar: what the canvas covers versus what
+ * the phone actually shows. Handy on a real device, where the headless numbers
+ * (visual viewport, safe-area insets, browser bars) decide whether the canvas
+ * really reaches behind the dynamic island and the URL bar.
+ */
+function screenDebug() {
+  const vvp = state.viewport;
+  const vv = window.visualViewport;
+  const ins = safeAreaInsets();
+  return `canvas ${vvp.w}x${vvp.h} vis ${vvp.visibleH}+${vvp.visibleTop} ` +
+    `win ${window.innerWidth}x${window.innerHeight} ` +
+    `vv ${Math.round(vv ? vv.width : 0)}x${Math.round(vv ? vv.height : 0)}+${Math.round(vv ? vv.offsetTop : 0)} ` +
+    `safe t${ins[0]} b${ins[2]}`;
+}
+
+let insetProbe = null;
+
+/** Read the safe-area insets as WebKit resolves them (env() via a probe). */
+function safeAreaInsets() {
+  if (!insetProbe) {
+    insetProbe = document.createElement("div");
+    insetProbe.style.cssText = "position:fixed;left:-9999px;top:0;pointer-events:none;"
+      + "padding:env(safe-area-inset-top) env(safe-area-inset-right) "
+      + "env(safe-area-inset-bottom) env(safe-area-inset-left);";
+    document.body.appendChild(insetProbe);
+  }
+  const cs = getComputedStyle(insetProbe);
+  return [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft];
 }

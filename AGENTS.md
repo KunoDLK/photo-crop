@@ -504,14 +504,24 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   pills, and the banner + status line become floating pills — content renders
   right around the dynamic island, and the canvas keeps painting behind Safari's
   translucent URL bar and past the home indicator instead of stopping at the
-  dynamic viewport edge. Because the canvas is then taller than the screen
+  dynamic viewport edge. The document root is `height: 100vh` for the same
+  reason (Apple's full-bleed guidance: a percentage root height defeats
+  `viewport-fit=cover` outright, and `100dvh` is misreported on a PWA cold
+  start) — never "fix" that back to `100dvh`/`100%`. Because the canvas is then taller than the screen
   content area, `render.js` tracks the visible slice (`visualViewport` →
   `state.viewport.visibleH`/`visibleTop`) and the fit helpers (`viewport.js`
   `fitBox`) centre pages in that slice, re-fitting when the bars collapse, so
   pages stay fully on screen while the canvas paints edge to edge behind them.
   `viewport-fit=cover` +
   `env(safe-area-inset-*)` paddings keep the chrome clear of the notch/home
-  indicator (the canvas itself deliberately ignores the safe areas).
+  indicator (the canvas itself deliberately ignores the safe areas). Safari
+  keeps two strips of its own — the "forehead" behind the dynamic island and the
+  "chin" below the floating URL bar — painted with the *root* background (on
+  iOS 26 it does not composite a fixed layer into the top one, at scrollY 0),
+  so `viewer.css` sets `html:not(.no-js)`/`body` background to `--canvas-bg`
+  (the crawler view keeps the document background); the tile-debug stats line
+  (D) prints canvas/visual-viewport/window sizes and the safe-area insets for
+  checking geometry on a real phone.
 
 ## Gotchas and non-obvious facts
 
