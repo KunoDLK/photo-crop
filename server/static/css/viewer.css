@@ -49,8 +49,12 @@ html:not(.no-js) body {
 }
 * { box-sizing: border-box; }
 html, body {
-  height: 100%;
-  height: 100dvh;
+  /* Large viewport height. Per Apple's full-bleed guidance: a percentage height
+     silently defeats viewport-fit=cover (the layout falls back to the inset
+     one, so nothing renders behind the cutout), and 100dvh is misreported on a
+     PWA cold start until the device is rotated. 100vh (== 100lvh, the large
+     viewport) is correct from the first frame in Safari and in standalone mode. */
+  height: 100vh;
   margin: 0;
   /* No elastic pull / scroll chaining at screen edges (iPhone): the canvas
      must never be yanked away from the dynamic island or home indicator. */

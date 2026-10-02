@@ -504,7 +504,10 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
   pills, and the banner + status line become floating pills — content renders
   right around the dynamic island, and the canvas keeps painting behind Safari's
   translucent URL bar and past the home indicator instead of stopping at the
-  dynamic viewport edge. Because the canvas is then taller than the screen
+  dynamic viewport edge. The document root is `height: 100vh` for the same
+  reason (Apple's full-bleed guidance: a percentage root height defeats
+  `viewport-fit=cover` outright, and `100dvh` is misreported on a PWA cold
+  start) — never "fix" that back to `100dvh`/`100%`. Because the canvas is then taller than the screen
   content area, `render.js` tracks the visible slice (`visualViewport` →
   `state.viewport.visibleH`/`visibleTop`) and the fit helpers (`viewport.js`
   `fitBox`) centre pages in that slice, re-fitting when the bars collapse, so
