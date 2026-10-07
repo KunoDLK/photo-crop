@@ -60,8 +60,9 @@ def list_books_endpoint(
     policy = request.app.state.policy
     region = request.app.state.region
     if force:
-        # A forced reload re-reads provider state too (e.g. the mosaic
-        # manifest), so edited/added tiles surface with fresh versions.
+        # A forced reload re-reads provider state and re-discovers every
+        # configured mosaic manifest, so edited/added mosaics (and their
+        # tiles) surface with fresh versions without a restart.
         request.app.state.sources.refresh()
     signature, books = catalog.books(force)
     zone = region.zone_of_request(request)
@@ -109,8 +110,9 @@ def list_pages_endpoint(
     # so they are resolved before any rights/visibility checks apply.
     sources = request.app.state.sources
     if force:
-        # A forced reload re-reads provider state (e.g. the mosaic manifest),
-        # so edited/added tiles surface with fresh page versions.
+        # A forced reload re-reads provider state and re-discovers every
+        # configured mosaic manifest, so edited/added mosaics (and their
+        # tiles) surface with fresh page versions without a restart.
         sources.refresh()
     result = sources.pages(book_id)
     if result is not None:

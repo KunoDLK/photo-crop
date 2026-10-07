@@ -50,9 +50,13 @@ now covers the server.
   `dev/wafer_mosaic.py --grid 31 [--prewarm]` **copies** the cells onto a
   31x31 = 961-cell "wafer" fixture (`dev/archive/wafer/`, book `wafer-mosaic`,
   a ~310k-px canvas) and optionally prewarms every cell's proxy chain into
-  `dev/cache/cache.db` (11 source decodes, not 961). `dev/config.py` feeds
-  every existing manifest to the server via `MOSAIC_MANIFESTS`, so
-  `python -m dev.run` serves demo + wafer side by side. A leftover
+  `dev/cache/cache.db` (11 source decodes, not 961); `dev/siliconprawn_mosaic.py
+  --tiles DIR [--name SLUG] [--chunk 4096]` stitches a tiled scan laid out as
+  `<x>/<y>.jpg` into 4096-px chunk cells and merges it as one **page** of a
+  multi-page book (`dev/archive/siliconprawn/`, book `siliconprawn`; run once
+  per scan). `dev/config.py` points `MOSAIC_MANIFESTS` at `dev/archive`,
+  so the server serves every `*/manifest.json` below it (and picks up a new one
+  on Reload). A leftover
   `cache.db` from an older schema is wiped on the first open of a new build
   (schema bump policy — re-run `--prewarm` after upgrading).
 - **Deps**: `pip install -r server/requirements.txt`. Includes fastapi, uvicorn, pydantic,
@@ -190,19 +194,33 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
 
 - `base.py` — `ImageSource` (owns book ids, renders tiles) + `SourceRegistry`
   (consulted before the archive catalog; first registered source wins a book id).
+  Force reloads **re-discover** config-built sources: the registry's optional
+  `discover` callback rebuilds the mosaic set from `MOSAIC_MANIFESTS` on
+  `refresh()`, so a manifest added while the server runs appears on the next
+  client Reload (a removed one disappears) without a restart. Discovery matches
+  existing instances by `ImageSource.provider_identity` (static sources return
+  `None` and are never re-discovered), keeping in-process state such as decode
+  locks and a running warm sweep.
 - `service.py` — `SourceTileService`, the provider twin of `tiles.manager`: the
   same shared SQLite tile store, per-tile `KeyedLock` dedupe, worker-thread
   renders, progressive-JPEG encode. Provider tile keys are `p/<source>/<book>/...`
   and eviction depth comes from the source (`tile_zoom`); the route is
-  `GET /pv/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg`.
+  `GET /pv/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg` (mosaic responses also
+  carry `X-Mosaic-*` proxy-generation headers).
 - `fractal/` — the reference source (book `fractals`): procedural Mandelbrot,
   now `cacheable` like every source (bytes are deterministic).
-- `mosaic.py` — a virtual page composed from many source images. The manifest
-  (one per book) declares `book`/`name`, the canvas size, and every cell's
-  placement + source; each configured manifest becomes its own mosaic book
-  (`MOSAIC_MANIFESTS`). **Wafer-scale rendering**: cells whose footprint at a
-  level is narrower than one tile (the proxy band) are drawn from per-cell
-  **proxy chains** stored in the shared SQLite store — each chain holds one
+- `mosaic.py` — a mosaic **book** composed from many source images. The manifest
+  declares `book`/`name` and one or more **pages**, each page its own virtual
+  canvas (`canvas` + `cells`). The legacy single-canvas shape is one page (id
+  `mosaic`); a `pages` list makes several (id from `page.id` or the name slug),
+  shown as pages of that one book. Each configured manifest is its own book
+  (`MOSAIC_MANIFESTS`, which also accepts a **directory** whose `*/manifest.json`
+  are all served). A page's `version` is recomputed on every load from the
+  manifest + cell source mtimes, so a re-saved cell image or an edited manifest
+  surfaces with fresh URLs on the next Reload. **Wafer-scale rendering**: cells
+  whose footprint at a level is narrower than one tile (the proxy band) are
+  drawn from per-cell **proxy chains** stored in the shared SQLite store — each
+  chain holds one
   lossless PNG plane per band level, built once from a single full-res decode
   by successive INTER_AREA halving (atomic replace, per-cell decode lock), so a
   whole-canvas tile over N cells costs N tiny PNG decodes instead of N full
@@ -210,7 +228,14 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
   decoded-image `PageCache` as before. Band membership is a pure function of
   the manifest (never of cache state); chain builds refresh the chain's access
   time (generation, not hits), so idle chains age into eviction exactly when
-  the cache needs room. Design notes: `docs/wafer-mosaic-scaling.md`.
+  the cache needs room. **Warm front door**: a page's chain readiness + progress
+  (`proxy_state`, per page; cells-with-chains vs. cells-needing-chains) rides on
+  every listing record, is exposed at `GET /api/mosaic/{book}/proxy?page=`, and is
+  echoed on provider tile responses as `X-Mosaic-Ready`/`X-Mosaic-Progress`; the
+  first poll starts an on-demand background sweep (`ensure_warming(page)`, the
+  `prewarm` path) so a client can hold off tile requests and show `warming NN%`
+  instead of triggering a cold-render storm. Design notes:
+  `docs/wafer-mosaic-scaling.md` (O4) and `docs/mosaic-proxy-progress.md`.
 
 ### OCR — `server/ocr/`
 
@@ -380,7 +405,7 @@ crawler-facing HTML.
 |---|---|
 | `GET /api/books[?force=1]` | visible books (private hidden without a grant) + `signature` + per-book `visibility` + cover `access` |
 | `GET /api/books/{book}/pages[?force=1]` | pages sorted by (group, order) + `signature` + book `visibility`; each page carries its resolved `access`; pages the viewer cannot see at all (page-scoped share token) are dropped |
-| `GET /api/books/{book}/pages/{page}/info` | dims, `max_level`, file size, sha256, resolved `access` |
+| `GET /api/books/{book}/pages/{page}/info` | dims, `max_level`, file size, sha256, resolved `access`, and `license` (an `<image>.LICENSE` sidecar's text if present) |
 | `GET /api/locations?book=&page=` | create/fetch short id → `{id}` |
 | `GET /api/locations/{id}` | resolve short id → `{book, page}` |
 | `GET /rt/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg` | immutable real progressive JPEG — `full` access only |
@@ -388,6 +413,7 @@ crawler-facing HTML.
 | `GET /og/{book}/{page}/{version}.jpg` | 1200×630 real social preview (full access only; region-locked pages send no image) |
 | `GET /api/books/{book}/pages/{page}/ocr` | word/line boxes in source px — `full` access only, else 404 |
 | `GET /api/search?book=&q=&regex=` | matches (filtered to fully-visible pages) + `pending` count |
+| `GET /api/mosaic/{book}/proxy[?page=]` | mosaic page proxy-generation state `{enabled, ready, ready_cells, total_cells, percent, generating}`; `page` defaults to the cover page; starts a background warm when not ready (404 for non-mosaic books) |
 | `GET /api/qr?url=` | PNG QR code (H error correction) with the brand "K" logo centred over it, for the Share panel |
 | `POST /api/login` | owner/account login → session cookie (401 bad creds, 429 rate-limited) |
 | `POST /api/logout` | clears the session cookie |
@@ -471,6 +497,13 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
 - `nameFilter.js` — client-side substring filter on raw file name (matches the
   `2_123-Page.jpg` prefix too). **Mutually exclusive with OCR search**: starting one
   clears the other.
+- `proxy.js` (+ `api/proxy.js`) — mosaic warm front door. While a visible image's
+  listing `proxy` state is not ready, the scheduler requests nothing for it
+  (`tiles/scheduler.js` `proxyBlocked`); this module polls
+  `GET /api/mosaic/{book}/proxy` (`MOSAIC_PROXY_POLL_MS`), keeps the image's
+  `proxy` state fresh, shows `warming NN%` (render.js placeholder), and once ready
+  clears the warming status and reconciles so tiles start flowing. Never polls when
+  every mosaic page is ready (archive/fractal pages carry no `proxy` state).
 - `share.js` — Share button opens a centred panel with the current URL's QR code
   (`/api/qr`) and copies the URL to the clipboard; a green tick marks a completed
   clipboard write. When the current location is **private** or **region-locked**

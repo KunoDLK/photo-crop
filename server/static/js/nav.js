@@ -15,7 +15,7 @@ import { buildLayout } from "./layout.js";
 import * as viewport from "./viewport.js";
 import * as render from "./render.js";
 import * as scheduler from "./tiles/scheduler.js";
-import { formatPixels, formatBytes, formatDuration, clamp } from "./util.js";
+import { formatPixels, formatBytes, formatDuration, clamp, escapeHtml, linkify } from "./util.js";
 import { BLUR_TEXT_VIEWPORT_FRACTION, MAX_SCALE } from "./config.js";
 
 let urlSyncSeq = 0;
@@ -56,6 +56,7 @@ export async function showBooks(force = false, keepView = null) {
       visibility: b.visibility,
       access: b.cover.access,
       source: b.cover.source,
+      proxy: b.cover.proxy,
     }));
     currentItems = items;
     buildLayout(items);
@@ -106,6 +107,7 @@ export async function enterBook(book, pageId = null, force = false, keepView = n
       version: p.mtime,
       access: p.access,
       source: p.source,
+      proxy: p.proxy,
     }));
     state.location.type = "book";
     state.location.book = book;
@@ -339,12 +341,19 @@ function totalPixels() {
   return state.images.reduce((s, im) => s + im.iw * im.ih, 0);
 }
 
-/** Show a page's pixel count, file size and content hash in the status bar. */
+/** Show a page's name, dimensions, pixel count, file size and licence. */
 async function showImageInfo(im) {
   const px = `${im.name} — ${im.iw}×${im.ih} (${formatPixels(im.iw * im.ih)})`;
   try {
     const info = await fetchImageInfo(im.bookId, im.pageId);
-    state.setStatus(`${px} · ${formatBytes(info.file_size)} · ${info.hash}`);
+    const line = `${px} · ${formatBytes(info.file_size)}`;
+    if (info.license) {
+      // Licence text (e.g. Creative Commons) renders on its own line under the
+      // file size, with any URLs made clickable; the text is escaped first.
+      state.setStatus({ text: line, html: escapeHtml(line) + "<br>" + linkify(info.license) });
+    } else {
+      state.setStatus(line);
+    }
   } catch (e) {
     state.setStatus(px);
   }

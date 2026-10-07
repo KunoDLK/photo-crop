@@ -293,6 +293,12 @@ candidate ordering — age tiers added *above* the existing zoom-first order.
   request pays N × (one decode + chain) — minutes for hundreds of cells,
   exactly once per version, then effectively free. Prewarm moves that cost to
   ingest/deploy where it belongs.
+- **O4 — Warm front door** (status + progress): a client learns a page's chain
+  readiness from its listing, polls `GET /api/mosaic/{book}/proxy`, and holds
+  off tile requests for a not-ready page (no cold-render storm) while showing
+  `warming NN%`; the first poll starts the O2-style sweep, and provider tile
+  responses echo the state as `X-Mosaic-*` headers. See
+  `docs/mosaic-proxy-progress.md`.
 
 ---
 
@@ -308,7 +314,9 @@ candidate ordering — age tiers added *above* the existing zoom-first order.
 
 ## 11. Out of scope / explicitly unchanged
 
-- Client JS, tile geometry formulas, `max_level`, HTTP API, cache headers.
+- Tile geometry formulas, `max_level`, archive tile cache headers. (The O4
+  front door adds the mosaic status endpoint and `X-Mosaic-*` provider-tile
+  headers and small client changes — see `docs/mosaic-proxy-progress.md`.)
 - Blur/rights pipeline (unrelated key spaces).
 - Archive page pipeline (deep band of a mosaic page behaves like it already).
 - Schema migrations (wipe-based by design); v2 bump costs one cache rebuild.

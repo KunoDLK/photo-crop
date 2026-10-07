@@ -52,14 +52,14 @@ class LocalDev:
             "CACHE_DIR": str(self.cache_dir),
             "OCR_CACHE_DIR": str(self.cache_dir / "ocr"),
             "RIGHTS_DB_PATH": str(self.cache_dir / "rights.db"),
-            # Mosaic source manifests: the demo (built by dev/mosaic_build.py)
-            # and, when present, the wafer-scale fixture (dev/wafer_mosaic.py).
-            "MOSAIC_MANIFESTS": json.dumps([
-                str(p) for p in (
-                    self.root / "dev" / "archive" / "mosaic" / "manifest.json",
-                    self.root / "dev" / "archive" / "wafer" / "manifest.json",
-                ) if p.is_file()
-            ]),
+            # Mosaic source manifests: point at the dev archive folder and let
+            # the server discover every `*/manifest.json` below it (the demo
+            # from dev/mosaic_build.py, the wafer fixture from
+            # dev/wafer_mosaic.py, any stitched scan from
+            # dev/siliconprawn_mosaic.py). A directory entry is re-scanned on
+            # every client Reload, so a fixture built while the server runs
+            # appears (and a removed one disappears) without a restart.
+            "MOSAIC_MANIFESTS": json.dumps([str(self.root / "dev" / "archive")]),
             # Plain-http localhost: no Secure cookies, region header enabled.
             "SESSION_COOKIE_SECURE": "false",
             "DEV_REGION_HEADER": "true",

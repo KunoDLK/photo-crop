@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from ..errors import BadRequest, NotFound
+from ..licenses import image_license
 from ..models import BookSummary, CoverInfo, PageInfo
 from ..tiles.geometry import max_level
 from . import dimensions, naming
@@ -240,7 +241,8 @@ def image_info(archive_root: Path, book_id: str, page_id: str, tile_size: int) -
 
     Returns:
         A dict with ``page_id``, ``width``, ``height``, ``max_level``,
-        ``file_size`` and ``hash``.
+        ``file_size``, ``hash`` and ``license`` (the ``.LICENSE`` sidecar text
+        when present, else ``None``).
     """
     path = page_path(archive_root, book_id, page_id)
     width, height = dimensions.image_dims(path)
@@ -251,4 +253,5 @@ def image_info(archive_root: Path, book_id: str, page_id: str, tile_size: int) -
         "max_level": max_level(width, height, tile_size),
         "file_size": path.stat().st_size,
         "hash": _content_hash(path),
+        "license": image_license(path),
     }

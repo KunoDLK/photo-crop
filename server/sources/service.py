@@ -109,7 +109,7 @@ class SourceTileService:
             # sources default to ``-level``; archive-style sources invert
             # against their own max level) so deep zoom tiles are evicted
             # first regardless of the level convention.
-            zoom = source.tile_zoom(level)
+            zoom = source.tile_zoom(level, page)
             if zoom is None:
                 zoom = -level
             self.tiles.put(key, data, zoom=zoom)

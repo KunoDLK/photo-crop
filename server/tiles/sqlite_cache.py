@@ -664,6 +664,36 @@ class TileCache:
             self._conn().execute("SELECT COUNT(DISTINCT chain_id) FROM proxies").fetchone()[0]
         )
 
+    def count_family_chains(self, ns: str, book: str, page: str, version: int) -> int:
+        """Number of stored proxy chains belonging to one page family.
+
+        A family is every chain a page's proxies feed: all ``chain_id`` values
+        shaped ``proxy/<ns>/<book>/<page>/<version>/<cell>``. Chains are
+        written and deleted whole (``put_chain``/``delete_chain``), so each
+        distinct chain id in the family is a complete, usable chain — the
+        readiness count a source reports as proxy-generation progress. A
+        constant-prefix ``LIKE`` runs as a range scan over the indexed
+        ``chain_id`` column, so this needs no dedicated family index (and no
+        schema change).
+
+        Args:
+            ns: Variant namespace (``p`` for provider tiles).
+            book: Book id of the page the chains feed.
+            page: Page id of the page the chains feed.
+            version: Page content version.
+
+        Returns:
+            The number of distinct chains stored for the family.
+        """
+        prefix = f"proxy/{ns}/{book}/{page}/{version}/"
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        (count,) = self._conn().execute(
+            "SELECT COUNT(DISTINCT chain_id) FROM proxies"
+            " WHERE chain_id LIKE ? ESCAPE '\\'",
+            (f"{escaped}%",),
+        ).fetchone()
+        return int(count)
+
     def get(self, key: str) -> bytes | None:
         """Return cached tile bytes, or ``None`` on a miss.
 

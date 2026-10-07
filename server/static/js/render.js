@@ -282,7 +282,11 @@ function drawPlaceholder(im, sc) {
   ctx.strokeRect(dx + 1, dy + 1, dw - 2, dh - 2);
   ctx.setLineDash([]);
 
-  const label = im.status === "error" ? "error" : "loading…";
+  const warming = im.status === "warming";
+  const label =
+    im.status === "error" ? "error"
+    : warming ? "warming " + (im.proxy ? im.proxy.percent : 0) + "%"
+    : "loading…";
   const fs = Math.max(11, Math.min(30, 18 * Math.max(0.2, sc)));
   ctx.font = "600 " + fs + "px system-ui, sans-serif";
   ctx.fillStyle = im.status === "error" ? "#ff8888" : getCss("--text");

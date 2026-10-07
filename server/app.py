@@ -24,7 +24,7 @@ from .books import router as books_router
 from .books.locations import LocationRegistry
 from .books.scanner import Catalog
 from .config import Settings
-from .errors import register_error_handlers
+from .errors import BadRequest, register_error_handlers
 from .ocr import router as ocr_router
 from .ocr.service import OCRService
 from .qr import router as qr_router
@@ -42,6 +42,9 @@ from .tiles import router as tiles_router
 from .tiles import sqlite_cache
 from .tiles.manager import TileService
 from .tiles.page_cache import PageCache
+
+
+logger = logging.getLogger("server.app")
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -111,21 +114,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.policy = Policy(app.state.rights)
     # The image-source hook: registered sources own their book ids and render
     # tiles on demand (the fractal generator is the reference implementation;
-    # every configured mosaic manifest joins in as its own book).
-    sources = [FractalSource()]
-    manifest_paths = list(settings.mosaic_manifests)
-    if not manifest_paths and settings.mosaic_manifest:
-        manifest_paths = [settings.mosaic_manifest]
-    for manifest_path in manifest_paths:
-        if manifest_path.is_file():
-            sources.append(MosaicSource(
-                manifest_path,
-                tile_size=settings.tile_size,
-                page_cache=page_cache,
-                store=tile_store,
-                proxies_enabled=settings.mosaic_proxy_enabled,
-            ))
-    app.state.sources = SourceRegistry(sources)
+    # every configured mosaic manifest joins in as its own book). Mosaic
+    # sources are built from configuration by a discovery callback the registry
+    # re-runs on every force reload, so a manifest added while the server runs
+    # appears on the next client Reload without a restart (a removed one
+    # disappears); identities keep existing instances so in-process state —
+    # decode locks, a running warm sweep — survives the re-discovery.
+    def _manifest_paths() -> list[Path]:
+        """Expand the configured mosaic entries into a de-duped manifest list.
+
+        An entry may be a ``manifest.json`` file or a **directory**, in which
+        case every ``manifest.json`` below it is served (one book each). The
+        directory form means a fixture built while the server runs is picked up
+        by the next force reload, no config edit needed.
+
+        Returns:
+            Manifest paths in configuration order, without duplicates.
+        """
+        entries = list(settings.mosaic_manifests)
+        if not entries and settings.mosaic_manifest:
+            entries = [settings.mosaic_manifest]
+        paths: list[Path] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if entry.is_dir():
+                candidates = sorted(entry.rglob("manifest.json"))
+            else:
+                candidates = [entry]
+            for candidate in candidates:
+                key = str(candidate.resolve())
+                if key not in seen:
+                    seen.add(key)
+                    paths.append(candidate)
+        return paths
+
+    def _mosaic_sources() -> list[MosaicSource]:
+        """Construct one mosaic source per configured manifest present on disk.
+
+        A manifest that fails to load (malformed, or caught mid-write) is
+        skipped with a log line rather than breaking the boot or the reload.
+
+        Returns:
+            The mosaic sources for the current configuration.
+        """
+        built: list[MosaicSource] = []
+        for manifest_path in _manifest_paths():
+            if not manifest_path.is_file():
+                continue
+            try:
+                built.append(MosaicSource(
+                    manifest_path,
+                    tile_size=settings.tile_size,
+                    page_cache=page_cache,
+                    store=tile_store,
+                    proxies_enabled=settings.mosaic_proxy_enabled,
+                ))
+            except BadRequest as exc:
+                logger.warning("skipping mosaic manifest %s: %s", manifest_path, exc)
+        return built
+
+    sources = [FractalSource(), *_mosaic_sources()]
+    app.state.sources = SourceRegistry(sources, discover=_mosaic_sources)
     app.state.source_tiles = SourceTileService(settings, app.state.sources, store=tile_store)
 
     # Optional boot-time chain warm-up (O2): one daemon thread per mosaic
