@@ -405,7 +405,7 @@ crawler-facing HTML.
 |---|---|
 | `GET /api/books[?force=1]` | visible books (private hidden without a grant) + `signature` + per-book `visibility` + cover `access` |
 | `GET /api/books/{book}/pages[?force=1]` | pages sorted by (group, order) + `signature` + book `visibility`; each page carries its resolved `access`; pages the viewer cannot see at all (page-scoped share token) are dropped |
-| `GET /api/books/{book}/pages/{page}/info` | dims, `max_level`, file size, sha256, resolved `access`, and `license` (an `<image>.LICENSE` sidecar's text if present) |
+| `GET /api/books/{book}/pages/{page}/info` | dims, `max_level`, file size, sha256, resolved `access`, and `license` (the `<image>.LICENSE` sidecar's contents if present; may be HTML) |
 | `GET /api/locations?book=&page=` | create/fetch short id → `{id}` |
 | `GET /api/locations/{id}` | resolve short id → `{book, page}` |
 | `GET /rt/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg` | immutable real progressive JPEG — `full` access only |

@@ -1,9 +1,9 @@
 """Licence sidecar files shown in the viewer's status bar.
 
-An image — or a mosaic page — may ship a small ``.LICENSE`` text file beside
-it; the viewer shows its contents under the file size in the status bar. Only
-the text is read here; escaping and turning URLs into links happen in the
-client (so no markup from the file is ever trusted).
+An image — or a mosaic page — may ship a small ``.LICENSE`` file beside it; the
+viewer shows its contents under the file size in the status bar. The file may
+contain HTML (e.g. an ``<a href>`` link), which the viewer renders as-is — the
+archive is owner-controlled, so its markup is trusted like its images are.
 """
 from __future__ import annotations
 

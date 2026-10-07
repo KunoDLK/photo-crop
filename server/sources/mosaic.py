@@ -571,16 +571,17 @@ class MosaicSource(ImageSource):
         )
 
     def _page_license(self, page: MosaicPage) -> str | None:
-        """A mosaic page's licence text, from a ``.LICENSE`` sidecar, or ``None``.
+        """A mosaic page's licence contents, from a ``.LICENSE`` sidecar, or ``None``.
 
         Looked up beside the manifest as ``<page-id>.LICENSE`` (checked first),
-        then inside the page's cell folder as ``LICENSE``.
+        then inside the page's cell folder as ``LICENSE``. The contents may be
+        HTML and are rendered as-is in the status bar.
 
         Args:
             page: The page whose licence to read.
 
         Returns:
-            The licence text, or ``None``.
+            The licence contents, or ``None``.
         """
         base = self._manifest_path.parent
         for candidate in (base / f"{page.id}.LICENSE", base / page.id / "LICENSE"):

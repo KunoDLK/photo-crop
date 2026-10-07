@@ -241,8 +241,8 @@ def image_info(archive_root: Path, book_id: str, page_id: str, tile_size: int) -
 
     Returns:
         A dict with ``page_id``, ``width``, ``height``, ``max_level``,
-        ``file_size``, ``hash`` and ``license`` (the ``.LICENSE`` sidecar text
-        when present, else ``None``).
+        ``file_size``, ``hash`` and ``license`` (the ``.LICENSE`` sidecar
+        contents when present, else ``None``; may be HTML).
     """
     path = page_path(archive_root, book_id, page_id)
     width, height = dimensions.image_dims(path)
