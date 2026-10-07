@@ -25,11 +25,34 @@ class AccessInfo(BaseModel):
     region_locked: bool = True
 
 
+class ProxyStatus(BaseModel):
+    """Proxy-chain generation state of one mosaic page.
+
+    Coarse-band mosaic tiles render from per-cell proxy chains; when those
+    chains are missing the first viewer pays the build cost. This record lets
+    the client see that state and hold off tile requests until the page is
+    ``ready``, showing ``percent`` as per-image progress. Present only for
+    proxy-enabled mosaic pages; other sources omit it.
+    """
+
+    book: str
+    page: str
+    version: int
+    enabled: bool
+    ready: bool
+    ready_cells: int
+    total_cells: int
+    percent: int
+    generating: bool
+
+
 class CoverInfo(BaseModel):
     """Cover metadata for a book (the first page of its first group).
 
     ``access`` is the cover page's resolved access, so the root view knows
     which tile variant (``/rt/`` real vs ``/bx/`` blurred) to request.
+    ``proxy`` carries mosaic proxy-generation state when the cover is a
+    proxy-enabled mosaic page.
     """
 
     page_id: str
@@ -39,6 +62,7 @@ class CoverInfo(BaseModel):
     mtime: int
     access: AccessInfo | None = None
     source: str = "archive"
+    proxy: ProxyStatus | None = None
 
 
 class BookSummary(BaseModel):
@@ -63,6 +87,7 @@ class PageInfo(BaseModel):
     mtime: int
     access: AccessInfo | None = None
     source: str = "archive"
+    proxy: ProxyStatus | None = None
 
 
 class BooksResponse(BaseModel):
@@ -82,7 +107,12 @@ class PagesResponse(BaseModel):
 
 
 class ImageInfo(BaseModel):
-    """Detailed metadata for a single image, including a content hash."""
+    """Detailed metadata for a single image, including a content hash.
+
+    ``license`` carries the text of an ``<image>.LICENSE`` sidecar when one sits
+    beside the image file (else ``None``), so the viewer can show it in the
+    status bar.
+    """
 
     page_id: str
     width: int
@@ -92,6 +122,8 @@ class ImageInfo(BaseModel):
     hash: str
     access: AccessInfo | None = None
     source: str = "archive"
+    proxy: ProxyStatus | None = None
+    license: str | None = None
 
 
 class OCRWord(BaseModel):

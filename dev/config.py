@@ -8,6 +8,7 @@ only secrets defined here are throwaway dev credentials.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +52,14 @@ class LocalDev:
             "CACHE_DIR": str(self.cache_dir),
             "OCR_CACHE_DIR": str(self.cache_dir / "ocr"),
             "RIGHTS_DB_PATH": str(self.cache_dir / "rights.db"),
+            # Mosaic source manifests: point at the dev archive folder and let
+            # the server discover every `*/manifest.json` below it (the demo
+            # from dev/mosaic_build.py, the wafer fixture from
+            # dev/wafer_mosaic.py, any stitched scan from
+            # dev/siliconprawn_mosaic.py). A directory entry is re-scanned on
+            # every client Reload, so a fixture built while the server runs
+            # appears (and a removed one disappears) without a restart.
+            "MOSAIC_MANIFESTS": json.dumps([str(self.root / "dev" / "archive")]),
             # Plain-http localhost: no Secure cookies, region header enabled.
             "SESSION_COOKIE_SECURE": "false",
             "DEV_REGION_HEADER": "true",
@@ -60,10 +69,11 @@ class LocalDev:
             # Owner login for testing admin + share links.
             "ARCHIVE_USERNAME": "admin",
             "ARCHIVE_PASSWORD": "devpass",
-            # Deterministic CPU rendering, small caches.
+            # Deterministic CPU rendering; cache budgets match the production
+            # container (CACHE_GB=8, PAGE_CACHE_BYTES=6 GiB).
             "OPENCL": "false",
-            "CACHE_GB": "1",
-            "PAGE_CACHE_BYTES": str(512 * 1024 * 1024),
+            "CACHE_GB": "8",
+            "PAGE_CACHE_BYTES": str(6 * 1024 * 1024 * 1024),
             # No rapidocr on the dev machine: OCR off, so the endpoints return
             # empty instead of decoding a full page and 500ing.
             "OCR_ENABLED": "false",

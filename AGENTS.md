@@ -43,6 +43,22 @@ now covers the server.
   without it would decode a full page and 500 — which the client retries every
   frame, flooding the server and starving tile fetches. Disabled, the OCR
   endpoints return empty results instead.
+- **Mosaic dev tools** (state under `dev/archive/`, gitignored):
+  `dev/satellite_ingest.py` converts downloaded Copernicus mosaic zips into
+  cell JPEGs (`dev/archive/mosaic/cells/`); `dev/mosaic_build.py` writes the
+  demo mosaic manifest (book `satellite-mosaic`) from those cells;
+  `dev/wafer_mosaic.py --grid 31 [--prewarm]` **copies** the cells onto a
+  31x31 = 961-cell "wafer" fixture (`dev/archive/wafer/`, book `wafer-mosaic`,
+  a ~310k-px canvas) and optionally prewarms every cell's proxy chain into
+  `dev/cache/cache.db` (11 source decodes, not 961); `dev/siliconprawn_mosaic.py
+  --tiles DIR [--name SLUG] [--chunk 4096]` stitches a tiled scan laid out as
+  `<x>/<y>.jpg` into 4096-px chunk cells and merges it as one **page** of a
+  multi-page book (`dev/archive/siliconprawn/`, book `siliconprawn`; run once
+  per scan). `dev/config.py` points `MOSAIC_MANIFESTS` at `dev/archive`,
+  so the server serves every `*/manifest.json` below it (and picks up a new one
+  on Reload). A leftover
+  `cache.db` from an older schema is wiped on the first open of a new build
+  (schema bump policy — re-run `--prewarm` after upgrading).
 - **Deps**: `pip install -r server/requirements.txt`. Includes fastapi, uvicorn, pydantic,
   opencv-contrib-python-headless, numpy, pillow, rapidocr + onnxruntime.
 - **Docker**: `docker build -f server/Dockerfile .` (runs `python -m server.main`;
@@ -58,9 +74,9 @@ now covers the server.
 
 FastAPI app assembled in `server/app.py` `create_app()`: services are constructed once and
 exposed on `app.state` (`.settings`, `.tiles`, `.ocr`, `.locations`, `.catalog`, `.rights`,
-`.auth`, `.region`, `.policy`); routers fetch them from `request.app.state` — never
-construct their own. Static viewer is mounted at `/` with `no-cache` headers (dev-friendly;
-tiles are separate and immutable).
+`.auth`, `.region`, `.policy`, `.sources`, `.source_tiles`); routers fetch them from
+`request.app.state` — never construct their own. Static viewer is mounted at `/` with
+`no-cache` headers (dev-friendly; tiles are separate and immutable).
 
 ### Config — `server/config.py`
 
@@ -75,7 +91,11 @@ budget), `PAGE_CACHE_BYTES` (decoded-page RAM budget), `PAGE_IDLE_SECONDS` (defa
 section), `PUBLIC_BASE_URL` (absolute public base URL for canonical links, OG image URLs,
 and the sitemap — set it in production so non-proxied requests can never poison the
 sitemap cache with `http://` URLs; empty falls back to `X-Forwarded-Proto`/
-`X-Forwarded-Host`, then the request itself), `HOST`, `PORT`.
+`X-Forwarded-Host`, then the request itself), `EVICT_YOUNG_SECONDS`/`EVICT_OLD_SECONDS`
+(age tiers of the tile-store janitor), `MOSAIC_MANIFESTS` (JSON list of mosaic
+`manifest.json` paths; the legacy single `MOSAIC_MANIFEST` is still honored),
+`MOSAIC_PROXY_ENABLED`/`MOSAIC_PROXY_PREWARM` (mosaic proxy chains; boot-time chain
+warm-up), `HOST`, `PORT`.
 
 ### Errors — `server/errors.py`
 
@@ -120,12 +140,22 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
 - `encoder.py` — progressive (SOF2) JPEG via OpenCV.
 - `sqlite_cache.py` — own SQLite tile store (`cache.db` under the cache dir; WAL,
   one connection per thread), byte-limited with a **background janitor thread** that
-  deletes over budget. Each row records `creation_time`, `access_time`, and a `zoom`
-  level (0 = whole image on one tile, inverted from the pyramid level via
-  `max_level - level`; provider tiles pass `-level`); eviction is **zoom-first,
-  access-time-second** — deepest-zoom tiles least recently accessed go first, so
-  coarse overview tiles are evicted last (no special-casing). `put()` never deletes
-  inline: it wakes the janitor, which batches deletions down to 95% of the budget.
+  deletes over budget. **Schema v2** keeps one `tiles` table whose every row records
+  `creation_time`, `access_time`, a `zoom` level (0 = whole image on one tile,
+  inverted from the pyramid level via `max_level - level`; provider tiles pass
+  `-level`), and the parsed numeric coordinates `ns` (`t` / `x<gen>` / `p`),
+  `book`, `page`, `version`, `level`, `tx`, `ty` (indexed, so coverage queries are
+  range lookups) — plus a `proxies` table holding **proxy chains** (see the mosaic
+  source below): one lossless PNG plane per coarse-band level per mosaic cell,
+  with the pure manifest geometry of each plane's dependent tile range.
+  Eviction is **age-tiered** (`EVICT_YOUNG_SECONDS` 10 min, `EVICT_OLD_SECONDS`
+  7 d) and within each tier zoom-first, access-time-second; proxy chains are
+  evicted whole, redundant chains (every dependent tile cached) before
+  load-bearing ones, and always after the tiles of the same tier — a tile can be
+  regenerated from a surviving chain, a chain needs a full-res decode. Byte
+  accounting (triggers over both tables) feeds one budget and one low-water mark.
+  `put()` never deletes inline: it wakes the janitor, which batches deletions down
+  to 95% of the budget.
   The filename reuses the old diskcache store's `cache.db`, and a startup schema
   check (`user_version`) **deletes the whole file and recreates it** on any
   mismatch — a leftover diskcache-format cache is wiped automatically on first
@@ -159,6 +189,53 @@ resample → progressive-JPEG encode → store in disk cache** (`manager.py`).
   must never hold bytes one requester is entitled to and another is not, and
   the region decision happens on the origin at request time. The client picks
   the variant from each image's resolved `access` (`tileUrl(..., blurred)`).
+
+### Sources — `server/sources/` (pluggable image providers)
+
+- `base.py` — `ImageSource` (owns book ids, renders tiles) + `SourceRegistry`
+  (consulted before the archive catalog; first registered source wins a book id).
+  Force reloads **re-discover** config-built sources: the registry's optional
+  `discover` callback rebuilds the mosaic set from `MOSAIC_MANIFESTS` on
+  `refresh()`, so a manifest added while the server runs appears on the next
+  client Reload (a removed one disappears) without a restart. Discovery matches
+  existing instances by `ImageSource.provider_identity` (static sources return
+  `None` and are never re-discovered), keeping in-process state such as decode
+  locks and a running warm sweep.
+- `service.py` — `SourceTileService`, the provider twin of `tiles.manager`: the
+  same shared SQLite tile store, per-tile `KeyedLock` dedupe, worker-thread
+  renders, progressive-JPEG encode. Provider tile keys are `p/<source>/<book>/...`
+  and eviction depth comes from the source (`tile_zoom`); the route is
+  `GET /pv/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg` (mosaic responses also
+  carry `X-Mosaic-*` proxy-generation headers).
+- `fractal/` — the reference source (book `fractals`): procedural Mandelbrot,
+  now `cacheable` like every source (bytes are deterministic).
+- `mosaic.py` — a mosaic **book** composed from many source images. The manifest
+  declares `book`/`name` and one or more **pages**, each page its own virtual
+  canvas (`canvas` + `cells`). The legacy single-canvas shape is one page (id
+  `mosaic`); a `pages` list makes several (id from `page.id` or the name slug),
+  shown as pages of that one book. Each configured manifest is its own book
+  (`MOSAIC_MANIFESTS`, which also accepts a **directory** whose `*/manifest.json`
+  are all served). A page's `version` is recomputed on every load from the
+  manifest + cell source mtimes, so a re-saved cell image or an edited manifest
+  surfaces with fresh URLs on the next Reload. **Wafer-scale rendering**: cells
+  whose footprint at a level is narrower than one tile (the proxy band) are
+  drawn from per-cell **proxy chains** stored in the shared SQLite store — each
+  chain holds one
+  lossless PNG plane per band level, built once from a single full-res decode
+  by successive INTER_AREA halving (atomic replace, per-cell decode lock), so a
+  whole-canvas tile over N cells costs N tiny PNG decodes instead of N full
+  300 MB decodes; deeper levels decode the full source through the shared
+  decoded-image `PageCache` as before. Band membership is a pure function of
+  the manifest (never of cache state); chain builds refresh the chain's access
+  time (generation, not hits), so idle chains age into eviction exactly when
+  the cache needs room. **Warm front door**: a page's chain readiness + progress
+  (`proxy_state`, per page; cells-with-chains vs. cells-needing-chains) rides on
+  every listing record, is exposed at `GET /api/mosaic/{book}/proxy?page=`, and is
+  echoed on provider tile responses as `X-Mosaic-Ready`/`X-Mosaic-Progress`; the
+  first poll starts an on-demand background sweep (`ensure_warming(page)`, the
+  `prewarm` path) so a client can hold off tile requests and show `warming NN%`
+  instead of triggering a cold-render storm. Design notes:
+  `docs/wafer-mosaic-scaling.md` (O4) and `docs/mosaic-proxy-progress.md`.
 
 ### OCR — `server/ocr/`
 
@@ -328,7 +405,7 @@ crawler-facing HTML.
 |---|---|
 | `GET /api/books[?force=1]` | visible books (private hidden without a grant) + `signature` + per-book `visibility` + cover `access` |
 | `GET /api/books/{book}/pages[?force=1]` | pages sorted by (group, order) + `signature` + book `visibility`; each page carries its resolved `access`; pages the viewer cannot see at all (page-scoped share token) are dropped |
-| `GET /api/books/{book}/pages/{page}/info` | dims, `max_level`, file size, sha256, resolved `access` |
+| `GET /api/books/{book}/pages/{page}/info` | dims, `max_level`, file size, sha256, resolved `access`, and `license` (an `<image>.LICENSE` sidecar's text if present) |
 | `GET /api/locations?book=&page=` | create/fetch short id → `{id}` |
 | `GET /api/locations/{id}` | resolve short id → `{book, page}` |
 | `GET /rt/{book}/{page}/{version}/{level}/{tx}/{ty}.jpg` | immutable real progressive JPEG — `full` access only |
@@ -336,6 +413,7 @@ crawler-facing HTML.
 | `GET /og/{book}/{page}/{version}.jpg` | 1200×630 real social preview (full access only; region-locked pages send no image) |
 | `GET /api/books/{book}/pages/{page}/ocr` | word/line boxes in source px — `full` access only, else 404 |
 | `GET /api/search?book=&q=&regex=` | matches (filtered to fully-visible pages) + `pending` count |
+| `GET /api/mosaic/{book}/proxy[?page=]` | mosaic page proxy-generation state `{enabled, ready, ready_cells, total_cells, percent, generating}`; `page` defaults to the cover page; starts a background warm when not ready (404 for non-mosaic books) |
 | `GET /api/qr?url=` | PNG QR code (H error correction) with the brand "K" logo centred over it, for the Share panel |
 | `POST /api/login` | owner/account login → session cookie (401 bad creds, 429 rate-limited) |
 | `POST /api/logout` | clears the session cookie |
@@ -426,6 +504,13 @@ Data/control flow: launch path → `resolveLocation` → `nav.enterBook` → `fe
 - `nameFilter.js` — client-side substring filter on raw file name (matches the
   `2_123-Page.jpg` prefix too). **Mutually exclusive with OCR search**: starting one
   clears the other.
+- `proxy.js` (+ `api/proxy.js`) — mosaic warm front door. While a visible image's
+  listing `proxy` state is not ready, the scheduler requests nothing for it
+  (`tiles/scheduler.js` `proxyBlocked`); this module polls
+  `GET /api/mosaic/{book}/proxy` (`MOSAIC_PROXY_POLL_MS`), keeps the image's
+  `proxy` state fresh, shows `warming NN%` (render.js placeholder), and once ready
+  clears the warming status and reconciles so tiles start flowing. Never polls when
+  every mosaic page is ready (archive/fractal pages carry no `proxy` state).
 - `share.js` — Share button opens a centred panel with the current URL's QR code
   (`/api/qr`) and copies the URL to the clipboard; a green tick marks a completed
   clipboard write. When the current location is **private** or **region-locked**

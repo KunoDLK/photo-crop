@@ -28,6 +28,7 @@ import * as notifications from "./notifications.js";
 import * as fullscreen from "./fullscreen.js";
 import * as modes from "./modes.js";
 import * as crosses from "./crosses.js";
+import * as proxy from "./proxy.js";
 import { queryParam } from "./util.js";
 
 // ---------------------------------------------------------- share notices
@@ -149,6 +150,7 @@ async function bootstrap() {
 
   render.initRenderer(viewEl, leftEl);
   crosses.init();
+  proxy.init({ reconcile: scheduler.reconcile, requestRender: render.requestRender });
   interaction.init({ scheduler, nav });
   interaction.installInteraction(viewEl);
   fullscreen.init({ viewEl });

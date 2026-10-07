@@ -367,6 +367,21 @@ html:not(.no-js) #status {
 html:not(.no-js) body:has(#stats:not([hidden])) #status {
   bottom: calc(env(safe-area-inset-bottom) + 52px);
 }
+/* A licence line under the file size: let the pill wrap, keep the licence's own
+   newlines, and accept clicks so licence URLs (e.g. Creative Commons) open
+   (the plain pill passes clicks through to the canvas underneath). */
+#status.has-license,
+html:not(.no-js) #status.has-license {
+  white-space: pre-line;
+  pointer-events: auto;
+  text-align: center;
+  text-overflow: clip;
+  max-width: min(92vw, 720px);
+}
+#status.has-license a {
+  color: inherit;
+  text-decoration: underline;
+}
 
 /* ------------------------------------------------------- search + OCR overlay
    Search box in the toolbar, and the invisible OCR text layer above the canvas. */

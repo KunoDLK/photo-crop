@@ -75,8 +75,23 @@ function imBlurred(im) {
   return im.access != null && im.access.status === "blurred";
 }
 
+/**
+ * True while a mosaic page's proxy chains are still being generated.
+ *
+ * The server reports the page's proxy state on each listing; while it is not
+ * ready the coarse band cannot be rendered except by cold-building every
+ * chain, so the scheduler requests nothing for the image and the client shows
+ * the warming progress instead (proxy.js polls and unblocks it). Archive
+ * pages, fractal sources, ready mosaics, and servers without the feature have
+ * no/proxy-ready state, so they are never blocked.
+ */
+export function proxyBlocked(im) {
+  return !!im.proxy && im.proxy.enabled && !im.proxy.ready;
+}
+
 /** Prefetch and pin the root tile of an image (rule 7). */
 export function ensureRootTile(im) {
+  if (proxyBlocked(im)) return;
   const L = im.maxLevel;
   const key = tileKey(im.id, L, 0, 0);
   if (cache.has(key)) return;
@@ -101,6 +116,7 @@ export function ensureRootTile(im) {
  * prioritize the areas showing the lowest-quality tile first.
  */
 export function nextStepTiles(im) {
+  if (proxyBlocked(im)) return [];
   const L = im.targetLevel == null ? im.maxLevel : im.targetLevel;
   if (L >= im.maxLevel || imageComplete(im)) return [];
   const vpw = state.viewport.w, vph = state.viewport.h;
@@ -260,6 +276,7 @@ function prefetchNeighbors(visible) {
   for (let i = lo; i <= hi; i++) {
     const im = state.images[i];
     if (im.status === "error") continue;
+    if (proxyBlocked(im)) continue;
     ensureRootTile(im);
   }
 }

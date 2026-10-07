@@ -88,6 +88,14 @@ export const CACHE_MAX = 2048;
 /** Number of images before/after the view to warm while idle. */
 export const PREFETCH_NEIGHBORS = 4;
 
+/**
+ * Poll interval (ms) for a mosaic page whose proxy chains are still being
+ * generated. While warming, the scheduler holds off tile requests for the
+ * image and proxy.js polls the server's proxy-status endpoint at this cadence
+ * to advance the "warming NN%" readout, resuming tile fetching when ready.
+ */
+export const MOSAIC_PROXY_POLL_MS = 1500;
+
 // Layout metrics (scene / CSS px at scale 1).
 export const CELL = 1600;
 export const CELL_GAP = 120;

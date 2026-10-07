@@ -30,7 +30,16 @@ export function init(deps) {
   wireDOM();
   state.on("status", (msg) => {
     const el = document.getElementById("status");
-    if (el) el.textContent = msg;
+    if (!el) return;
+    // A plain string is shown as text; an object {text, html} carries an
+    // extra (already escaped+linkified) licence line with clickable links.
+    if (msg && typeof msg === "object") {
+      el.innerHTML = msg.html;
+      el.classList.add("has-license");
+    } else {
+      el.textContent = msg;
+      el.classList.remove("has-license");
+    }
   });
 }
 

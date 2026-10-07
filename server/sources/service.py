@@ -22,10 +22,17 @@ from .base import SourceRegistry, TileRequest
 class SourceTileService:
     """Caches and serves encoded tiles produced by registered image sources."""
 
-    def __init__(self, settings: Settings, registry: SourceRegistry) -> None:
+    def __init__(
+        self, settings: Settings, registry: SourceRegistry,
+        store: encoded_cache.TileCache | None = None,
+    ) -> None:
         self.settings = settings
         self.registry = registry
-        self.tiles = encoded_cache.TileCache(settings.cache_dir, settings.cache_bytes)
+        self.tiles = store or encoded_cache.TileCache(
+            settings.cache_dir, settings.cache_bytes,
+            evict_young_seconds=settings.evict_young_seconds,
+            evict_old_seconds=settings.evict_old_seconds,
+        )
         self.locks = KeyedLock()
 
     @staticmethod
@@ -98,7 +105,12 @@ class SourceTileService:
             data = encoder.encode_progressive_jpeg(
                 bgr, self.settings.jpeg_quality, self.settings.jpeg_progressive
             )
-            # Provider levels are zoom-native: 0 = whole image on one tile,
-            # so zoom is simply ``-level`` (evicted deepest-first).
-            self.tiles.put(key, data, zoom=-level)
+            # Cache eviction depth comes from the source (fractal-style
+            # sources default to ``-level``; archive-style sources invert
+            # against their own max level) so deep zoom tiles are evicted
+            # first regardless of the level convention.
+            zoom = source.tile_zoom(level, page)
+            if zoom is None:
+                zoom = -level
+            self.tiles.put(key, data, zoom=zoom)
             return data, False

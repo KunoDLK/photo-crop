@@ -75,6 +75,7 @@ export function buildLayout(items) {
         im.access = it.access;
         im.visibility = it.visibility;
         im.source = it.source;
+        im.proxy = it.proxy;
         im.cellX = ox;
         im.cellY = oy + LABEL_H;
         im.cell = CELL;
@@ -96,6 +97,7 @@ export function buildLayout(items) {
           access: it.access,
           visibility: it.visibility,
           source: it.source,
+          proxy: it.proxy,
           fitFactor: 1,
           cellX: ox,
           cellY: oy + LABEL_H,

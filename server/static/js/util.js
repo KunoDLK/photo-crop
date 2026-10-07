@@ -43,6 +43,25 @@ export function queryParam(name) {
   return new URLSearchParams(location.search).get(name) || "";
 }
 
+/** Escape a string for safe insertion into HTML text/attributes. */
+export function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+/**
+ * Escape text then wrap every http(s) URL in a safe anchor, so licence text
+ * (e.g. a Creative Commons link) rendered into the status bar is clickable.
+ * The whole string is escaped first, so no untrusted HTML survives.
+ */
+export function linkify(s) {
+  return escapeHtml(s).replace(
+    /(https?:\/\/[^\s<>"]+)/g,
+    (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`,
+  );
+}
+
 /**
  * Append all held share keys (if any) to a content URL. Repeated ``key=``
  * params let the server merge every grant; safe for URLs that already carry

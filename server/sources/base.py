@@ -9,7 +9,9 @@ encoding) lives in :mod:`sources.service`.
 """
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -125,6 +127,55 @@ class ImageSource(ABC):
         """Change signature for this source's listings (ids + versions)."""
         return self.key
 
+    def tile_zoom(self, level: int, page: str | None = None) -> int | None:
+        """Cache eviction depth for a rendered tile at ``level``.
+
+        Sources whose level 0 is the whole image (fractal-style, levels run
+        ``0, -1, -2, ...``) leave this as ``None`` and the tile service stores
+        ``-level`` (0 = whole image, evicted last). A source that reuses the
+        archive-style pyramid (``0`` = 1:1 up to a positive ``max_level``)
+        overrides this with ``max_level - level`` so eviction still prefers
+        deep zoom tiles over overview tiles. A source whose max level differs
+        per page (the mosaic) uses ``page`` to pick the right one.
+
+        Args:
+            level: The pyramid level of the requested tile.
+            page: The page id the tile belongs to, when the source has pages.
+
+        Returns:
+            The tile's depth from the whole-image level, or ``None`` for the
+            provider default.
+        """
+        return None
+
+    def refresh(self) -> None:
+        """Re-read any external state (e.g. a manifest file) on a force reload.
+
+        Called by the books router when a client asks for a forced re-scan;
+        sources that read their listings from disk override this. A source
+        whose refreshed state changed must report a new :attr:`signature` and
+        page versions, so clients fetch fresh tile URLs instead of serving
+        CDN/browser-cached stale tiles.
+        """
+        return None
+
+    @property
+    def provider_identity(self) -> str | None:
+        """Stable id used to reuse this source across force-reload discovery.
+
+        Sources that are registered once and never re-discovered (the fractal
+        generator, future session-bound adapters) return ``None``. A source
+        that is rediscovered on every force reload — e.g. one built from a
+        manifest path — returns a stable identity so the registry can keep the
+        existing instance (preserving in-process state such as decode locks
+        and a running warm sweep) instead of replacing it when the underlying
+        configuration still points at the same place.
+
+        Returns:
+            A stable identity string, or ``None`` for non-discoverable sources.
+        """
+        return None
+
 
 class SourceRegistry:
     """Ordered collection of :class:`ImageSource` providers.
@@ -132,10 +183,66 @@ class SourceRegistry:
     The only object the routers touch. Consulted before the archive catalog:
     sources win over real archive directories for the ids they own, and the
     first registered source wins a disputed id.
+
+    Static sources (``provider_identity is None``) are registered once. Sources
+    built from external configuration (a mosaic manifest path) are
+    re-discovered on every :meth:`refresh` — a force reload — via an optional
+    ``discover`` callable, so a manifest added while the server runs appears as
+    a new book (and a removed one disappears) without a restart. Re-discovered
+    sources whose identity matches an existing instance are refreshed in place,
+    keeping their in-process state.
     """
 
-    def __init__(self, sources: list[ImageSource]) -> None:
-        self._sources = list(sources)
+    def __init__(
+        self,
+        sources: list[ImageSource],
+        discover: "Callable[[], list[ImageSource]] | None" = None,
+    ) -> None:
+        """Register the initial sources and an optional discovery callback.
+
+        Args:
+            sources: The sources to serve now, in priority order.
+            discover: When given, called on every :meth:`refresh` to rebuild the
+                discoverable sources from current configuration. Returns the
+                full desired set of discoverable sources (freshly constructed);
+                the registry matches them to existing instances by
+                :attr:`ImageSource.provider_identity`.
+        """
+        self._fixed = [s for s in sources if s.provider_identity is None]
+        self._providers = [s for s in sources if s.provider_identity is not None]
+        self._discover = discover
+        self._lock = threading.Lock()
+        self._sources = [*self._fixed, *self._providers]
+
+    def refresh(self) -> None:
+        """Re-read external state of every source, re-discovering providers.
+
+        Static sources refresh in place; the discoverable set is rebuilt from
+        the discovery callback, reusing an existing instance when its
+        :attr:`ImageSource.provider_identity` still matches. Without a
+        callback this is the historical "refresh every source in place".
+        """
+        for source in self._fixed:
+            source.refresh()
+        if self._discover is None:
+            for source in self._providers:
+                source.refresh()
+            return
+        with self._lock:
+            existing = {s.provider_identity: s for s in self._providers}
+            providers: list[ImageSource] = []
+            for source in self._discover():
+                previous = existing.pop(source.provider_identity, None)
+                if previous is not None:
+                    # Configuration unchanged for this identity: keep the live
+                    # instance (its decode locks and warm sweep) and re-read the
+                    # underlying state in place.
+                    previous.refresh()
+                    providers.append(previous)
+                else:
+                    providers.append(source)
+            self._providers = providers
+            self._sources = [*self._fixed, *providers]
 
     def source_for_book(self, book_id: str) -> ImageSource | None:
         """Return the source that owns ``book_id``, or ``None``.
