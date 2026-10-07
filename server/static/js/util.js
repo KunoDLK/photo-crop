@@ -51,18 +51,6 @@ export function escapeHtml(s) {
 }
 
 /**
- * Escape text then wrap every http(s) URL in a safe anchor, so licence text
- * (e.g. a Creative Commons link) rendered into the status bar is clickable.
- * The whole string is escaped first, so no untrusted HTML survives.
- */
-export function linkify(s) {
-  return escapeHtml(s).replace(
-    /(https?:\/\/[^\s<>"]+)/g,
-    (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`,
-  );
-}
-
-/**
  * Append all held share keys (if any) to a content URL. Repeated ``key=``
  * params let the server merge every grant; safe for URLs that already carry
  * query params (``?force=1`` becomes ``?force=1&key=...&key=...``).

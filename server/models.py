@@ -109,9 +109,9 @@ class PagesResponse(BaseModel):
 class ImageInfo(BaseModel):
     """Detailed metadata for a single image, including a content hash.
 
-    ``license`` carries the text of an ``<image>.LICENSE`` sidecar when one sits
-    beside the image file (else ``None``), so the viewer can show it in the
-    status bar.
+    ``license`` carries the contents of an ``<image>.LICENSE`` sidecar when one
+    sits beside the image file (else ``None``). The contents may be HTML and are
+    rendered as-is in the status bar.
     """
 
     page_id: str

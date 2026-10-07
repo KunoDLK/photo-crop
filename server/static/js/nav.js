@@ -15,7 +15,7 @@ import { buildLayout } from "./layout.js";
 import * as viewport from "./viewport.js";
 import * as render from "./render.js";
 import * as scheduler from "./tiles/scheduler.js";
-import { formatPixels, formatBytes, formatDuration, clamp, escapeHtml, linkify } from "./util.js";
+import { formatPixels, formatBytes, formatDuration, clamp, escapeHtml } from "./util.js";
 import { BLUR_TEXT_VIEWPORT_FRACTION, MAX_SCALE } from "./config.js";
 
 let urlSyncSeq = 0;
@@ -348,9 +348,10 @@ async function showImageInfo(im) {
     const info = await fetchImageInfo(im.bookId, im.pageId);
     const line = `${px} · ${formatBytes(info.file_size)}`;
     if (info.license) {
-      // Licence text (e.g. Creative Commons) renders on its own line under the
-      // file size, with any URLs made clickable; the text is escaped first.
-      state.setStatus({ text: line, html: escapeHtml(line) + "<br>" + linkify(info.license) });
+      // The .LICENSE file's contents may be HTML (e.g. an <a href> link); they
+      // render as-is on their own line under the file size. The first line is
+      // plain text and is escaped.
+      state.setStatus({ text: line, html: escapeHtml(line) + "<br>" + info.license });
     } else {
       state.setStatus(line);
     }
